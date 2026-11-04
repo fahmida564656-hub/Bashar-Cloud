@@ -1,0 +1,71 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 100 },
+        "phone": { "type": "string", "maxLength": 30 },
+        "email": { "type": "string", "format": "email", "maxLength": 120 },
+        "avatarUrl": { "type": "string", "maxLength": 500 },
+        "planName": { "type": "string", "maxLength": 50 },
+        "planSize": { "type": "string", "maxLength": 30 },
+        "planPrice": { "type": "string", "maxLength": 30 },
+        "autoRenew": { "type": "boolean" },
+        "renewalDate": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["name", "email"]
+    },
+    "CloudFile": {
+      "title": "CloudFile",
+      "description": "Cloud file metadata for user storage",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 255 },
+        "type": { "type": "string", "enum": ["image", "video", "audio", "document", "folder"] },
+        "sizeBytes": { "type": "number" },
+        "formattedSize": { "type": "string", "maxLength": 50 },
+        "date": { "type": "string", "maxLength": 50 },
+        "isFavorite": { "type": "boolean" },
+        "parentFolderId": { "type": "string", "maxLength": 128 },
+        "url": { "type": "string", "maxLength": 500 },
+        "itemCount": { "type": "number" },
+        "ownerId": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["name", "type", "date"]
+    },
+    "StorageUsage": {
+      "title": "StorageUsage",
+      "description": "Summary of user storage metrics",
+      "type": "object",
+      "properties": {
+        "totalGB": { "type": "number" },
+        "usedGB": { "type": "number" },
+        "imagesGB": { "type": "number" },
+        "imagesCount": { "type": "number" },
+        "videosGB": { "type": "number" },
+        "videosCount": { "type": "number" },
+        "audiosMB": { "type": "number" },
+        "audiosCount": { "type": "number" },
+        "docsMB": { "type": "number" },
+        "docsCount": { "type": "number" }
+      },
+      "required": ["totalGB", "usedGB"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Stores user account profile information"
+    },
+    "/users/{userId}/files/{fileId}": {
+      "schema": { "$ref": "#/entities/CloudFile" },
+      "description": "Stores user cloud files and folders"
+    },
+    "/users/{userId}/storage/usage": {
+      "schema": { "$ref": "#/entities/StorageUsage" },
+      "description": "Stores user storage consumption totals"
+    }
+  }
+}

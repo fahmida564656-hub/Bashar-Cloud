@@ -1,0 +1,79 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net: Default-deny all unlisted paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Common security primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation for User profile
+    function isValidUser(data) {
+      return data.keys().hasAll(['name', 'email'])
+        && data.name is string && data.name.size() <= 100
+        && data.email is string && data.email.size() <= 120
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 30))
+        && (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 500));
+    }
+
+    // Validation for CloudFile
+    function isValidCloudFile(data) {
+      return data.keys().hasAll(['name', 'type', 'date'])
+        && data.name is string && data.name.size() <= 255
+        && data.type in ['image', 'video', 'audio', 'document', 'folder']
+        && data.date is string && data.date.size() <= 50
+        && (!('sizeBytes' in data) || data.sizeBytes is number)
+        && (!('formattedSize' in data) || (data.formattedSize is string && data.formattedSize.size() <= 50))
+        && (!('isFavorite' in data) || data.isFavorite is bool);
+    }
+
+    // Validation for StorageUsage
+    function isValidStorageUsage(data) {
+      return data.keys().hasAll(['totalGB', 'usedGB'])
+        && data.totalGB is number
+        && data.usedGB is number;
+    }
+
+    // User profile document
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(incoming());
+      allow update: if isOwner(userId) && isValidUser(incoming());
+      allow delete: if isOwner(userId);
+
+      // User cloud files subcollection
+      match /files/{fileId} {
+        allow read, list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidCloudFile(incoming());
+        allow update: if isOwner(userId) && isValidCloudFile(incoming());
+        allow delete: if isOwner(userId);
+      }
+
+      // User storage usage subcollection
+      match /storage/{docId} {
+        allow read: if isOwner(userId);
+        allow write: if isOwner(userId) && isValidStorageUsage(incoming());
+      }
+    }
+  }
+}

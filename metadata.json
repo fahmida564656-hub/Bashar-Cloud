@@ -1,0 +1,6 @@
+{
+  "name": "GP Cloud",
+  "description": "Secure cloud storage with seamless access to your files anytime, anywhere.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
