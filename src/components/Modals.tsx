@@ -7,6 +7,8 @@ import {
   Pause,
   Music,
   FolderPlus,
+  AlertTriangle,
+  Folder,
 } from 'lucide-react';
 import { CloudFile } from '../types';
 
@@ -17,6 +19,7 @@ interface RecycleBinProps {
   deletedFiles: CloudFile[];
   onRestore: (file: CloudFile) => void;
   onEmptyBin: () => void;
+  onDeletePermanently?: (fileId: string) => void;
 }
 
 export const RecycleBinModal: React.FC<RecycleBinProps> = ({
@@ -25,11 +28,14 @@ export const RecycleBinModal: React.FC<RecycleBinProps> = ({
   deletedFiles,
   onRestore,
   onEmptyBin,
+  onDeletePermanently,
 }) => {
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
       <div className="bg-[#121c2e] border-t sm:border border-[#20324e] rounded-t-3xl sm:rounded-3xl p-5 max-w-[420px] w-full max-h-[85vh] flex flex-col animate-in slide-in-from-bottom-8">
         <div className="flex items-center justify-between pb-3 border-b border-[#1f2f4a]">
           <div className="flex items-center gap-2">
@@ -51,20 +57,50 @@ export const RecycleBinModal: React.FC<RecycleBinProps> = ({
             deletedFiles.map((f) => (
               <div
                 key={f.id}
-                className="bg-[#162338] border border-[#233857] rounded-xl p-3 flex items-center justify-between"
+                className="bg-[#162338] border border-[#233857] rounded-xl p-3 flex items-center justify-between gap-2"
               >
-                <div className="min-w-0 pr-2">
+                <div className="min-w-0 flex-1">
                   <h4 className="text-xs font-semibold text-white truncate">{f.name}</h4>
-                  <p className="text-[11px] text-slate-400">{f.formattedSize} • Deleted</p>
+                  <p className="text-[11px] text-slate-400">{f.formattedSize} • In Bin</p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => onRestore(f)}
-                  className="flex items-center gap-1 bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 border border-blue-500/30 px-3 py-1 rounded-lg text-xs font-medium shrink-0"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>Restore</span>
-                </button>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {/* Restore */}
+                  <button
+                    type="button"
+                    onClick={() => onRestore(f)}
+                    className="flex items-center gap-1 bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 border border-blue-500/30 px-2.5 py-1.5 rounded-lg text-xs font-medium"
+                    title="Restore file"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Restore</span>
+                  </button>
+
+                  {/* Delete Forever (সারা জীবনের জন্য ডিলিট) */}
+                  {onDeletePermanently && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (confirmDeleteId === f.id) {
+                          onDeletePermanently(f.id);
+                          setConfirmDeleteId(null);
+                        } else {
+                          setConfirmDeleteId(f.id);
+                          setTimeout(() => setConfirmDeleteId(null), 3000);
+                        }
+                      }}
+                      className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                        confirmDeleteId === f.id
+                          ? 'bg-rose-600 text-white border-rose-500 animate-pulse'
+                          : 'bg-rose-500/10 hover:bg-rose-500/25 text-rose-400 border-rose-500/30'
+                      }`}
+                      title="Delete permanently forever"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>{confirmDeleteId === f.id ? 'Confirm?' : 'Delete Forever'}</span>
+                    </button>
+                  )}
+                </div>
               </div>
             ))
           )}
@@ -75,9 +111,10 @@ export const RecycleBinModal: React.FC<RecycleBinProps> = ({
             <button
               type="button"
               onClick={onEmptyBin}
-              className="w-full bg-rose-950/70 hover:bg-rose-900 border border-rose-500/40 text-rose-300 font-medium py-2.5 rounded-xl text-xs transition-colors"
+              className="w-full bg-rose-950/70 hover:bg-rose-900 border border-rose-500/40 text-rose-300 font-medium py-2.5 rounded-xl text-xs transition-colors flex items-center justify-center gap-1.5 shadow-lg shadow-rose-950/40"
             >
-              Empty Recycle Bin Permanently
+              <Trash2 className="w-4 h-4" />
+              <span>Empty Recycle Bin (Delete All Forever)</span>
             </button>
           </div>
         )}
@@ -152,8 +189,6 @@ export const AudioPlayerModal: React.FC<AudioPlayerProps> = ({ file, onClose }) 
   );
 };
 
-
-
 /* ================= NEW FOLDER MODAL ================= */
 interface NewFolderProps {
   isOpen: boolean;
@@ -187,7 +222,7 @@ export const NewFolderModal: React.FC<NewFolderProps> = ({ isOpen, onClose, onCr
           </div>
           <div>
             <h3 className="text-base font-bold text-white">Create New Folder</h3>
-            <p className="text-xs text-slate-400">Organize your files in GP Cloud</p>
+            <p className="text-xs text-slate-400">Organize your files in cloud storage</p>
           </div>
         </div>
 
@@ -220,4 +255,3 @@ export const NewFolderModal: React.FC<NewFolderProps> = ({ isOpen, onClose, onCr
     </div>
   );
 };
-

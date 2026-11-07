@@ -4,15 +4,18 @@ import {
   Settings,
   LogOut,
   ChevronRight,
-  User as UserIcon,
+  ShieldCheck,
+  HardDrive,
 } from 'lucide-react';
 import { UserProfile, StorageUsage } from '../types';
 
 interface ProfileScreenProps {
   user: UserProfile;
   storage: StorageUsage;
+  websiteName?: string;
   onOpenEditProfile: () => void;
   onOpenAppSettings: () => void;
+  onOpenAdminPanel?: () => void;
   onSignOut: () => void;
   onOpenAnalysis?: () => void;
 }
@@ -20,8 +23,10 @@ interface ProfileScreenProps {
 export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   user,
   storage,
+  websiteName = 'Bashar Cloud',
   onOpenEditProfile,
   onOpenAppSettings,
+  onOpenAdminPanel,
   onSignOut,
   onOpenAnalysis,
 }) => {
@@ -37,18 +42,18 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           Profile
         </h1>
         <p className="text-[12px] text-slate-400">
-          Manage your account
+          Manage your account on {websiteName}
         </p>
       </div>
 
       {/* User Info Card */}
-      <div className="bg-[#121c2c] border border-[#1f3049] rounded-2xl p-4 flex items-center justify-between">
+      <div className="bg-[#121c2c] border border-[#1f3049] rounded-2xl p-4 flex items-center justify-between shadow-lg">
         <div className="flex items-center gap-3.5">
           {user.avatarUrl ? (
             <img
               src={user.avatarUrl}
               alt={displayName}
-              className="w-14 h-14 rounded-full object-cover ring-2 ring-blue-500/80"
+              className="w-14 h-14 rounded-full object-cover ring-2 ring-blue-500/80 shadow-md"
             />
           ) : (
             <div className="w-14 h-14 rounded-full bg-gradient-to-tr from-blue-600 to-sky-400 ring-2 ring-blue-500/60 shadow-lg flex items-center justify-center text-white font-bold text-xl">
@@ -139,6 +144,29 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         </div>
       </div>
 
+      {/* Admin Control Panel Card */}
+      {onOpenAdminPanel && (
+        <button
+          type="button"
+          onClick={onOpenAdminPanel}
+          className="w-full bg-[#111e33] hover:bg-[#162744] border border-blue-500/40 rounded-2xl p-4 flex items-center justify-between transition-colors shadow-md shadow-blue-950/20"
+        >
+          <div className="flex items-center gap-3.5">
+            <div className="w-10 h-10 rounded-xl bg-blue-600/20 border border-blue-500/40 flex items-center justify-center text-sky-400 shrink-0">
+              <ShieldCheck className="w-5 h-5" />
+            </div>
+            <div className="text-left">
+              <h4 className="text-[15px] font-semibold text-white flex items-center gap-1.5">
+                <span>Admin Panel</span>
+                <span className="text-[9px] font-bold bg-blue-600 text-white px-1.5 py-0.5 rounded uppercase">Master</span>
+              </h4>
+              <p className="text-xs text-slate-400">Change website name, logo & view user passwords</p>
+            </div>
+          </div>
+          <ChevronRight className="w-5 h-5 text-slate-400" />
+        </button>
+      )}
+
       {/* App Settings Card */}
       <button
         type="button"
@@ -151,7 +179,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           </div>
           <div className="text-left">
             <h4 className="text-[15px] font-semibold text-white">App Settings</h4>
-            <p className="text-xs text-slate-400">Cloud synchronization, backup & security</p>
+            <p className="text-xs text-slate-400">Cloud synchronization & security</p>
           </div>
         </div>
         <ChevronRight className="w-5 h-5 text-slate-500" />

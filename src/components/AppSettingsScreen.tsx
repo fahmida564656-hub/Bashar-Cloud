@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChevronLeft, ChevronRight, Zap, Lock, Shield, Trash2, Check, X, RefreshCw, Cloud, Database } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Lock, Trash2, Check, X, RefreshCw, Cloud, Database } from 'lucide-react';
 
 interface AppSettingsScreenProps {
   onBack: () => void;
@@ -22,15 +22,7 @@ export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
   onTriggerSync,
   syncIntervalSeconds = 20,
 }) => {
-  const [modalType, setModalType] = useState<'backup' | 'password' | '2fa' | 'delete' | null>(null);
-
-  // Backup & sync settings state
-  const [autoUploadPhotos, setAutoUploadPhotos] = useState(true);
-  const [wifiOnly, setWifiOnly] = useState(true);
-  const [backgroundSync, setBackgroundSync] = useState(true);
-
-  // 2FA state
-  const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
+  const [modalType, setModalType] = useState<'password' | 'delete' | null>(null);
 
   // Change password state
   const [currentPwd, setCurrentPwd] = useState('');
@@ -113,26 +105,9 @@ export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
         </div>
       </div>
 
-      {/* Settings List matching Screenshot 8 */}
+      {/* Settings List */}
       <div className="space-y-3.5">
-        {/* 1. Backup & Sync */}
-        <div
-          onClick={() => setModalType('backup')}
-          className="bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] rounded-2xl p-4 flex items-center justify-between cursor-pointer transition-colors"
-        >
-          <div className="flex items-center gap-3.5">
-            <div className="w-12 h-12 rounded-xl bg-[#14223d] border border-[#213a69] flex items-center justify-center text-[#3b82f6] shrink-0">
-              <Zap className="w-5 h-5" />
-            </div>
-            <div>
-              <h4 className="text-[15px] font-semibold text-white">Backup & Sync</h4>
-              <p className="text-xs text-slate-400 mt-0.5">Manage auto upload and network settings</p>
-            </div>
-          </div>
-          <ChevronRight className="w-5 h-5 text-slate-500" />
-        </div>
-
-        {/* 2. Change Password */}
+        {/* 1. Change Password */}
         <div
           onClick={() => setModalType('password')}
           className="bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] rounded-2xl p-4 flex items-center justify-between cursor-pointer transition-colors"
@@ -149,24 +124,7 @@ export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
           <ChevronRight className="w-5 h-5 text-slate-500" />
         </div>
 
-        {/* 3. Two-Step Verification */}
-        <div
-          onClick={() => setModalType('2fa')}
-          className="bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] rounded-2xl p-4 flex items-center justify-between cursor-pointer transition-colors"
-        >
-          <div className="flex items-center gap-3.5">
-            <div className="w-12 h-12 rounded-xl bg-[#0f2a24] border border-[#194b3e] flex items-center justify-center text-[#10b981] shrink-0">
-              <Shield className="w-5 h-5" />
-            </div>
-            <div>
-              <h4 className="text-[15px] font-semibold text-white">Two-Step Verification</h4>
-              <p className="text-xs text-slate-400 mt-0.5">Add extra security</p>
-            </div>
-          </div>
-          <ChevronRight className="w-5 h-5 text-slate-500" />
-        </div>
-
-        {/* 4. Delete Account */}
+        {/* 2. Delete Account */}
         <div
           onClick={() => setModalType('delete')}
           className="bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] rounded-2xl p-4 flex items-center justify-between cursor-pointer transition-colors"
@@ -177,120 +135,17 @@ export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
             </div>
             <div>
               <h4 className="text-[15px] font-semibold text-white">Delete Account</h4>
-              <p className="text-xs text-slate-400 mt-0.5">Permanently remove your GP Cloud account</p>
+              <p className="text-xs text-slate-400 mt-0.5">Permanently remove your account and files</p>
             </div>
           </div>
           <ChevronRight className="w-5 h-5 text-slate-500" />
         </div>
       </div>
 
-      {/* Modals for settings */}
-      {modalType === 'backup' && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-[#121c2e] border border-[#20324e] rounded-3xl p-5 max-w-sm w-full space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-white">Backup & Sync Settings</h3>
-              <button onClick={() => setModalType(null)} className="text-slate-400 hover:text-white">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Cloud Sync Provider Mock Status Box */}
-            <div className="bg-[#162338] border border-[#253959] rounded-2xl p-3.5 space-y-2.5">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Database className="w-4 h-4 text-blue-400" />
-                  <span className="text-xs font-semibold text-white">Storage Provider Sync</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => onToggleCloudSync(!cloudSyncEnabled)}
-                  className={`w-10 h-5 rounded-full transition-colors relative p-0.5 ${
-                    cloudSyncEnabled ? 'bg-blue-600' : 'bg-slate-700'
-                  }`}
-                >
-                  <div
-                    className={`w-4 h-4 rounded-full bg-white transition-transform ${
-                      cloudSyncEnabled ? 'translate-x-5' : 'translate-x-0'
-                    }`}
-                  />
-                </button>
-              </div>
-
-              <p className="text-[11px] text-slate-300 leading-snug">
-                Periodically synchronizes local files, folders, and profile state with simulated cloud storage persistence.
-              </p>
-
-              <div className="flex items-center justify-between pt-1 text-[11px]">
-                <span className="text-slate-400">
-                  {lastSyncTime ? `Synced: ${lastSyncTime}` : 'Not synced yet'}
-                </span>
-                <button
-                  type="button"
-                  onClick={onTriggerSync}
-                  disabled={isSyncing}
-                  className="text-blue-400 hover:text-blue-300 font-medium flex items-center gap-1"
-                >
-                  <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin' : ''}`} />
-                  <span>Sync Now</span>
-                </button>
-              </div>
-            </div>
-
-            <div className="space-y-3 pt-1 text-sm">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="font-medium text-white">Auto Upload Photos</p>
-                  <p className="text-xs text-slate-400">Sync camera gallery automatically</p>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={autoUploadPhotos}
-                  onChange={(e) => setAutoUploadPhotos(e.target.checked)}
-                  className="w-5 h-5 accent-blue-600 rounded"
-                />
-              </div>
-
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="font-medium text-white">Upload on Wi-Fi Only</p>
-                  <p className="text-xs text-slate-400">Save mobile cellular data</p>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={wifiOnly}
-                  onChange={(e) => setWifiOnly(e.target.checked)}
-                  className="w-5 h-5 accent-blue-600 rounded"
-                />
-              </div>
-
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="font-medium text-white">Background Sync</p>
-                  <p className="text-xs text-slate-400">Keep files synchronized continuously</p>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={backgroundSync}
-                  onChange={(e) => setBackgroundSync(e.target.checked)}
-                  className="w-5 h-5 accent-blue-600 rounded"
-                />
-              </div>
-            </div>
-
-            <button
-              onClick={() => setModalType(null)}
-              className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2.5 rounded-xl text-sm mt-2"
-            >
-              Done
-            </button>
-          </div>
-        </div>
-      )}
-
+      {/* MODALS */}
       {modalType === 'password' && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-[#121c2e] border border-[#20324e] rounded-3xl p-5 max-w-sm w-full space-y-4">
+          <div className="bg-[#121c2e] border border-[#20324e] rounded-3xl p-5 max-w-sm w-full space-y-4 text-white">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-bold text-white">Change Password</h3>
               <button onClick={() => setModalType(null)} className="text-slate-400 hover:text-white">
@@ -316,97 +171,56 @@ export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
                   type="password"
                   value={newPwd}
                   onChange={(e) => setNewPwd(e.target.value)}
-                  placeholder="At least 8 characters"
+                  placeholder="At least 6 characters"
                   className="w-full bg-[#162338] border border-[#273d61] rounded-xl px-3 py-2 text-white text-sm mt-1 focus:outline-none"
                 />
               </div>
-
-              {pwdMsg && <p className="text-xs text-emerald-400">{pwdMsg}</p>}
-
-              <button
-                type="button"
-                onClick={() => {
-                  if (newPwd.length < 8) {
-                    alert('New password must be at least 8 characters');
-                    return;
-                  }
-                  setPwdMsg('Password updated successfully!');
-                  setTimeout(() => setModalType(null), 800);
-                }}
-                className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2.5 rounded-xl text-sm mt-2"
-              >
-                Update Password
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {modalType === '2fa' && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-[#121c2e] border border-[#20324e] rounded-3xl p-5 max-w-sm w-full space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-white">Two-Step Verification</h3>
-              <button onClick={() => setModalType(null)} className="text-slate-400 hover:text-white">
-                <X className="w-5 h-5" />
-              </button>
             </div>
 
-            <p className="text-xs text-slate-300 leading-relaxed">
-              When enabled, signing in from an untrusted device requires an SMS verification code sent to your Grameenphone mobile number.
-            </p>
-
-            <div className="flex items-center justify-between bg-[#162338] p-3 rounded-xl">
-              <span className="text-sm font-medium text-white">SMS 2-Step Verification</span>
-              <button
-                type="button"
-                onClick={() => setTwoFactorEnabled(!twoFactorEnabled)}
-                className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                  twoFactorEnabled ? 'bg-emerald-500 text-white' : 'bg-slate-700 text-slate-300'
-                }`}
-              >
-                {twoFactorEnabled ? 'Enabled' : 'Disabled'}
-              </button>
-            </div>
+            {pwdMsg && <p className="text-xs text-emerald-400">{pwdMsg}</p>}
 
             <button
-              onClick={() => setModalType(null)}
-              className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2.5 rounded-xl text-sm"
+              onClick={() => {
+                if (newPwd.length >= 6) {
+                  setPwdMsg('Password updated successfully!');
+                  setTimeout(() => setModalType(null), 1200);
+                } else {
+                  setPwdMsg('Password must be at least 6 characters.');
+                }
+              }}
+              className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2.5 rounded-xl text-sm shadow-md"
             >
-              Done
+              Update Password
             </button>
           </div>
         </div>
       )}
 
       {modalType === 'delete' && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-[#121c2e] border border-rose-500/40 rounded-3xl p-5 max-w-sm w-full space-y-4">
-            <div className="w-12 h-12 rounded-2xl bg-rose-950/80 border border-rose-500/40 text-rose-400 flex items-center justify-center mx-auto">
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#121c2e] border border-rose-500/30 rounded-3xl p-6 max-w-sm w-full space-y-4 text-center text-white">
+            <div className="w-12 h-12 rounded-full bg-rose-500/20 text-rose-400 mx-auto flex items-center justify-center">
               <Trash2 className="w-6 h-6" />
             </div>
-            <h3 className="text-lg font-bold text-white text-center">Delete Account?</h3>
-            <p className="text-xs text-slate-300 text-center leading-relaxed">
-              This action will permanently delete your GP Cloud account, cloud storage data, photos, and files. This cannot be undone.
+            <h3 className="text-base font-bold text-white">Delete Account?</h3>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              This action cannot be undone. All your uploaded files, favorites, and storage will be permanently wiped.
             </p>
-
-            <div className="flex items-center gap-3 pt-2">
+            <div className="flex gap-2.5 pt-2">
               <button
-                type="button"
                 onClick={() => setModalType(null)}
-                className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium py-2.5 rounded-xl text-xs"
+                className="flex-1 bg-[#162338] hover:bg-[#20324e] text-slate-300 py-2.5 rounded-xl text-xs font-semibold"
               >
                 Cancel
               </button>
               <button
-                type="button"
                 onClick={() => {
                   setModalType(null);
                   onDeleteAccount();
                 }}
-                className="flex-1 bg-rose-600 hover:bg-rose-500 text-white font-semibold py-2.5 rounded-xl text-xs"
+                className="flex-1 bg-rose-600 hover:bg-rose-500 text-white py-2.5 rounded-xl text-xs font-semibold shadow-lg shadow-rose-950"
               >
-                Delete Forever
+                Yes, Delete
               </button>
             </div>
           </div>

@@ -1,4 +1,4 @@
-import { CloudFile, UserProfile, StorageUsage } from '../types';
+import { CloudFile, UserProfile, StorageUsage, SiteSettings } from '../types';
 
 export const initialUserProfile: UserProfile = {
   name: '',
@@ -7,8 +7,15 @@ export const initialUserProfile: UserProfile = {
   avatarUrl: '',
 };
 
+export const defaultSiteSettings: SiteSettings = {
+  websiteName: 'Bashar Cloud',
+  logoUrl: '',
+  totalStorageGB: 1000,
+  adminPassword: 'Admin@Bashar2026!',
+};
+
 export const initialStorageUsage: StorageUsage = {
-  totalGB: 100,
+  totalGB: 1000,
   usedGB: 0,
   imagesGB: 0,
   imagesCount: 0,

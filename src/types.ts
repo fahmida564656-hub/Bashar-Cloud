@@ -34,6 +34,25 @@ export interface StorageUsage {
   docsCount: number;
 }
 
+export interface SiteSettings {
+  websiteName: string;
+  logoUrl?: string;
+  totalStorageGB: number;
+  adminPassword: string;
+}
+
+export interface RegisteredUser {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  passwordPlain?: string;
+  avatarUrl?: string;
+  registeredAt: string;
+  filesCount: number;
+  storageUsedMB: number;
+}
+
 export type MainTab = 'home' | 'files' | 'favourites' | 'me';
 
 export type ScreenMode = 
@@ -46,4 +65,6 @@ export type ScreenMode =
   | 'edit-profile' 
   | 'app-settings'
   | 'recycle-bin'
-  | 'storage-analysis';
+  | 'storage-analysis'
+  | 'admin-panel';
+
