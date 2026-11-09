@@ -9,9 +9,12 @@ export const initialUserProfile: UserProfile = {
 
 export const defaultSiteSettings: SiteSettings = {
   websiteName: 'Bashar Cloud',
-  logoUrl: '',
+  logoUrl: '/assets/aistudio/0a4ee58c-1d1d-4faa-8126-cfb8779227ba_f85ac4d0.png',
   totalStorageGB: 1000,
   adminPassword: 'Admin@Bashar2026!',
+  bkashNumber: '01734211584',
+  nagadNumber: '01734211584',
+  subscriptionFee: 100, // 100 Taka for lifetime access
 };
 
 export const initialStorageUsage: StorageUsage = {

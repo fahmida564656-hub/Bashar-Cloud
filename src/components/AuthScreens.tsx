@@ -195,17 +195,13 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
       {/* Top Branding Header */}
       <div className="flex flex-col items-center text-center mt-1">
         <div className="mb-3 relative group">
-          {logoUrl ? (
-            <div className="w-16 h-16 rounded-2xl overflow-hidden ring-2 ring-blue-500/50 shadow-2xl bg-[#111e33] flex items-center justify-center">
-              <img
-                src={logoUrl}
-                alt={websiteName}
-                className="w-full h-full object-cover"
-              />
-            </div>
-          ) : (
-            <GPCloudLogo size="lg" />
-          )}
+          <div className="w-16 h-16 rounded-2xl overflow-hidden ring-2 ring-blue-500/50 shadow-2xl bg-[#111e33] flex items-center justify-center">
+            <img
+              src={logoUrl || '/assets/aistudio/0a4ee58c-1d1d-4faa-8126-cfb8779227ba_f85ac4d0.png'}
+              alt={websiteName}
+              className="w-full h-full object-cover"
+            />
+          </div>
         </div>
         <h1 className="text-2xl font-black tracking-tight text-white mb-1">
           {websiteName}

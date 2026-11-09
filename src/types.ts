@@ -39,6 +39,29 @@ export interface SiteSettings {
   logoUrl?: string;
   totalStorageGB: number;
   adminPassword: string;
+  bkashNumber?: string;
+  nagadNumber?: string;
+  subscriptionFee?: number; // 100
+}
+
+export type PaymentStatus = 'none' | 'pending' | 'approved' | 'rejected';
+export type PaymentMethod = 'bkash' | 'nagad';
+
+export interface PaymentRequest {
+  id: string;
+  userId: string;
+  userName: string;
+  userEmail: string;
+  userPhone: string;
+  method: PaymentMethod;
+  senderPhone: string;
+  transactionId: string;
+  amount: number; // 100 TK
+  submittedAt: string;
+  submittedTimestamp: number;
+  status: PaymentStatus;
+  adminNote?: string;
+  reviewedAt?: string;
 }
 
 export interface RegisteredUser {
@@ -49,8 +72,21 @@ export interface RegisteredUser {
   passwordPlain?: string;
   avatarUrl?: string;
   registeredAt: string;
+  registeredTimestamp?: number;
   filesCount: number;
   storageUsedMB: number;
+  isLifetimeApproved?: boolean;
+  paymentStatus?: PaymentStatus;
+  lastTrxId?: string;
+}
+
+export interface UserSubscription {
+  registeredTimestamp: number;
+  trialDays: number;
+  isLifetimeApproved: boolean;
+  paymentStatus: PaymentStatus;
+  isExpired: boolean;
+  daysRemaining: number;
 }
 
 export type MainTab = 'home' | 'files' | 'favourites' | 'me';
@@ -66,5 +102,5 @@ export type ScreenMode =
   | 'app-settings'
   | 'recycle-bin'
   | 'storage-analysis'
-  | 'admin-panel';
-
+  | 'admin-panel'
+  | 'payment';

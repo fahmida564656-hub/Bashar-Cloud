@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import {
   Search,
   Grid as GridIcon,
@@ -22,11 +22,22 @@ import {
   Edit2,
   Copy,
   AlertTriangle,
+  Lock,
+  Sparkles,
+  ArrowUpDown,
+  ChevronDown,
+  Calendar,
+  HardDrive,
+  ArrowDownAZ,
 } from 'lucide-react';
 import { CloudFile, FileType } from '../types';
+import { ViewMode, toggleViewMode, normalizeViewMode } from '../utils/fileView';
+import { SortKey, SortOrder, SORT_OPTIONS, sortFiles } from '../utils/fileSort';
 
 interface FilesScreenProps {
   files: CloudFile[];
+  isLocked?: boolean;
+  onOpenPayment?: () => void;
   onOpenSearch: () => void;
   onToggleFavorite: (id: string) => void;
   onDeleteFile: (id: string) => void;
@@ -48,6 +59,8 @@ interface FilesScreenProps {
 
 export const FilesScreen: React.FC<FilesScreenProps> = ({
   files,
+  isLocked = false,
+  onOpenPayment,
   onOpenSearch,
   onToggleFavorite,
   onDeleteFile,
@@ -67,11 +80,63 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
   initialFilter = 'all',
 }) => {
   const [filter, setFilter] = useState<string>(initialFilter);
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    try {
+      const saved = localStorage.getItem('bashar_cloud_files_view');
+      return normalizeViewMode(saved, 'grid');
+    } catch {
+      return 'grid';
+    }
+  });
 
-  // Bulk selection mode state
+  const handleSetViewMode = (mode: ViewMode) => {
+    setViewMode(mode);
+    try {
+      localStorage.setItem('bashar_cloud_files_view', mode);
+    } catch {}
+  };
+
+  const handleToggleViewMode = () => {
+    const next = toggleViewMode(viewMode);
+    handleSetViewMode(next);
+  };
+
+  // Sorting state (name, date, size) with localStorage persistence
+  const [sortKey, setSortKey] = useState<SortKey>(() => {
+    try {
+      const saved = localStorage.getItem('bashar_cloud_files_sort_key');
+      if (saved === 'name' || saved === 'date' || saved === 'size') return saved;
+    } catch {}
+    return 'date';
+  });
+
+  const [sortOrder, setSortOrder] = useState<SortOrder>(() => {
+    try {
+      const saved = localStorage.getItem('bashar_cloud_files_sort_order');
+      if (saved === 'asc' || saved === 'desc') return saved;
+    } catch {}
+    return 'desc';
+  });
+
+  const [isSortMenuOpen, setIsSortMenuOpen] = useState<boolean>(false);
+
+  const handleSelectSort = (key: SortKey, order: SortOrder) => {
+    setSortKey(key);
+    setSortOrder(order);
+    setIsSortMenuOpen(false);
+    try {
+      localStorage.setItem('bashar_cloud_files_sort_key', key);
+      localStorage.setItem('bashar_cloud_files_sort_order', order);
+    } catch {}
+  };
+
+  // Bulk selection state
   const [isSelectionMode, setIsSelectionMode] = useState<boolean>(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // Lockout modal state
+  const [showLockModal, setShowLockModal] = useState<boolean>(false);
+  const [lockModalAction, setLockModalAction] = useState<string>('দেখা বা ব্যবহার');
 
   // Folder Move Modal state
   const [isMoveModalOpen, setIsMoveModalOpen] = useState<boolean>(false);
@@ -97,16 +162,29 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
     { id: 'document', label: 'Documents', icon: <FileText className="w-3.5 h-3.5 mr-1" /> },
   ];
 
-  const filteredFiles = files.filter((f) => {
-    if (filter === 'all') return true;
-    if (filter === 'image') return f.type === 'image';
-    if (filter === 'video') return f.type === 'video';
-    if (filter === 'audio') return f.type === 'audio';
-    if (filter === 'document') return f.type === 'document';
-    return true;
-  });
+  // Filter and sort files by key (name, date, size) and order (asc, desc)
+  const filteredFiles = useMemo(() => {
+    const filtered = files.filter((f) => {
+      if (filter === 'all') return true;
+      if (filter === 'image') return f.type === 'image';
+      if (filter === 'video') return f.type === 'video';
+      if (filter === 'audio') return f.type === 'audio';
+      if (filter === 'document') return f.type === 'document';
+      return true;
+    });
+    return sortFiles(filtered, sortKey, sortOrder, true);
+  }, [files, filter, sortKey, sortOrder]);
 
   const availableFolders = files.filter((f) => f.type === 'folder');
+
+  const requireUnlocked = (actionLabel: string): boolean => {
+    if (isLocked) {
+      setLockModalAction(actionLabel);
+      setShowLockModal(true);
+      return false;
+    }
+    return true;
+  };
 
   // Selection handlers
   const toggleSelectFile = (id: string) => {
@@ -117,15 +195,20 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
       } else {
         next.add(id);
       }
+      if (next.size > 0) {
+        setIsSelectionMode(true);
+      }
       return next;
     });
   };
 
   const handleSelectAll = () => {
-    if (selectedIds.size === filteredFiles.length) {
+    if (selectedIds.size === filteredFiles.length && filteredFiles.length > 0) {
       setSelectedIds(new Set());
+      setIsSelectionMode(false);
     } else {
       setSelectedIds(new Set(filteredFiles.map((f) => f.id)));
+      setIsSelectionMode(true);
     }
   };
 
@@ -140,6 +223,8 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
       return;
     }
 
+    if (!requireUnlocked('ফাইল দেখতে')) return;
+
     if (file.type === 'folder' && onOpenFolder) {
       onOpenFolder(file);
     } else if (file.type === 'audio' && onPlayAudio) {
@@ -153,6 +238,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
   const handleOpenRename = (file: CloudFile, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     setActiveMenuFileId(null);
+    if (!requireUnlocked('নাম পরিবর্তন করতে')) return;
     setFileToRename(file);
     setRenameInputValue(file.name);
   };
@@ -160,6 +246,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
   // Save Rename
   const handleConfirmRename = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!requireUnlocked('নাম পরিবর্তন করতে')) return;
     if (fileToRename && renameInputValue.trim() && onRenameFile) {
       onRenameFile(fileToRename.id, renameInputValue.trim());
       setFileToRename(null);
@@ -171,6 +258,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
   const handleSingleCopy = (file: CloudFile, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     setActiveMenuFileId(null);
+    if (!requireUnlocked('কপি করতে')) return;
     if (onCopyFile) {
       onCopyFile(file);
     }
@@ -180,12 +268,14 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
   const handleOpenSingleMove = (fileId: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     setActiveMenuFileId(null);
+    if (!requireUnlocked('মুভ করতে')) return;
     setSingleMoveFileId(fileId);
     setIsMoveModalOpen(true);
   };
 
   // Bulk actions
   const handleExecuteBulkDelete = () => {
+    if (!requireUnlocked('ডিলিট করতে')) return;
     if (selectedIds.size === 0) return;
     const ids = Array.from(selectedIds);
     if (onBulkDelete) {
@@ -198,6 +288,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
 
   // Bulk Permanent Delete (সারা জীবনের জন্য ডিলিট)
   const handleExecuteBulkPermanentDelete = () => {
+    if (!requireUnlocked('ডিলিট করতে')) return;
     if (!permanentDeleteTargetIds || permanentDeleteTargetIds.length === 0) return;
     if (onBulkDeletePermanently) {
       onBulkDeletePermanently(permanentDeleteTargetIds);
@@ -209,6 +300,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
   };
 
   const handleExecuteBulkCopy = () => {
+    if (!requireUnlocked('কপি করতে')) return;
     if (selectedIds.size === 0) return;
     const ids = Array.from(selectedIds);
     if (onBulkCopy) {
@@ -232,6 +324,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
   };
 
   const handleExecuteMove = (destinationFolderId: string | null) => {
+    if (!requireUnlocked('মুভ করতে')) return;
     if (singleMoveFileId) {
       if (onMoveFile) onMoveFile(singleMoveFileId, destinationFolderId);
       setSingleMoveFileId(null);
@@ -246,6 +339,10 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!requireUnlocked('ফাইল আপলোড করতে')) {
+      e.target.value = '';
+      return;
+    }
     if (e.target.files && e.target.files.length > 0 && onUploadMultipleFiles) {
       onUploadMultipleFiles(Array.from(e.target.files));
       e.target.value = '';
@@ -267,6 +364,8 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
     }
   };
 
+  const isAllSelected = filteredFiles.length > 0 && selectedIds.size === filteredFiles.length;
+
   return (
     <div className="flex-1 flex flex-col px-4 pt-3 pb-24 text-white relative">
       {/* Hidden Multi-file input */}
@@ -279,7 +378,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
       />
 
       {/* Top Header */}
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between mb-2">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-white leading-tight">
             All Files
@@ -290,6 +389,31 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
+          {/* View Toggle Button: Switch between list view and grid view */}
+          <button
+            type="button"
+            onClick={handleToggleViewMode}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
+              viewMode === 'grid'
+                ? 'bg-[#15233c] border-blue-500/40 text-blue-300 hover:bg-[#1a2c4b] shadow-sm'
+                : 'bg-[#15233c] border-sky-500/40 text-sky-300 hover:bg-[#1a2c4b] shadow-sm'
+            }`}
+            title={viewMode === 'grid' ? 'Switch to List View' : 'Switch to Grid View'}
+            aria-label={viewMode === 'grid' ? 'Switch to List View' : 'Switch to Grid View'}
+          >
+            {viewMode === 'grid' ? (
+              <>
+                <ListIcon className="w-4 h-4 text-blue-400" />
+                <span>List</span>
+              </>
+            ) : (
+              <>
+                <GridIcon className="w-4 h-4 text-sky-400" />
+                <span>Grid</span>
+              </>
+            )}
+          </button>
+
           {/* Select Mode Toggle */}
           <button
             type="button"
@@ -321,83 +445,160 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
         </div>
       </div>
 
-      {/* Horizontal Filter Pills & View Toggles */}
-      <div className="flex items-center justify-between gap-2 pb-2.5 pt-1">
-        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
-          {filterTabs.map((tab) => {
-            const isActive = filter === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setFilter(tab.id)}
-                className={`flex items-center px-3.5 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-all ${
-                  isActive
-                    ? 'bg-blue-600 text-white shadow-md shadow-blue-900/30'
-                    : 'bg-[#142134] text-slate-400 hover:text-slate-200 border border-[#1e2f4a]'
-                }`}
-              >
-                {tab.icon}
-                <span>{tab.label}</span>
-              </button>
-            );
-          })}
-        </div>
+      {/* Select All Checkbox & Quick Control Bar */}
+      {filteredFiles.length > 0 && (
+        <div className="bg-[#121c2e] border border-[#1f2f48] rounded-xl px-3 py-2 mb-2 flex items-center justify-between text-xs">
+          <label className="flex items-center gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={isAllSelected}
+              onChange={handleSelectAll}
+              className="w-4 h-4 rounded text-blue-600 bg-[#162338] border-slate-500 focus:ring-0 cursor-pointer"
+            />
+            <span className="font-semibold text-slate-200">
+              {isAllSelected ? 'Deselect All' : 'Select All'}
+            </span>
+          </label>
 
-        {/* Grid / List Switcher */}
-        <div className="flex items-center bg-[#142134] border border-[#1e2f4a] rounded-xl p-0.5 shrink-0">
-          <button
-            type="button"
-            onClick={() => setViewMode('grid')}
-            className={`p-1.5 rounded-lg transition-colors ${
-              viewMode === 'grid' ? 'bg-[#223554] text-blue-400' : 'text-slate-400 hover:text-slate-200'
-            }`}
-            title="Grid view"
-          >
-            <GridIcon className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => setViewMode('list')}
-            className={`p-1.5 rounded-lg transition-colors ${
-              viewMode === 'list' ? 'bg-[#223554] text-blue-400' : 'text-slate-400 hover:text-slate-200'
-            }`}
-            title="List view"
-          >
-            <ListIcon className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            {selectedIds.size > 0 && (
+              <span className="text-sky-300 font-bold bg-blue-500/20 px-2 py-0.5 rounded-full border border-blue-500/30">
+                {selectedIds.size} selected
+              </span>
+            )}
+
+            {/* Sorting Dropdown Menu */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setIsSortMenuOpen((prev) => !prev)}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#142134] hover:bg-[#1a2d48] border border-[#1e2f4a] text-slate-300 hover:text-white transition-colors text-xs font-medium cursor-pointer"
+                title="Sort files by name, date, or size"
+                aria-label="Sort files"
+                aria-expanded={isSortMenuOpen}
+              >
+                <ArrowUpDown className="w-3.5 h-3.5 text-blue-400" />
+                <span className="text-[11px] font-medium hidden xs:inline">
+                  {sortKey === 'name' ? 'Name' : sortKey === 'size' ? 'Size' : 'Date'}
+                </span>
+                <ChevronDown className={`w-3 h-3 text-slate-400 transition-transform ${isSortMenuOpen ? 'rotate-180' : ''}`} />
+              </button>
+
+              {/* Dropdown Menu */}
+              {isSortMenuOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setIsSortMenuOpen(false)}
+                  />
+                  <div
+                    className="absolute right-0 top-full mt-1.5 z-50 w-52 bg-[#0e1726] border border-[#1f3250] rounded-2xl p-1.5 shadow-2xl text-xs space-y-1 animate-in zoom-in-95 backdrop-blur-md"
+                  >
+                    <div className="px-2.5 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-[#1b2b42] mb-1">
+                      Sort Files By (সাজান)
+                    </div>
+
+                    {SORT_OPTIONS.map((opt) => {
+                      const isSelected = sortKey === opt.key && sortOrder === opt.order;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => handleSelectSort(opt.key, opt.order)}
+                          className={`w-full text-left px-2.5 py-1.5 rounded-xl flex items-center justify-between transition-colors cursor-pointer ${
+                            isSelected
+                              ? 'bg-blue-600/20 text-blue-300 font-semibold border border-blue-500/30'
+                              : 'hover:bg-[#16253c] text-slate-300 hover:text-white'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            {opt.key === 'name' && <ArrowDownAZ className="w-3.5 h-3.5 text-sky-400" />}
+                            {opt.key === 'date' && <Calendar className="w-3.5 h-3.5 text-amber-400" />}
+                            {opt.key === 'size' && <HardDrive className="w-3.5 h-3.5 text-emerald-400" />}
+                            <span>{opt.label}</span>
+                          </div>
+                          {isSelected && <Check className="w-3.5 h-3.5 text-blue-400 shrink-0" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Grid / List Switcher */}
+            <div className="flex items-center bg-[#142134] border border-[#1e2f4a] rounded-lg p-0.5 shrink-0" role="group" aria-label="View toggle">
+              <button
+                type="button"
+                onClick={() => handleSetViewMode('grid')}
+                className={`flex items-center gap-1 px-2 py-1 rounded transition-colors text-xs font-medium ${
+                  viewMode === 'grid' ? 'bg-[#223554] text-blue-400 font-semibold' : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title="Grid view (Better for images)"
+                aria-label="Grid view"
+              >
+                <GridIcon className="w-3.5 h-3.5" />
+                <span className="text-[11px]">Grid</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSetViewMode('list')}
+                className={`flex items-center gap-1 px-2 py-1 rounded transition-colors text-xs font-medium ${
+                  viewMode === 'list' ? 'bg-[#223554] text-blue-400 font-semibold' : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title="List view"
+                aria-label="List view"
+              >
+                <ListIcon className="w-3.5 h-3.5" />
+                <span className="text-[11px]">List</span>
+              </button>
+            </div>
+          </div>
         </div>
+      )}
+
+      {/* Horizontal Filter Pills */}
+      <div className="flex items-center gap-2 pb-2.5 pt-0.5 overflow-x-auto no-scrollbar">
+        {filterTabs.map((tab) => {
+          const isActive = filter === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setFilter(tab.id)}
+              className={`flex items-center px-3.5 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-all ${
+                isActive
+                  ? 'bg-blue-600 text-white shadow-md shadow-blue-900/30'
+                  : 'bg-[#142134] text-slate-400 hover:text-slate-200 border border-[#1e2f4a]'
+              }`}
+            >
+              {tab.icon}
+              <span>{tab.label}</span>
+            </button>
+          );
+        })}
       </div>
 
-      {/* Selection Toolbar Banner when in selection mode */}
-      {isSelectionMode && (
-        <div className="bg-[#12233f] border border-blue-500/40 rounded-2xl px-4 py-2.5 mb-3 flex items-center justify-between text-xs animate-in slide-in-from-top-2">
-          <div className="flex items-center gap-2">
+      {/* Lock banner if expired */}
+      {isLocked && (
+        <div className="bg-gradient-to-r from-rose-950/70 to-[#2c1319] border border-rose-500/50 rounded-2xl p-3 mb-3 flex items-center justify-between shadow-lg animate-in slide-in-from-top-2">
+          <div className="flex items-center gap-2.5">
+            <Lock className="w-5 h-5 text-rose-400 shrink-0" />
+            <div>
+              <h4 className="text-xs font-bold text-rose-200">১ মাসের ফ্রি ট্রায়াল শেষ হয়েছে</h4>
+              <p className="text-[10px] text-slate-300">ফাইল দেখতে ও আনলক করতে ১০০ টাকা পেমেন্ট সম্পন্ন করুন</p>
+            </div>
+          </div>
+          {onOpenPayment && (
             <button
               type="button"
-              onClick={handleSelectAll}
-              className="flex items-center gap-1.5 font-semibold text-blue-300 hover:text-white"
+              onClick={onOpenPayment}
+              className="bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-bold px-3 py-1.5 rounded-xl shadow-md shrink-0 flex items-center gap-1 cursor-pointer"
             >
-              {selectedIds.size === filteredFiles.length && filteredFiles.length > 0 ? (
-                <CheckSquare className="w-4 h-4 text-blue-400" />
-              ) : (
-                <Square className="w-4 h-4 text-slate-400" />
-              )}
-              <span>{selectedIds.size === filteredFiles.length ? 'Deselect All' : 'Select All'}</span>
+              <Sparkles className="w-3 h-3 text-amber-300" />
+              <span>আনলক করুন</span>
             </button>
-            <span className="text-slate-400">•</span>
-            <span className="text-slate-300 font-medium">
-              {selectedIds.size} of {filteredFiles.length} selected
-            </span>
-          </div>
-
-          <button
-            type="button"
-            onClick={handleExitSelection}
-            className="text-slate-400 hover:text-white p-1"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          )}
         </div>
       )}
 
@@ -413,8 +614,12 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
           </p>
           <button
             type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="bg-[#3658dc] hover:bg-blue-600 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-md flex items-center gap-1.5"
+            onClick={() => {
+              if (requireUnlocked('ফাইল আপলোড করতে')) {
+                fileInputRef.current?.click();
+              }
+            }}
+            className="bg-[#3658dc] hover:bg-blue-600 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-md flex items-center gap-1.5 cursor-pointer"
           >
             <Upload className="w-4 h-4" />
             <span>Upload Files</span>
@@ -431,35 +636,29 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
               <div
                 key={file.id}
                 onClick={() => handleItemClick(file)}
-                className={`group relative bg-[#121c2c] hover:bg-[#162338] border rounded-2xl p-3 cursor-pointer transition-all flex flex-col justify-between min-h-[148px] select-none ${
+                className={`group relative bg-[#121c2c] hover:bg-[#162338] border rounded-2xl p-2.5 cursor-pointer transition-all flex flex-col justify-between select-none ${
                   isSelected
                     ? 'border-blue-500 ring-2 ring-blue-500/50 bg-[#162847]'
                     : 'border-[#1f3049]'
                 }`}
               >
-                {/* Selection Checkbox */}
-                {isSelectionMode && (
-                  <div className="absolute top-2.5 left-2.5 z-10">
-                    <div className={`w-5 h-5 rounded-md flex items-center justify-center transition-all ${
-                      isSelected
-                        ? 'bg-blue-600 text-white shadow-md'
-                        : 'border border-slate-500 bg-[#0b1322]'
-                    }`}>
-                      {isSelected && <Check className="w-3.5 h-3.5" />}
-                    </div>
-                  </div>
-                )}
-
                 {/* Top Action & Star & Three-dot menu */}
                 <div className="flex items-center justify-between mb-2">
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${isSelectionMode ? 'ml-6' : ''} ${
-                    file.type === 'image' ? 'bg-[#15233c] text-blue-400' :
-                    file.type === 'video' ? 'bg-[#25173c] text-purple-400' :
-                    file.type === 'audio' ? 'bg-[#291e10] text-amber-400' :
-                    file.type === 'folder' ? 'bg-[#16263f] text-sky-400' :
-                    'bg-[#0f2923] text-emerald-400'
-                  }`}>
-                    {getFileIcon(file.type)}
+                  {/* Selection Checkbox */}
+                  <div
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleSelectFile(file.id);
+                    }}
+                    className={`w-5 h-5 rounded-md flex items-center justify-center transition-all cursor-pointer ${
+                      isSelected
+                        ? 'bg-blue-600 text-white shadow-md'
+                        : isSelectionMode
+                        ? 'border border-slate-400 bg-[#0b1322]'
+                        : 'opacity-40 group-hover:opacity-100 border border-slate-500 bg-[#0b1322]'
+                    }`}
+                  >
+                    {isSelected && <Check className="w-3.5 h-3.5" />}
                   </div>
 
                   <div className="flex items-center gap-1">
@@ -530,6 +729,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setActiveMenuFileId(null);
+                                if (!requireUnlocked('ডিলিট করতে')) return;
                                 onDeleteFile(file.id);
                               }}
                               className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-rose-500/15 text-rose-300 flex items-center gap-2"
@@ -544,6 +744,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   setActiveMenuFileId(null);
+                                  if (!requireUnlocked('ডিলিট করতে')) return;
                                   setPermanentDeleteTargetIds([file.id]);
                                 }}
                                 className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-rose-600/25 text-rose-400 font-semibold flex items-center gap-2"
@@ -559,8 +760,55 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                   </div>
                 </div>
 
+                {/* Visual Preview / Thumbnail Area (Enhanced for Images visibility) */}
+                {file.type === 'image' ? (
+                  <div className="w-full h-28 rounded-xl overflow-hidden bg-[#09111f] mb-2 relative flex items-center justify-center border border-[#1b2a42] group-hover:border-blue-500/50 transition-colors">
+                    {file.url ? (
+                      <img
+                        src={file.url}
+                        alt={file.name}
+                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                        loading="lazy"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#12233f] to-[#0a111e] text-blue-400 p-2 text-center">
+                        <ImageIcon className="w-8 h-8 mb-1 opacity-80" />
+                        <span className="text-[10px] font-semibold text-blue-300">Photo Preview</span>
+                      </div>
+                    )}
+                    <span className="absolute bottom-1.5 right-1.5 bg-black/70 backdrop-blur-xs text-[9px] text-white font-medium px-1.5 py-0.5 rounded shadow">
+                      {file.formattedSize}
+                    </span>
+                  </div>
+                ) : file.type === 'video' ? (
+                  <div className="w-full h-28 rounded-xl overflow-hidden bg-[#0f0e1a] mb-2 relative flex items-center justify-center border border-[#2c1d3f] group-hover:border-purple-500/50 transition-colors">
+                    {file.url ? (
+                      <video src={file.url} className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#24133b] to-[#0f0e1a] text-purple-400 p-2 text-center">
+                        <Video className="w-8 h-8 mb-1 opacity-80" />
+                        <span className="text-[10px] font-semibold text-purple-300">Video</span>
+                      </div>
+                    )}
+                    <span className="absolute bottom-1.5 right-1.5 bg-black/70 backdrop-blur-xs text-[9px] text-white font-medium px-1.5 py-0.5 rounded shadow">
+                      {file.formattedSize}
+                    </span>
+                  </div>
+                ) : (
+                  <div className={`w-full h-24 rounded-xl flex flex-col items-center justify-center mb-2 border transition-all ${
+                    file.type === 'audio' ? 'bg-[#291e10]/40 border-amber-500/20 text-amber-400' :
+                    file.type === 'folder' ? 'bg-[#16263f]/40 border-sky-500/20 text-sky-400' :
+                    'bg-[#0f2923]/40 border-emerald-500/20 text-emerald-400'
+                  }`}>
+                    {getFileIcon(file.type)}
+                    <span className="text-[10px] font-semibold capitalize mt-1 opacity-80">
+                      {file.type === 'folder' ? `${file.itemCount || 0} items` : file.type}
+                    </span>
+                  </div>
+                )}
+
                 {/* File info */}
-                <div>
+                <div className="pt-0.5">
                   <h4 className="text-xs font-semibold text-white truncate mb-0.5" title={file.name}>
                     {file.name}
                   </h4>
@@ -592,25 +840,37 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
               >
                 <div className="flex items-center gap-3 min-w-0 pr-2">
                   {/* Selection Checkbox */}
-                  {isSelectionMode && (
-                    <div className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 transition-all ${
+                  <div
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleSelectFile(file.id);
+                    }}
+                    className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 transition-all ${
                       isSelected
                         ? 'bg-blue-600 text-white shadow-md'
-                        : 'border border-slate-500 bg-[#0b1322]'
+                        : isSelectionMode
+                        ? 'border border-slate-400 bg-[#0b1322]'
+                        : 'opacity-0 group-hover:opacity-100 border border-slate-500 bg-[#0b1322]'
+                    }`}
+                  >
+                    {isSelected && <Check className="w-3.5 h-3.5" />}
+                  </div>
+
+                  {file.type === 'image' && file.url ? (
+                    <div className="w-10 h-10 rounded-xl overflow-hidden shrink-0 border border-[#1b2a42] bg-[#09111f]">
+                      <img src={file.url} alt={file.name} className="w-full h-full object-cover" />
+                    </div>
+                  ) : (
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                      file.type === 'image' ? 'bg-[#15233c] text-blue-400' :
+                      file.type === 'video' ? 'bg-[#25173c] text-purple-400' :
+                      file.type === 'audio' ? 'bg-[#291e10] text-amber-400' :
+                      file.type === 'folder' ? 'bg-[#16263f] text-sky-400' :
+                      'bg-[#0f2923] text-emerald-400'
                     }`}>
-                      {isSelected && <Check className="w-3.5 h-3.5" />}
+                      {getFileIcon(file.type)}
                     </div>
                   )}
-
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
-                    file.type === 'image' ? 'bg-[#15233c] text-blue-400' :
-                    file.type === 'video' ? 'bg-[#25173c] text-purple-400' :
-                    file.type === 'audio' ? 'bg-[#291e10] text-amber-400' :
-                    file.type === 'folder' ? 'bg-[#16263f] text-sky-400' :
-                    'bg-[#0f2923] text-emerald-400'
-                  }`}>
-                    {getFileIcon(file.type)}
-                  </div>
 
                   <div className="min-w-0">
                     <h4 className="text-xs font-semibold text-white truncate" title={file.name}>
@@ -686,6 +946,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                             onClick={(e) => {
                               e.stopPropagation();
                               setActiveMenuFileId(null);
+                              if (!requireUnlocked('ডিলিট করতে')) return;
                               onDeleteFile(file.id);
                             }}
                             className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-rose-500/15 text-rose-300 flex items-center gap-2"
@@ -700,6 +961,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setActiveMenuFileId(null);
+                                if (!requireUnlocked('ডিলিট করতে')) return;
                                 setPermanentDeleteTargetIds([file.id]);
                               }}
                               className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-rose-600/25 text-rose-400 font-semibold flex items-center gap-2"
@@ -719,11 +981,20 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
         </div>
       )}
 
-      {/* Sticky Bulk Action Toolbar */}
-      {isSelectionMode && selectedIds.size > 0 && (
+      {/* Sticky Action Bar that appears when at least one file is selected */}
+      {selectedIds.size > 0 && (
         <div className="fixed bottom-20 left-4 right-4 z-40 max-w-[410px] mx-auto bg-[#101b2e]/95 backdrop-blur-xl border border-blue-500/50 rounded-2xl p-2.5 shadow-2xl flex items-center justify-between text-white animate-in slide-in-from-bottom-5">
-          <div className="text-xs font-semibold text-sky-300 pl-1 shrink-0">
-            {selectedIds.size} selected
+          <div className="flex items-center gap-1.5 pl-1 shrink-0">
+            <span className="text-xs font-bold text-sky-300">
+              {selectedIds.size}
+            </span>
+            <button
+              type="button"
+              onClick={handleExitSelection}
+              className="text-[10px] text-slate-400 hover:text-white px-1.5 py-0.5 rounded bg-[#182945]"
+            >
+              Clear
+            </button>
           </div>
 
           <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
@@ -755,7 +1026,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
               <span>Fav</span>
             </button>
 
-            {/* Bulk Copy (New!) */}
+            {/* Bulk Copy */}
             <button
               type="button"
               onClick={handleExecuteBulkCopy}
@@ -801,6 +1072,59 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
               <Trash2 className="w-3.5 h-3.5" />
               <span>Forever</span>
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* LOCKOUT MODAL (when trial expired & user tries to act) */}
+      {showLockModal && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-[#121c2e] border border-rose-500/50 rounded-3xl p-5 max-w-[360px] w-full text-white space-y-4 shadow-2xl animate-in zoom-in-95 text-center">
+            <div className="w-14 h-14 mx-auto rounded-2xl bg-rose-500/20 border border-rose-400/30 flex items-center justify-center text-rose-400 shadow-lg">
+              <Lock className="w-8 h-8" />
+            </div>
+
+            <div className="space-y-1.5">
+              <h3 className="text-base font-bold text-white">
+                ১ মাসের ফ্রি ট্রায়াল শেষ হয়েছে!
+              </h3>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                ফাইল {lockModalAction} করতে সারাজীবনের জন্য ১০০ টাকা বিকাশ বা নগদে সেন্ড মানি করে আনলক সম্পন্ন করুন।
+              </p>
+            </div>
+
+            <div className="bg-[#17253b] border border-[#233857] rounded-xl p-3 text-xs text-left space-y-1">
+              <div className="flex justify-between text-slate-300">
+                <span>ফি:</span>
+                <span className="font-bold text-amber-300">১০০ টাকা (সারাজীবন)</span>
+              </div>
+              <div className="flex justify-between text-slate-300">
+                <span>পেমেন্ট মেথড:</span>
+                <span className="font-bold text-white">bKash / Nagad Send Money</span>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowLockModal(false);
+                  if (onOpenPayment) onOpenPayment();
+                }}
+                className="w-full bg-gradient-to-r from-blue-600 to-sky-600 hover:from-blue-500 hover:to-sky-500 text-white font-bold py-2.5 rounded-xl text-xs shadow-lg flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Sparkles className="w-4 h-4 text-amber-300" />
+                <span>পেমেন্ট সম্পন্ন করুন (Go to Payment)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowLockModal(false)}
+                className="w-full py-2 text-xs text-slate-400 hover:text-white"
+              >
+                বন্ধ করুন (Close)
+              </button>
+            </div>
           </div>
         </div>
       )}

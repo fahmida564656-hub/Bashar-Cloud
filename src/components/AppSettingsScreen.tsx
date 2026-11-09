@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChevronLeft, ChevronRight, Lock, Trash2, Check, X, RefreshCw, Cloud, Database } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Lock, Trash2, Check, X, RefreshCw, Cloud, Database, Clock, Sparkles } from 'lucide-react';
 
 interface AppSettingsScreenProps {
   onBack: () => void;
@@ -10,6 +10,10 @@ interface AppSettingsScreenProps {
   isSyncing: boolean;
   onTriggerSync: () => void;
   syncIntervalSeconds?: number;
+  simulatedExpired?: boolean;
+  onToggleSimulatedExpired?: (expired: boolean) => void;
+  simulatedStorageWarning?: boolean;
+  onToggleSimulatedStorageWarning?: (val: boolean) => void;
 }
 
 export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
@@ -21,6 +25,10 @@ export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
   isSyncing,
   onTriggerSync,
   syncIntervalSeconds = 20,
+  simulatedExpired = false,
+  onToggleSimulatedExpired,
+  simulatedStorageWarning = false,
+  onToggleSimulatedStorageWarning,
 }) => {
   const [modalType, setModalType] = useState<'password' | 'delete' | null>(null);
 
@@ -104,6 +112,78 @@ export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
           </button>
         </div>
       </div>
+
+      {/* 1 Month Free Trial Expiration Simulation (Tester Mode) */}
+      {onToggleSimulatedExpired && (
+        <div className="mb-4 bg-[#181926] border border-amber-500/40 rounded-2xl p-4 shadow-md">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center">
+                <Clock className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="text-[13px] font-bold text-white flex items-center gap-1.5">
+                  <span>১ মাস ট্রায়াল শেষ টেস্ট (Simulate 1-Month Expired)</span>
+                </h4>
+                <p className="text-[10px] text-slate-400">
+                  {simulatedExpired ? 'লকড স্টেট সক্রিয় (১০০ টাকা পেমেন্ট প্রয়োজন)' : 'স্বাভাবিক ট্রায়াল সক্রিয়'}
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => onToggleSimulatedExpired(!simulatedExpired)}
+              className={`w-12 h-6 rounded-full transition-colors relative p-0.5 focus:outline-none ${
+                simulatedExpired ? 'bg-rose-600' : 'bg-slate-700'
+              }`}
+              title="Toggle Expired Trial State for Testing"
+            >
+              <div
+                className={`w-5 h-5 rounded-full bg-white shadow-md transform transition-transform ${
+                  simulatedExpired ? 'translate-x-6' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 90% Storage Limit Warning Simulation (Tester Mode) */}
+      {onToggleSimulatedStorageWarning && (
+        <div className="mb-4 bg-[#1e1714] border border-amber-500/50 rounded-2xl p-4 shadow-md">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center">
+                <Database className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="text-[13px] font-bold text-white flex items-center gap-1.5">
+                  <span>৯০% স্টোরেজ ওয়ার্নিং টেস্ট (Simulate 90% Storage Limit)</span>
+                </h4>
+                <p className="text-[10px] text-slate-400">
+                  {simulatedStorageWarning ? 'সতর্কবার্তা সক্রিয় (920 GB / 92% Used)' : 'স্বাভাবিক স্টোরেজ'}
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => onToggleSimulatedStorageWarning(!simulatedStorageWarning)}
+              className={`w-12 h-6 rounded-full transition-colors relative p-0.5 focus:outline-none ${
+                simulatedStorageWarning ? 'bg-amber-500' : 'bg-slate-700'
+              }`}
+              title="Toggle 90% Storage Limit Warning for Testing"
+            >
+              <div
+                className={`w-5 h-5 rounded-full bg-white shadow-md transform transition-transform ${
+                  simulatedStorageWarning ? 'translate-x-6' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Settings List */}
       <div className="space-y-3.5">

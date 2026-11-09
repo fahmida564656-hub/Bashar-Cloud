@@ -16,6 +16,7 @@ import { SearchScreen } from './components/SearchScreen';
 import { NotificationsScreen } from './components/NotificationsScreen';
 import { StorageAnalysisScreen } from './components/StorageAnalysisScreen';
 import { AdminPanelScreen } from './components/AdminPanelScreen';
+import { PaymentScreen } from './components/PaymentScreen';
 import { FilePreviewModal } from './components/FilePreviewModal';
 import { BottomNavBar } from './components/BottomNavBar';
 import { FloatingActionMenu } from './components/FloatingActionMenu';
@@ -35,6 +36,7 @@ import { storageProviderMock } from './services/storageProviderMock';
 import { testFirestoreConnection, auth } from './firebase/config';
 import { firestoreService } from './firebase/firestoreService';
 import { onAuthStateChanged } from 'firebase/auth';
+import { calculateSubscription } from './utils/subscription';
 import {
   MainTab,
   ScreenMode,
@@ -44,17 +46,28 @@ import {
   FileType,
   SiteSettings,
   RegisteredUser,
+  PaymentRequest,
+  PaymentStatus,
 } from './types';
 
 export default function App() {
   const savedState = storageProviderMock.loadMetadataState();
   const hasExistingUser = !!(savedState.user && (savedState.user.name || savedState.user.email));
 
-  // Site Settings (Default: Bashar Cloud, 1000 GB)
+  // Site Settings (Default: Bashar Cloud, 1000 GB, bKash & Nagad numbers: 01734211584, uploaded logo)
   const [siteSettings, setSiteSettings] = useState<SiteSettings>(() => {
     try {
       const saved = localStorage.getItem('bashar_cloud_settings');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          ...defaultSiteSettings,
+          ...parsed,
+          logoUrl: parsed.logoUrl || defaultSiteSettings.logoUrl,
+          bkashNumber: parsed.bkashNumber || '01734211584',
+          nagadNumber: (!parsed.nagadNumber || parsed.nagadNumber === '01812345678') ? '01734211584' : parsed.nagadNumber,
+        };
+      }
     } catch {}
     return defaultSiteSettings;
   });
@@ -67,6 +80,19 @@ export default function App() {
     } catch {}
     return [];
   });
+
+  // Payment Requests (Persisted in localStorage)
+  const [paymentRequests, setPaymentRequests] = useState<PaymentRequest[]>(() => {
+    try {
+      const saved = localStorage.getItem('bashar_cloud_payment_requests');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [];
+  });
+
+  // Simulation states for tester to test expired trial and 90% storage warning
+  const [simulatedExpired, setSimulatedExpired] = useState<boolean>(false);
+  const [simulatedStorageWarning, setSimulatedStorageWarning] = useState<boolean>(false);
 
   // Screen and Tab state - starts on Welcome / Sign In / Sign Up
   const [screen, setScreen] = useState<ScreenMode>(hasExistingUser ? 'main' : 'welcome-email');
@@ -103,6 +129,39 @@ export default function App() {
   const [isNewFolderOpen, setIsNewFolderOpen] = useState<boolean>(false);
   const [previewFile, setPreviewFile] = useState<CloudFile | null>(null);
 
+  // Find active registered user record for subscription computation
+  const currentUserRecord = registeredUsers.find(
+    (u) =>
+      (user.email && u.email === user.email) ||
+      (user.phone && u.phone === user.phone)
+  );
+
+  // Subscription calculation (30 days free trial, then locked unless 100 TK lifetime is approved)
+  const subscription = calculateSubscription(
+    currentUserRecord?.registeredTimestamp,
+    currentUserRecord?.isLifetimeApproved,
+    currentUserRecord?.paymentStatus,
+    simulatedExpired
+  );
+
+  const isAccountLocked = subscription.isExpired && !subscription.isLifetimeApproved;
+
+  // Active storage with 90% limit simulation support
+  const activeStorage: StorageUsage = simulatedStorageWarning
+    ? {
+        ...storage,
+        usedGB: 920,
+        imagesGB: 450,
+        imagesCount: Math.max(storage.imagesCount, 42),
+        videosGB: 380,
+        videosCount: Math.max(storage.videosCount, 18),
+        audiosMB: 90000,
+        audiosCount: Math.max(storage.audiosCount, 12),
+        docsMB: 2000,
+        docsCount: Math.max(storage.docsCount, 5),
+      }
+    : storage;
+
   // Synchronize document title with dynamic website name
   useEffect(() => {
     if (siteSettings.websiteName) {
@@ -116,6 +175,13 @@ export default function App() {
       localStorage.setItem('bashar_cloud_registered_users', JSON.stringify(registeredUsers));
     } catch {}
   }, [registeredUsers]);
+
+  // Persist payment requests to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('bashar_cloud_payment_requests', JSON.stringify(paymentRequests));
+    } catch {}
+  }, [paymentRequests]);
 
   // Trigger synchronization with storage provider mock & Firestore
   const performSync = async (silent = false) => {
@@ -138,20 +204,15 @@ export default function App() {
   // Periodic synchronization effect
   useEffect(() => {
     if (!cloudSyncEnabled) return;
+
     const interval = setInterval(() => {
       performSync(true);
     }, 20000);
+
     return () => clearInterval(interval);
   }, [cloudSyncEnabled, files, user, storage]);
 
-  // Persist state on state updates when cloud sync is enabled
-  useEffect(() => {
-    if (cloudSyncEnabled) {
-      storageProviderMock.saveMetadataState(files, user, storage);
-    }
-  }, [files, user, storage, cloudSyncEnabled]);
-
-  // Validate Firestore connection on boot and attach auth listener
+  // Verify Firebase Firestore on startup
   useEffect(() => {
     testFirestoreConnection().then((connected) => {
       if (connected) {
@@ -160,383 +221,336 @@ export default function App() {
     });
 
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-      if (firebaseUser) {
+      if (firebaseUser && !user.email) {
         setUser((prev) => ({
           ...prev,
-          name: firebaseUser.displayName || prev.name,
           email: firebaseUser.email || prev.email,
+          name: firebaseUser.displayName || prev.name,
         }));
-        firestoreService.syncInitialFiles(firebaseUser.uid, files).catch(() => {});
       }
     });
 
     return () => unsubscribe();
   }, []);
 
-  // Multi-file batch upload (Handles uploading multiple files simultaneously)
+  // Recalculate storage breakdown dynamically
+  const updateStorage = (updatedFiles: CloudFile[]) => {
+    let imagesBytes = 0;
+    let imagesCount = 0;
+    let videosBytes = 0;
+    let videosCount = 0;
+    let audiosBytes = 0;
+    let audiosCount = 0;
+    let docsBytes = 0;
+    let docsCount = 0;
+
+    updatedFiles.forEach((file) => {
+      if (file.type === 'image') {
+        imagesBytes += file.sizeBytes;
+        imagesCount++;
+      } else if (file.type === 'video') {
+        videosBytes += file.sizeBytes;
+        videosCount++;
+      } else if (file.type === 'audio') {
+        audiosBytes += file.sizeBytes;
+        audiosCount++;
+      } else if (file.type === 'document') {
+        docsBytes += file.sizeBytes;
+        docsCount++;
+      }
+    });
+
+    const totalBytes = imagesBytes + videosBytes + audiosBytes + docsBytes;
+    const usedGB = Number((totalBytes / (1024 * 1024 * 1024)).toFixed(2));
+
+    const newStorage: StorageUsage = {
+      totalGB: siteSettings.totalStorageGB || 1000,
+      usedGB,
+      imagesGB: Number((imagesBytes / (1024 * 1024 * 1024)).toFixed(2)),
+      imagesCount,
+      videosGB: Number((videosBytes / (1024 * 1024 * 1024)).toFixed(2)),
+      videosCount,
+      audiosMB: Math.round(audiosBytes / (1024 * 1024)),
+      audiosCount,
+      docsMB: Math.round(docsBytes / (1024 * 1024)),
+      docsCount,
+    };
+
+    setStorage(newStorage);
+    storageProviderMock.saveMetadataState(updatedFiles, user, newStorage);
+
+    // Update current user's file count & storage in registeredUsers directory
+    setRegisteredUsers((prev) =>
+      prev.map((u) => {
+        if ((u.email && u.email === user.email) || (u.phone && u.phone === user.phone)) {
+          return {
+            ...u,
+            filesCount: updatedFiles.length,
+            storageUsedMB: Math.round(usedGB * 1024),
+          };
+        }
+        return u;
+      })
+    );
+
+    if (cloudSyncEnabled) {
+      firestoreService.saveStorageUsage(user.email || user.phone || 'guest', newStorage).catch(() => {});
+    }
+  };
+
+  // Guard for locked operations
+  const checkActionAllowed = (): boolean => {
+    if (isAccountLocked) {
+      setScreen('payment');
+      return false;
+    }
+    return true;
+  };
+
+  // Upload multiple native files at once
   const handleUploadMultipleFiles = (uploadedFiles: File[]) => {
+    if (!checkActionAllowed()) return;
     if (!uploadedFiles || uploadedFiles.length === 0) return;
 
-    const newCloudFiles: CloudFile[] = [];
-    let addedImagesGB = 0;
-    let addedImagesCount = 0;
-    let addedVideosGB = 0;
-    let addedVideosCount = 0;
-    let addedAudiosMB = 0;
-    let addedAudiosCount = 0;
-    let addedDocsMB = 0;
-    let addedDocsCount = 0;
-    let totalAddedBytes = 0;
-
-    uploadedFiles.forEach((file, index) => {
+    const newCloudFiles: CloudFile[] = uploadedFiles.map((f, index) => {
       let type: FileType = 'document';
-      if (file.type.startsWith('image/')) type = 'image';
-      else if (file.type.startsWith('video/')) type = 'video';
-      else if (file.type.startsWith('audio/')) type = 'audio';
+      if (f.type.startsWith('image/')) type = 'image';
+      else if (f.type.startsWith('video/')) type = 'video';
+      else if (f.type.startsWith('audio/')) type = 'audio';
 
-      const sizeMB = file.size / (1024 * 1024);
-      const sizeGB = file.size / (1024 * 1024 * 1024);
-      const sizeFormatted = sizeMB > 1 ? `${sizeMB.toFixed(1)} MB` : `${Math.round(file.size / 1024)} KB`;
+      const sizeMB = f.size / (1024 * 1024);
+      const formattedSize = sizeMB >= 1 ? `${sizeMB.toFixed(1)} MB` : `${Math.round(f.size / 1024)} KB`;
 
       let url: string | undefined = undefined;
-      if (type === 'image') {
+      if (type === 'image' || type === 'audio') {
         try {
-          url = URL.createObjectURL(file);
+          url = URL.createObjectURL(f);
         } catch {}
       }
 
-      const item: CloudFile = {
-        id: `file-${Date.now()}-${index}`,
-        name: file.name,
+      return {
+        id: `upload-${Date.now()}-${index}`,
+        name: f.name,
         type,
-        sizeBytes: file.size,
-        formattedSize: sizeFormatted,
+        sizeBytes: f.size,
+        formattedSize,
         date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
         isFavorite: false,
         url,
       };
-
-      newCloudFiles.push(item);
-      totalAddedBytes += file.size;
-
-      if (type === 'image') {
-        addedImagesGB += Math.max(0.01, sizeGB);
-        addedImagesCount += 1;
-      } else if (type === 'video') {
-        addedVideosGB += Math.max(0.01, sizeGB);
-        addedVideosCount += 1;
-      } else if (type === 'audio') {
-        addedAudiosMB += Math.max(0.1, sizeMB);
-        addedAudiosCount += 1;
-      } else {
-        addedDocsMB += Math.max(0.1, sizeMB);
-        addedDocsCount += 1;
-      }
     });
 
-    const totalAddedGB = +(totalAddedBytes / (1024 * 1024 * 1024)).toFixed(2);
-
-    setFiles((prev) => [...newCloudFiles, ...prev]);
-
-    setStorage((prev) => {
-      const newUsedGB = +(prev.usedGB + Math.max(0.01, totalAddedGB)).toFixed(2);
-      return {
-        ...prev,
-        usedGB: newUsedGB,
-        imagesGB: +(prev.imagesGB + addedImagesGB).toFixed(2),
-        imagesCount: prev.imagesCount + addedImagesCount,
-        videosGB: +(prev.videosGB + addedVideosGB).toFixed(2),
-        videosCount: prev.videosCount + addedVideosCount,
-        audiosMB: +(prev.audiosMB + addedAudiosMB).toFixed(2),
-        audiosCount: prev.audiosCount + addedAudiosCount,
-        docsMB: +(prev.docsMB + addedDocsMB).toFixed(2),
-        docsCount: prev.docsCount + addedDocsCount,
-      };
-    });
-
-    setSyncToast(`Uploaded ${uploadedFiles.length} file(s) to ${siteSettings.websiteName}`);
-    setTimeout(() => setSyncToast(null), 3000);
-
-    if (auth.currentUser) {
-      firestoreService.syncInitialFiles(auth.currentUser.uid, [...newCloudFiles, ...files]).catch(() => {});
-    }
+    const updated = [...newCloudFiles, ...files];
+    setFiles(updated);
+    updateStorage(updated);
   };
 
-  // Rename File or Folder
-  const handleRenameFile = (fileId: string, newName: string) => {
-    setFiles((prev) =>
-      prev.map((f) => (f.id === fileId ? { ...f, name: newName } : f))
-    );
-    if (previewFile && previewFile.id === fileId) {
-      setPreviewFile((prev) => (prev ? { ...prev, name: newName } : null));
-    }
-    setSyncToast(`Renamed to "${newName}"`);
-    setTimeout(() => setSyncToast(null), 2500);
-  };
-
-  // Move File or Folder
-  const handleMoveFile = (fileId: string, destinationFolderId: string | null) => {
-    setFiles((prev) =>
-      prev.map((f) => (f.id === fileId ? { ...f, parentFolderId: destinationFolderId } : f))
-    );
-    if (previewFile && previewFile.id === fileId) {
-      setPreviewFile((prev) => (prev ? { ...prev, parentFolderId: destinationFolderId } : null));
-    }
-    setSyncToast(`Moved to destination`);
-    setTimeout(() => setSyncToast(null), 2500);
-  };
-
-  // Copy Single File
-  const handleCopyFile = (fileToCopy: CloudFile, targetFolderId?: string | null) => {
-    const dotIndex = fileToCopy.name.lastIndexOf('.');
-    let copyName = '';
-    if (dotIndex > 0) {
-      copyName = `${fileToCopy.name.slice(0, dotIndex)} (Copy)${fileToCopy.name.slice(dotIndex)}`;
-    } else {
-      copyName = `${fileToCopy.name} (Copy)`;
-    }
-
-    const copiedItem: CloudFile = {
-      ...fileToCopy,
-      id: `file-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      name: copyName,
-      date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-      parentFolderId: targetFolderId !== undefined ? targetFolderId : fileToCopy.parentFolderId,
-    };
-
-    setFiles((prev) => [copiedItem, ...prev]);
-
-    // Update storage stats
-    const sizeInGB = +(fileToCopy.sizeBytes / (1024 * 1024 * 1024)).toFixed(3);
-    const sizeInMB = +(fileToCopy.sizeBytes / (1024 * 1024)).toFixed(2);
-    setStorage((prev) => {
-      const newUsed = +(prev.usedGB + Math.max(0.01, sizeInGB)).toFixed(2);
-      if (fileToCopy.type === 'image') {
-        return {
-          ...prev,
-          usedGB: newUsed,
-          imagesGB: +(prev.imagesGB + Math.max(0.01, sizeInGB)).toFixed(2),
-          imagesCount: prev.imagesCount + 1,
-        };
-      } else if (fileToCopy.type === 'video') {
-        return {
-          ...prev,
-          usedGB: newUsed,
-          videosGB: +(prev.videosGB + Math.max(0.01, sizeInGB)).toFixed(2),
-          videosCount: prev.videosCount + 1,
-        };
-      } else if (fileToCopy.type === 'audio') {
-        return {
-          ...prev,
-          usedGB: newUsed,
-          audiosMB: +(prev.audiosMB + Math.max(0.1, sizeInMB)).toFixed(2),
-          audiosCount: prev.audiosCount + 1,
-        };
-      } else {
-        return {
-          ...prev,
-          usedGB: newUsed,
-          docsMB: +(prev.docsMB + Math.max(0.1, sizeInMB)).toFixed(2),
-          docsCount: prev.docsCount + 1,
-        };
-      }
-    });
-
-    setSyncToast(`Copied "${copyName}"`);
-    setTimeout(() => setSyncToast(null), 2500);
-  };
-
-  // Bulk Copy Files
-  const handleBulkCopy = (ids: string[], targetFolderId?: string | null) => {
-    const idSet = new Set(ids);
-    const targetFiles = files.filter((f) => idSet.has(f.id));
-    targetFiles.forEach((f) => handleCopyFile(f, targetFolderId));
-    setSyncToast(`Copied ${targetFiles.length} file(s)`);
-    setTimeout(() => setSyncToast(null), 2500);
-  };
-
-  // Toggle favorite
-  const handleToggleFavorite = (fileId: string) => {
-    setFiles((prev) =>
-      prev.map((f) => (f.id === fileId ? { ...f, isFavorite: !f.isFavorite } : f))
-    );
+  // Toggle Favorite
+  const handleToggleFavorite = (id: string) => {
+    const updated = files.map((f) => (f.id === id ? { ...f, isFavorite: !f.isFavorite } : f));
+    setFiles(updated);
+    storageProviderMock.saveMetadataState(updated, user, storage);
   };
 
   // Bulk Favorite
   const handleBulkFavorite = (ids: string[], makeFavorite: boolean) => {
     const idSet = new Set(ids);
-    setFiles((prev) =>
-      prev.map((f) => (idSet.has(f.id) ? { ...f, isFavorite: makeFavorite } : f))
-    );
+    const updated = files.map((f) => (idSet.has(f.id) ? { ...f, isFavorite: makeFavorite } : f));
+    setFiles(updated);
+    storageProviderMock.saveMetadataState(updated, user, storage);
   };
 
-  // Move single file to Recycle Bin
-  const handleDeleteFile = (fileId: string) => {
-    const fileToDelete = files.find((f) => f.id === fileId);
+  // Move file to Recycle Bin
+  const handleDeleteFile = (id: string) => {
+    if (!checkActionAllowed()) return;
+    const fileToDelete = files.find((f) => f.id === id);
     if (!fileToDelete) return;
-    setFiles((prev) => prev.filter((f) => f.id !== fileId));
-    setRecycleBin((prev) => [fileToDelete, ...prev]);
 
-    const sizeInGB = fileToDelete.sizeBytes / (1024 * 1024 * 1024);
-    setStorage((prev) => ({
-      ...prev,
-      usedGB: Math.max(0, +(prev.usedGB - sizeInGB).toFixed(2)),
-    }));
-    setSyncToast(`Moved to Recycle Bin`);
-    setTimeout(() => setSyncToast(null), 2500);
+    const updatedFiles = files.filter((f) => f.id !== id);
+    setFiles(updatedFiles);
+    setRecycleBin((prev) => [fileToDelete, ...prev]);
+    updateStorage(updatedFiles);
+  };
+
+  // Permanent Delete (সারা জীবনের জন্য ডিলিট)
+  const handlePermanentDelete = (id: string) => {
+    if (!checkActionAllowed()) return;
+    const updatedFiles = files.filter((f) => f.id !== id);
+    const updatedRecycle = recycleBin.filter((f) => f.id !== id);
+    setFiles(updatedFiles);
+    setRecycleBin(updatedRecycle);
+    updateStorage(updatedFiles);
+  };
+
+  // Bulk Permanent Delete (সারা জীবনের জন্য ডিলিট)
+  const handleBulkPermanentDelete = (ids: string[]) => {
+    if (!checkActionAllowed()) return;
+    const idSet = new Set(ids);
+    const updatedFiles = files.filter((f) => !idSet.has(f.id));
+    const updatedRecycle = recycleBin.filter((f) => !idSet.has(f.id));
+    setFiles(updatedFiles);
+    setRecycleBin(updatedRecycle);
+    updateStorage(updatedFiles);
   };
 
   // Bulk Delete to Recycle Bin
   const handleBulkDelete = (ids: string[]) => {
+    if (!checkActionAllowed()) return;
     const idSet = new Set(ids);
     const filesToDelete = files.filter((f) => idSet.has(f.id));
-    if (filesToDelete.length === 0) return;
+    const updatedFiles = files.filter((f) => !idSet.has(f.id));
 
-    setFiles((prev) => prev.filter((f) => !idSet.has(f.id)));
+    setFiles(updatedFiles);
     setRecycleBin((prev) => [...filesToDelete, ...prev]);
-
-    const deletedBytes = filesToDelete.reduce((sum, f) => sum + f.sizeBytes, 0);
-    const deletedGB = deletedBytes / (1024 * 1024 * 1024);
-
-    setStorage((prev) => ({
-      ...prev,
-      usedGB: Math.max(0, +(prev.usedGB - deletedGB).toFixed(2)),
-    }));
-    setSyncToast(`Moved ${filesToDelete.length} item(s) to Recycle Bin`);
-    setTimeout(() => setSyncToast(null), 2500);
+    updateStorage(updatedFiles);
   };
 
-  // Delete Permanently Forever (বিনা দ্বিধায় সারা জীবনের জন্য মুছে ফেলা)
-  const handlePermanentDelete = (fileId: string) => {
-    const fileToDelete = files.find((f) => f.id === fileId);
-    if (!fileToDelete) return;
-
-    setFiles((prev) => prev.filter((f) => f.id !== fileId));
-    if (previewFile && previewFile.id === fileId) {
-      setPreviewFile(null);
-    }
-
-    const sizeInGB = fileToDelete.sizeBytes / (1024 * 1024 * 1024);
-    setStorage((prev) => ({
-      ...prev,
-      usedGB: Math.max(0, +(prev.usedGB - sizeInGB).toFixed(2)),
-    }));
-    setSyncToast(`Permanently deleted from storage forever`);
-    setTimeout(() => setSyncToast(null), 2500);
-  };
-
-  // Bulk Delete Permanently Forever
-  const handleBulkPermanentDelete = (ids: string[]) => {
-    const idSet = new Set(ids);
-    const filesToDelete = files.filter((f) => idSet.has(f.id));
-    if (filesToDelete.length === 0) return;
-
-    setFiles((prev) => prev.filter((f) => !idSet.has(f.id)));
-
-    const deletedBytes = filesToDelete.reduce((sum, f) => sum + f.sizeBytes, 0);
-    const deletedGB = deletedBytes / (1024 * 1024 * 1024);
-
-    setStorage((prev) => ({
-      ...prev,
-      usedGB: Math.max(0, +(prev.usedGB - deletedGB).toFixed(2)),
-    }));
-    setSyncToast(`Permanently deleted ${filesToDelete.length} item(s) forever`);
-    setTimeout(() => setSyncToast(null), 2500);
-  };
-
-  // Permanent Delete an item from Recycle Bin
-  const handlePermanentDeleteFromBin = (fileId: string) => {
-    setRecycleBin((prev) => prev.filter((f) => f.id !== fileId));
-    setSyncToast(`Permanently erased from Recycle Bin forever`);
-    setTimeout(() => setSyncToast(null), 2500);
-  };
-
-  // Bulk Move
+  // Bulk Move files to a destination folder
   const handleBulkMove = (ids: string[], destinationFolderId: string | null) => {
+    if (!checkActionAllowed()) return;
     const idSet = new Set(ids);
-    setFiles((prev) =>
-      prev.map((f) => (idSet.has(f.id) ? { ...f, parentFolderId: destinationFolderId } : f))
-    );
-    setSyncToast(`Moved ${ids.length} item(s)`);
-    setTimeout(() => setSyncToast(null), 2500);
+    const updated = files.map((f) => (idSet.has(f.id) ? { ...f, parentFolderId: destinationFolderId } : f));
+    setFiles(updated);
+    storageProviderMock.saveMetadataState(updated, user, storage);
+  };
+
+  // Bulk Copy files
+  const handleBulkCopy = (ids: string[]) => {
+    if (!checkActionAllowed()) return;
+    const idSet = new Set(ids);
+    const filesToCopy = files.filter((f) => idSet.has(f.id));
+    const copies: CloudFile[] = filesToCopy.map((f) => ({
+      ...f,
+      id: `copy-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+      name: `${f.name} (Copy)`,
+      date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+    }));
+
+    const updated = [...copies, ...files];
+    setFiles(updated);
+    updateStorage(updated);
+  };
+
+  // Single Copy file
+  const handleCopyFile = (file: CloudFile) => {
+    if (!checkActionAllowed()) return;
+    const copy: CloudFile = {
+      ...file,
+      id: `copy-${Date.now()}`,
+      name: `${file.name} (Copy)`,
+      date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+    };
+    const updated = [copy, ...files];
+    setFiles(updated);
+    updateStorage(updated);
+  };
+
+  // Single Move file
+  const handleMoveFile = (id: string, destinationFolderId: string | null) => {
+    if (!checkActionAllowed()) return;
+    const updated = files.map((f) => (f.id === id ? { ...f, parentFolderId: destinationFolderId } : f));
+    setFiles(updated);
+    storageProviderMock.saveMetadataState(updated, user, storage);
+  };
+
+  // Rename a file or folder
+  const handleRenameFile = (id: string, newName: string) => {
+    if (!checkActionAllowed()) return;
+    const updated = files.map((f) => (f.id === id ? { ...f, name: newName } : f));
+    setFiles(updated);
+    storageProviderMock.saveMetadataState(updated, user, storage);
+    if (previewFile && previewFile.id === id) {
+      setPreviewFile({ ...previewFile, name: newName });
+    }
   };
 
   // Restore from Recycle Bin
-  const handleRestoreFile = (fileToRestore: CloudFile) => {
-    setRecycleBin((prev) => prev.filter((f) => f.id !== fileToRestore.id));
-    setFiles((prev) => [fileToRestore, ...prev]);
-    const sizeInGB = fileToRestore.sizeBytes / (1024 * 1024 * 1024);
-    setStorage((prev) => ({
-      ...prev,
-      usedGB: +(prev.usedGB + sizeInGB).toFixed(2),
-    }));
-    setSyncToast(`Restored ${fileToRestore.name}`);
-    setTimeout(() => setSyncToast(null), 2500);
+  const handleRestoreFile = (id: string) => {
+    const fileToRestore = recycleBin.find((f) => f.id === id);
+    if (!fileToRestore) return;
+
+    setRecycleBin((prev) => prev.filter((f) => f.id !== id));
+    const updated = [fileToRestore, ...files];
+    setFiles(updated);
+    updateStorage(updated);
   };
 
-  // Empty Recycle Bin Permanently
-  const handleEmptyBin = () => {
+  // Empty Recycle Bin
+  const handleEmptyRecycleBin = () => {
     setRecycleBin([]);
-    setIsRecycleBinOpen(false);
-    setSyncToast(`Recycle Bin emptied forever`);
-    setTimeout(() => setSyncToast(null), 2500);
   };
 
   // Create New Folder
-  const handleCreateFolder = (name: string) => {
+  const handleCreateFolder = (folderName: string) => {
+    if (!checkActionAllowed()) return;
     const newFolder: CloudFile = {
       id: `folder-${Date.now()}`,
-      name,
+      name: folderName,
       type: 'folder',
       sizeBytes: 0,
-      formattedSize: 'Folder',
+      formattedSize: '0 items',
       date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
       isFavorite: false,
       itemCount: 0,
     };
-    setFiles((prev) => [newFolder, ...prev]);
-    setSyncToast(`Folder "${name}" created`);
-    setTimeout(() => setSyncToast(null), 2500);
+
+    const updated = [newFolder, ...files];
+    setFiles(updated);
+    storageProviderMock.saveMetadataState(updated, user, storage);
+    setIsNewFolderOpen(false);
   };
 
-  // Single upload action from FAB
-  const handleFabAction = (action: 'image' | 'video' | 'audio' | 'document' | 'folder') => {
-    setIsFabOpen(false);
-    if (action === 'folder') {
-      setIsNewFolderOpen(true);
-    }
-  };
-
-  // Navigate to Category from Home
+  // Category selection navigation
   const handleSelectCategory = (type: FileType) => {
     setInitialFilesFilter(type);
     setCurrentTab('files');
   };
 
-  // Save Profile Changes (Updates user & registeredUsers list)
-  const handleSaveProfile = (updated: Partial<UserProfile>) => {
-    setUser((prev) => {
-      const nextUser = { ...prev, ...updated };
-      setRegisteredUsers((prevUsers) =>
-        prevUsers.map((u) =>
-          (prev.email && u.email === prev.email) || (prev.phone && u.phone === prev.phone)
-            ? {
-                ...u,
-                name: nextUser.name || u.name,
-                phone: nextUser.phone || u.phone,
-                email: nextUser.email || u.email,
-                avatarUrl: nextUser.avatarUrl || u.avatarUrl,
-              }
-            : u
-        )
-      );
-      return nextUser;
-    });
-    setSyncToast(`Profile updated successfully`);
-    setTimeout(() => setSyncToast(null), 2500);
+  // FAB action handler
+  const handleFabAction = (action: string) => {
+    setIsFabOpen(false);
+    if (!checkActionAllowed()) return;
+
+    if (action === 'folder') {
+      setIsNewFolderOpen(true);
+    } else if (action === 'scan') {
+      handleCreateFolder(`Scanned Docs ${new Date().toLocaleDateString()}`);
+    }
   };
 
-  // Delete Account
+  // Save Profile Changes (Updates user & registeredUsers list)
+  const handleSaveProfile = (updatedProfile: Partial<UserProfile>) => {
+    setUser((prev) => {
+      const merged: UserProfile = {
+        name: updatedProfile.name !== undefined ? updatedProfile.name : prev.name,
+        phone: updatedProfile.phone !== undefined ? updatedProfile.phone : prev.phone,
+        email: updatedProfile.email !== undefined ? updatedProfile.email : prev.email,
+        avatarUrl: updatedProfile.avatarUrl !== undefined ? updatedProfile.avatarUrl : prev.avatarUrl,
+      };
+      storageProviderMock.saveMetadataState(files, merged, storage);
+      return merged;
+    });
+
+    setRegisteredUsers((prev) =>
+      prev.map((u) => {
+        if (
+          (user.email && u.email === user.email) ||
+          (user.phone && u.phone === user.phone) ||
+          (updatedProfile.email && u.email === updatedProfile.email)
+        ) {
+          return {
+            ...u,
+            name: updatedProfile.name !== undefined ? updatedProfile.name : u.name,
+            email: updatedProfile.email !== undefined ? updatedProfile.email : u.email,
+            phone: updatedProfile.phone !== undefined ? updatedProfile.phone : u.phone,
+            avatarUrl: updatedProfile.avatarUrl !== undefined ? updatedProfile.avatarUrl : u.avatarUrl,
+          };
+        }
+        return u;
+      })
+    );
+  };
+
   const handleDeleteAccount = () => {
     setUser(initialUserProfile);
     setFiles([]);
@@ -567,17 +581,142 @@ export default function App() {
         existingIndex >= 0
           ? registeredUsers[existingIndex].registeredAt
           : new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-      filesCount: files.length,
-      storageUsedMB: Math.round(storage.usedGB * 1024),
+      registeredTimestamp:
+        existingIndex >= 0 && registeredUsers[existingIndex].registeredTimestamp
+          ? registeredUsers[existingIndex].registeredTimestamp
+          : Date.now(),
+      filesCount: existingIndex >= 0 ? files.length : 0,
+      storageUsedMB: existingIndex >= 0 ? Math.round(storage.usedGB * 1024) : 0,
+      isLifetimeApproved: existingIndex >= 0 ? registeredUsers[existingIndex].isLifetimeApproved : false,
+      paymentStatus: existingIndex >= 0 ? registeredUsers[existingIndex].paymentStatus : 'none',
     };
 
     if (existingIndex >= 0) {
       setRegisteredUsers((prev) => prev.map((u, i) => (i === existingIndex ? userRecord : u)));
     } else {
+      // New account starts with 0 files clean slate
+      setFiles([]);
+      setRecycleBin([]);
+      setStorage(initialStorageUsage);
+      storageProviderMock.saveMetadataState([], authenticatedUser, initialStorageUsage);
       setRegisteredUsers((prev) => [userRecord, ...prev]);
     }
 
     setScreen('main');
+  };
+
+  // Submit payment details for admin approval
+  const handleSubmitPayment = (
+    paymentData: Omit<PaymentRequest, 'id' | 'submittedAt' | 'submittedTimestamp' | 'status'>
+  ) => {
+    const newRequest: PaymentRequest = {
+      id: `pay-${Date.now()}`,
+      ...paymentData,
+      submittedAt: new Date().toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+      submittedTimestamp: Date.now(),
+      status: 'pending',
+    };
+
+    setPaymentRequests((prev) => {
+      const filtered = prev.filter(
+        (p) => !(p.userId === newRequest.userId || (newRequest.userEmail && p.userEmail === newRequest.userEmail))
+      );
+      const updated = [newRequest, ...filtered];
+      try {
+        localStorage.setItem('bashar_cloud_payment_requests', JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+
+    setRegisteredUsers((prev) =>
+      prev.map((u) => {
+        if ((u.email && u.email === user.email) || (u.phone && u.phone === user.phone)) {
+          return {
+            ...u,
+            paymentStatus: 'pending',
+            lastTrxId: paymentData.transactionId,
+          };
+        }
+        return u;
+      })
+    );
+  };
+
+  // Approve payment: unlocks user for lifetime access
+  const handleApprovePayment = (paymentId: string) => {
+    const targetReq = paymentRequests.find((p) => p.id === paymentId);
+    if (!targetReq) return;
+
+    setPaymentRequests((prev) => {
+      const updated = prev.map((p) =>
+        p.id === paymentId
+          ? { ...p, status: 'approved' as PaymentStatus, reviewedAt: new Date().toLocaleString() }
+          : p
+      );
+      try {
+        localStorage.setItem('bashar_cloud_payment_requests', JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+
+    setRegisteredUsers((prev) =>
+      prev.map((u) => {
+        if (
+          u.id === targetReq.userId ||
+          (targetReq.userEmail && u.email === targetReq.userEmail) ||
+          (targetReq.userPhone && u.phone === targetReq.userPhone) ||
+          (targetReq.senderPhone && u.phone === targetReq.senderPhone)
+        ) {
+          return {
+            ...u,
+            isLifetimeApproved: true,
+            paymentStatus: 'approved',
+          };
+        }
+        return u;
+      })
+    );
+  };
+
+  // Reject payment: marks status rejected
+  const handleRejectPayment = (paymentId: string) => {
+    const targetReq = paymentRequests.find((p) => p.id === paymentId);
+    if (!targetReq) return;
+
+    setPaymentRequests((prev) => {
+      const updated = prev.map((p) =>
+        p.id === paymentId
+          ? { ...p, status: 'rejected' as PaymentStatus, reviewedAt: new Date().toLocaleString() }
+          : p
+      );
+      try {
+        localStorage.setItem('bashar_cloud_payment_requests', JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+
+    setRegisteredUsers((prev) =>
+      prev.map((u) => {
+        if (
+          u.id === targetReq.userId ||
+          (targetReq.userEmail && u.email === targetReq.userEmail) ||
+          (targetReq.userPhone && u.phone === targetReq.userPhone) ||
+          (targetReq.senderPhone && u.phone === targetReq.senderPhone)
+        ) {
+          return {
+            ...u,
+            paymentStatus: 'rejected',
+          };
+        }
+        return u;
+      })
+    );
   };
 
   return (
@@ -595,6 +734,7 @@ export default function App() {
         <AdminPanelScreen
           settings={siteSettings}
           users={registeredUsers}
+          paymentRequests={paymentRequests}
           onSaveSettings={(updated) => {
             setSiteSettings(updated);
             try {
@@ -605,36 +745,54 @@ export default function App() {
           onDeleteUser={(userId) => {
             setRegisteredUsers((prev) => prev.filter((u) => u.id !== userId));
           }}
+          onApprovePayment={handleApprovePayment}
+          onRejectPayment={handleRejectPayment}
+          onBack={() => setScreen('main')}
+        />
+      ) : screen === 'payment' ? (
+        /* 3. bKash / Nagad 100 TK Lifetime Payment Screen */
+        <PaymentScreen
+          user={user}
+          settings={siteSettings}
+          subscription={subscription}
+          existingPayment={paymentRequests.find(
+            (p) =>
+              (user.email && p.userEmail === user.email) ||
+              (user.phone && p.senderPhone === user.phone) ||
+              p.userId === (user.email || user.phone)
+          )}
+          onSubmitPayment={handleSubmitPayment}
           onBack={() => setScreen('main')}
         />
       ) : screen === 'search' ? (
-        /* 3. Search Screen */
+        /* 4. Search Screen with Persistent Recent Searches */
         <SearchScreen
           files={files}
           onBack={() => setScreen('main')}
           onSelectFile={(f) => {
+            if (!checkActionAllowed()) return;
             if (f.type === 'audio') setSelectedAudioFile(f);
             else setPreviewFile(f);
           }}
         />
       ) : screen === 'notifications' ? (
-        /* 4. Notifications Screen */
+        /* 5. Notifications Screen */
         <NotificationsScreen onBack={() => setScreen('main')} />
       ) : screen === 'storage-analysis' ? (
-        /* 5. Storage Analysis Screen (Recharts Doughnut) */
+        /* 6. Storage Analysis Screen */
         <StorageAnalysisScreen
-          storage={storage}
+          storage={activeStorage}
           onBack={() => setScreen('main')}
         />
       ) : screen === 'edit-profile' ? (
-        /* 6. Edit Profile Screen with Bottom Sheets */
+        /* 7. Edit Profile Screen */
         <EditProfileScreen
           user={user}
           onBack={() => setScreen('main')}
           onSaveProfile={handleSaveProfile}
         />
       ) : screen === 'app-settings' ? (
-        /* 7. App Settings Screen */
+        /* 8. App Settings Screen with Expiration & 90% Storage Warning Simulation */
         <AppSettingsScreen
           onBack={() => setScreen('main')}
           onDeleteAccount={handleDeleteAccount}
@@ -648,21 +806,29 @@ export default function App() {
           lastSyncTime={lastSyncTime}
           isSyncing={isSyncing}
           onTriggerSync={() => performSync(false)}
+          simulatedExpired={simulatedExpired}
+          onToggleSimulatedExpired={(exp) => setSimulatedExpired(exp)}
+          simulatedStorageWarning={simulatedStorageWarning}
+          onToggleSimulatedStorageWarning={(warn) => setSimulatedStorageWarning(warn)}
         />
       ) : (
-        /* 8. Main Tabs (Home, Files, Favourites, Me) */
+        /* 9. Main Tabs (Home, Files, Favourites, Me) */
         <div className="flex-1 flex flex-col justify-between relative overflow-y-auto">
           {currentTab === 'home' && (
             <HomeScreen
-              storage={storage}
+              storage={activeStorage}
+              subscription={subscription}
               websiteName={siteSettings.websiteName}
               logoUrl={siteSettings.logoUrl}
               onOpenSearch={() => setScreen('search')}
               onOpenNotifications={() => setScreen('notifications')}
               onSelectCategory={handleSelectCategory}
               onOpenRecycleBin={() => setIsRecycleBinOpen(true)}
-              onOpenUpload={() => setIsFabOpen(true)}
+              onOpenUpload={() => {
+                if (checkActionAllowed()) setIsFabOpen(true);
+              }}
               onOpenAnalysis={() => setScreen('storage-analysis')}
+              onOpenPayment={() => setScreen('payment')}
               onUploadMultipleFiles={handleUploadMultipleFiles}
             />
           )}
@@ -670,6 +836,8 @@ export default function App() {
           {currentTab === 'files' && (
             <FilesScreen
               files={files}
+              isLocked={isAccountLocked}
+              onOpenPayment={() => setScreen('payment')}
               onOpenSearch={() => setScreen('search')}
               onToggleFavorite={handleToggleFavorite}
               onDeleteFile={handleDeleteFile}
@@ -682,8 +850,12 @@ export default function App() {
               onRenameFile={handleRenameFile}
               onCopyFile={handleCopyFile}
               onMoveFile={handleMoveFile}
-              onPlayAudio={(f) => setSelectedAudioFile(f)}
-              onOpenFilePreview={(f) => setPreviewFile(f)}
+              onPlayAudio={(f) => {
+                if (checkActionAllowed()) setSelectedAudioFile(f);
+              }}
+              onOpenFilePreview={(f) => {
+                if (checkActionAllowed()) setPreviewFile(f);
+              }}
               onUploadMultipleFiles={handleUploadMultipleFiles}
               initialFilter={initialFilesFilter}
             />
@@ -694,18 +866,22 @@ export default function App() {
               files={files}
               onOpenSearch={() => setScreen('search')}
               onToggleFavorite={handleToggleFavorite}
-              onPlayAudio={(f) => setSelectedAudioFile(f)}
+              onPlayAudio={(f) => {
+                if (checkActionAllowed()) setSelectedAudioFile(f);
+              }}
             />
           )}
 
           {currentTab === 'me' && (
             <ProfileScreen
               user={user}
-              storage={storage}
+              storage={activeStorage}
+              subscription={subscription}
               websiteName={siteSettings.websiteName}
               onOpenEditProfile={() => setScreen('edit-profile')}
               onOpenAppSettings={() => setScreen('app-settings')}
               onOpenAdminPanel={() => setScreen('admin-panel')}
+              onOpenPayment={() => setScreen('payment')}
               onSignOut={() => {
                 setUser(initialUserProfile);
                 storageProviderMock.saveMetadataState(files, initialUserProfile, storage);
@@ -720,7 +896,9 @@ export default function App() {
           {currentTab !== 'me' && (
             <FloatingActionMenu
               isOpen={isFabOpen}
-              onToggle={() => setIsFabOpen(!isFabOpen)}
+              onToggle={() => {
+                if (checkActionAllowed()) setIsFabOpen(!isFabOpen);
+              }}
               onSelectAction={handleFabAction}
               onUploadNativeFile={(file) => handleUploadMultipleFiles([file])}
             />
@@ -748,16 +926,15 @@ export default function App() {
         onRenameFile={handleRenameFile}
         onCopyFile={handleCopyFile}
         onMoveFile={handleMoveFile}
-        availableFolders={files.filter((f) => f.type === 'folder')}
       />
 
       <RecycleBinModal
         isOpen={isRecycleBinOpen}
-        onClose={() => setIsRecycleBinOpen(false)}
         deletedFiles={recycleBin}
-        onRestore={handleRestoreFile}
-        onEmptyBin={handleEmptyBin}
-        onDeletePermanently={handlePermanentDeleteFromBin}
+        onClose={() => setIsRecycleBinOpen(false)}
+        onRestore={(f) => handleRestoreFile(f.id)}
+        onEmptyBin={handleEmptyRecycleBin}
+        onDeletePermanently={handlePermanentDelete}
       />
 
       <AudioPlayerModal
@@ -771,17 +948,14 @@ export default function App() {
         onCreateFolder={handleCreateFolder}
       />
 
-      {/* Sync Toast Notification */}
+      {/* Toast Feedback */}
       {syncToast && (
-        <div className="absolute top-5 left-4 right-4 z-50 bg-[#122847] border border-blue-400/50 text-sky-200 text-xs px-3.5 py-2.5 rounded-2xl shadow-2xl flex items-center justify-between animate-in fade-in slide-in-from-top-3 backdrop-blur-md">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-            <span className="font-medium text-[11px] leading-tight">{syncToast}</span>
-          </div>
+        <div className="absolute bottom-20 left-4 right-4 bg-blue-600/90 backdrop-blur-md text-white text-xs font-semibold px-4 py-2.5 rounded-2xl shadow-xl flex items-center justify-between z-50 animate-in fade-in slide-in-from-bottom-2">
+          <span>{syncToast}</span>
           <button
             type="button"
             onClick={() => setSyncToast(null)}
-            className="text-slate-400 hover:text-white p-0.5"
+            className="text-white/80 hover:text-white ml-2 text-sm"
           >
             ✕
           </button>
