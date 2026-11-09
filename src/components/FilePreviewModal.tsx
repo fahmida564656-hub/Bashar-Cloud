@@ -16,6 +16,7 @@ import {
   Copy,
   FolderInput,
   AlertTriangle,
+  Archive,
 } from 'lucide-react';
 import { CloudFile } from '../types';
 
@@ -209,29 +210,54 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                   </span>
                 </div>
               )
-            ) : file.type === 'document' ? (
-              <div className="w-full py-8 px-6 flex flex-col items-center justify-center text-center bg-gradient-to-b from-[#0f1d1b] to-[#071210]">
-                <div className="w-16 h-20 rounded-xl bg-[#142d27] border border-[#1f5245] shadow-lg flex flex-col justify-between p-2.5 mb-3 relative overflow-hidden">
-                  <div className="flex justify-between items-start">
-                    <span className="text-[9px] font-bold bg-emerald-500 text-slate-950 px-1 py-0.5 rounded font-mono">
-                      {ext}
-                    </span>
-                    <FileText className="w-4 h-4 text-emerald-400" />
-                  </div>
-                  <div className="space-y-1 w-full py-1">
-                    <div className="h-1 bg-emerald-400/40 rounded w-full" />
-                    <div className="h-1 bg-emerald-400/30 rounded w-3/4" />
-                    <div className="h-1 bg-emerald-400/20 rounded w-5/6" />
-                  </div>
-                  <span className="text-[8px] text-emerald-300 font-medium">Page 1 of 3</span>
+            ) : file.type === 'archive' ? (
+              <div className="w-full py-8 px-6 flex flex-col items-center justify-center text-center bg-gradient-to-b from-[#25190b] to-[#120b04]">
+                <div className="w-16 h-16 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 mb-3 shadow-xl">
+                  <Archive className="w-8 h-8" />
                 </div>
-                <h4 className="text-xs font-semibold text-white mb-0.5">{file.name}</h4>
-                <p className="text-[11px] text-slate-400 mb-2">Encrypted Cloud Document</p>
-                <div className="flex items-center gap-2 text-[10px] text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-2.5 py-1 rounded-lg">
-                  <FileCode className="w-3 h-3" />
-                  <span>Secure View Available</span>
+                <h4 className="text-xs font-bold text-white mb-0.5">{file.name}</h4>
+                <p className="text-[11px] text-amber-300 mb-2">
+                  Compressed ZIP Archive • {file.itemCount || file.archiveEntries?.length || 4} Files Inside
+                </p>
+                <div className="flex items-center gap-1 text-[10px] text-amber-200 bg-amber-950/80 border border-amber-500/30 px-3 py-1 rounded-full">
+                  <span>Inspection and Extraction Supported</span>
                 </div>
               </div>
+            ) : file.type === 'document' ? (
+              file.content ? (
+                <div className="w-full p-4 bg-[#0a121f] text-left flex flex-col max-h-[260px] overflow-hidden">
+                  <div className="flex items-center justify-between pb-1.5 mb-1.5 border-b border-[#1b2b42] text-[11px] text-slate-400 font-mono">
+                    <span className="text-emerald-400 font-bold">{ext} Document Preview</span>
+                    <span>{file.content.length} chars</span>
+                  </div>
+                  <pre className="text-xs text-slate-200 font-mono whitespace-pre-wrap overflow-y-auto flex-1 leading-relaxed pr-1 select-text bg-[#0d1624] p-2.5 rounded-xl border border-[#1b2c45]">
+                    {file.content}
+                  </pre>
+                </div>
+              ) : (
+                <div className="w-full py-8 px-6 flex flex-col items-center justify-center text-center bg-gradient-to-b from-[#0f1d1b] to-[#071210]">
+                  <div className="w-16 h-20 rounded-xl bg-[#142d27] border border-[#1f5245] shadow-lg flex flex-col justify-between p-2.5 mb-3 relative overflow-hidden">
+                    <div className="flex justify-between items-start">
+                      <span className="text-[9px] font-bold bg-emerald-500 text-slate-950 px-1 py-0.5 rounded font-mono">
+                        {ext}
+                      </span>
+                      <FileText className="w-4 h-4 text-emerald-400" />
+                    </div>
+                    <div className="space-y-1 w-full py-1">
+                      <div className="h-1 bg-emerald-400/40 rounded w-full" />
+                      <div className="h-1 bg-emerald-400/30 rounded w-3/4" />
+                      <div className="h-1 bg-emerald-400/20 rounded w-5/6" />
+                    </div>
+                    <span className="text-[8px] text-emerald-300 font-medium">Page 1 of 3</span>
+                  </div>
+                  <h4 className="text-xs font-semibold text-white mb-0.5">{file.name}</h4>
+                  <p className="text-[11px] text-slate-400 mb-2">Encrypted Cloud Document</p>
+                  <div className="flex items-center gap-2 text-[10px] text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-2.5 py-1 rounded-lg">
+                    <FileCode className="w-3 h-3" />
+                    <span>Secure View Available</span>
+                  </div>
+                </div>
+              )
             ) : file.type === 'video' ? (
               <div className="w-full py-10 px-6 flex flex-col items-center justify-center text-center bg-gradient-to-b from-[#1a112c] to-[#0d0717]">
                 <div className="w-16 h-16 rounded-full bg-purple-500/20 border border-purple-500/40 flex items-center justify-center text-purple-400 mb-3 shadow-lg">

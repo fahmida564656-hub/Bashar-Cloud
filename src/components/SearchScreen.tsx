@@ -12,6 +12,7 @@ import {
   Clock,
   Trash2,
   CornerDownLeft,
+  Archive,
 } from 'lucide-react';
 import { CloudFile, FileType } from '../types';
 import {
@@ -102,6 +103,8 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({ files, onBack, onSel
         return <Music className="w-4 h-4 text-amber-400" />;
       case 'folder':
         return <Folder className="w-4 h-4 text-emerald-400" />;
+      case 'archive':
+        return <Archive className="w-4 h-4 text-amber-400" />;
       default:
         return <FileText className="w-4 h-4 text-slate-400" />;
     }

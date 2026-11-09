@@ -29,6 +29,8 @@ import {
   Calendar,
   HardDrive,
   ArrowDownAZ,
+  Archive,
+  FilePlus,
 } from 'lucide-react';
 import { CloudFile, FileType } from '../types';
 import { ViewMode, toggleViewMode, normalizeViewMode } from '../utils/fileView';
@@ -160,6 +162,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
     { id: 'video', label: 'Videos', icon: <Video className="w-3.5 h-3.5 mr-1" /> },
     { id: 'audio', label: 'Audios', icon: <Music className="w-3.5 h-3.5 mr-1" /> },
     { id: 'document', label: 'Documents', icon: <FileText className="w-3.5 h-3.5 mr-1" /> },
+    { id: 'archive', label: 'ZIP Files', icon: <Archive className="w-3.5 h-3.5 mr-1" /> },
   ];
 
   // Filter and sort files by key (name, date, size) and order (asc, desc)
@@ -170,6 +173,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
       if (filter === 'video') return f.type === 'video';
       if (filter === 'audio') return f.type === 'audio';
       if (filter === 'document') return f.type === 'document';
+      if (filter === 'archive') return f.type === 'archive';
       return true;
     });
     return sortFiles(filtered, sortKey, sortOrder, true);
@@ -359,6 +363,8 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
         return <Music className="w-5 h-5 text-amber-400" />;
       case 'folder':
         return <Folder className="w-5 h-5 text-sky-400" />;
+      case 'archive':
+        return <Archive className="w-5 h-5 text-amber-400" />;
       default:
         return <FileText className="w-5 h-5 text-emerald-400" />;
     }

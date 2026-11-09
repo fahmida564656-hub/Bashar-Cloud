@@ -8,9 +8,100 @@
   
   body {
     font-family: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background-color: #0b111c;
-    color: #f1f5f9;
+    transition: background-color 0.25s ease, color 0.25s ease;
   }
+}
+
+/* Dark Theme (Default) */
+html.dark body {
+  background-color: #0b111c;
+  color: #f1f5f9;
+}
+
+/* Modern Light Theme */
+html.light body {
+  background-color: #f8fafc;
+  color: #0f172a;
+}
+
+html.light .bg-\[\#070b13\] {
+  background-color: #f1f5f9 !important;
+}
+
+html.light .bg-\[\#0b111c\] {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+html.light .bg-\[\#121c2c\],
+html.light .bg-\[\#121c2e\],
+html.light .bg-\[\#111e33\],
+html.light .bg-\[\#142033\],
+html.light .bg-\[\#131f32\],
+html.light .bg-\[\#142134\],
+html.light .bg-\[\#162338\],
+html.light .bg-\[\#181926\],
+html.light .bg-\[\#1e1714\],
+html.light .bg-\[\#101b2d\],
+html.light .bg-\[\#101928\],
+html.light .bg-\[\#0e1726\] {
+  background-color: #f8fafc !important;
+  color: #0f172a !important;
+}
+
+html.light .hover\:bg-\[\#162338\]:hover,
+html.light .hover\:bg-\[\#1a2840\]:hover,
+html.light .hover\:bg-\[\#1a2d48\]:hover,
+html.light .hover\:bg-\[\#203452\]:hover {
+  background-color: #edf2f7 !important;
+}
+
+html.light .border-\[\#1f3049\],
+html.light .border-\[\#20324e\],
+html.light .border-\[\#1b2b42\],
+html.light .border-\[\#1f2f48\],
+html.light .border-\[\#1e2f4a\],
+html.light .border-\[\#273d61\],
+html.light .border-\[\#203454\],
+html.light .border-\[\#1d2d47\],
+html.light .border-\[\#233552\],
+html.light .border-\[\#213a69\],
+html.light .border-\[\#1b2a42\] {
+  border-color: #e2e8f0 !important;
+}
+
+html.light .text-white {
+  color: #0f172a !important;
+}
+
+html.light .text-slate-200,
+html.light .text-slate-300 {
+  color: #334155 !important;
+}
+
+html.light .text-slate-400 {
+  color: #64748b !important;
+}
+
+html.light .text-slate-500 {
+  color: #94a3b8 !important;
+}
+
+html.light input:not([type="checkbox"]):not([type="radio"]) {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+html.light input::placeholder {
+  color: #94a3b8 !important;
+}
+
+html.light nav.bg-\[\#0b111c\]\/90,
+html.light nav.bg-\[\#0b111c\]\/95,
+html.light nav {
+  background-color: rgba(255, 255, 255, 0.95) !important;
+  border-top-color: #e2e8f0 !important;
 }
 
 /* Custom scrollbar */
@@ -24,6 +115,9 @@
 ::-webkit-scrollbar-thumb {
   background: #1e293b;
   border-radius: 9999px;
+}
+html.light ::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: #334155;

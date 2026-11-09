@@ -23,7 +23,7 @@
       "type": "object",
       "properties": {
         "name": { "type": "string", "maxLength": 255 },
-        "type": { "type": "string", "enum": ["image", "video", "audio", "document", "folder"] },
+        "type": { "type": "string", "enum": ["image", "video", "audio", "document", "folder", "archive"] },
         "sizeBytes": { "type": "number" },
         "formattedSize": { "type": "string", "maxLength": 50 },
         "date": { "type": "string", "maxLength": 50 },
@@ -52,9 +52,70 @@
         "docsCount": { "type": "number" }
       },
       "required": ["totalGB", "usedGB"]
+    },
+    "RegisteredUser": {
+      "title": "RegisteredUser",
+      "description": "User credentials and account info across all devices and websites",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "phone": { "type": "string", "maxLength": 30 },
+        "email": { "type": "string", "maxLength": 120 },
+        "password": { "type": "string", "maxLength": 100 },
+        "registeredAt": { "type": "string", "maxLength": 50 },
+        "plan": { "type": "string", "maxLength": 50 },
+        "isApproved": { "type": "boolean" },
+        "isExpired": { "type": "boolean" },
+        "role": { "type": "string", "enum": ["user", "admin"] }
+      },
+      "required": ["id", "name", "password"]
+    },
+    "SiteSettings": {
+      "title": "SiteSettings",
+      "description": "Global website settings including logo, title, and payment numbers",
+      "type": "object",
+      "properties": {
+        "appName": { "type": "string", "maxLength": 100 },
+        "logoUrl": { "type": "string", "maxLength": 500 },
+        "paymentNumber": { "type": "string", "maxLength": 30 },
+        "feeAmount": { "type": "number" },
+        "updatedAt": { "type": "string", "maxLength": 50 }
+      }
+    },
+    "PaymentRequest": {
+      "title": "PaymentRequest",
+      "description": "Bkash/Nagad lifetime payment submissions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "userName": { "type": "string", "maxLength": 100 },
+        "userPhone": { "type": "string", "maxLength": 30 },
+        "userEmail": { "type": "string", "maxLength": 120 },
+        "method": { "type": "string", "enum": ["bkash", "nagad"] },
+        "senderNumber": { "type": "string", "maxLength": 30 },
+        "transactionId": { "type": "string", "maxLength": 100 },
+        "amount": { "type": "number" },
+        "submittedAt": { "type": "string", "maxLength": 50 },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] }
+      },
+      "required": ["id", "senderNumber", "transactionId", "method", "status"]
     }
   },
   "firestore": {
+    "/registered_users/{userId}": {
+      "schema": { "$ref": "#/entities/RegisteredUser" },
+      "description": "Stores all registered users accessible across all websites/domains"
+    },
+    "/site_settings/{docId}": {
+      "schema": { "$ref": "#/entities/SiteSettings" },
+      "description": "Stores global app configurations like logo and payment numbers"
+    },
+    "/payment_requests/{paymentId}": {
+      "schema": { "$ref": "#/entities/PaymentRequest" },
+      "description": "Stores Bkash and Nagad payment transactions submitted by users"
+    },
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/User" },
       "description": "Stores user account profile information"

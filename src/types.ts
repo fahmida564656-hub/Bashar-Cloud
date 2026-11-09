@@ -1,4 +1,11 @@
-export type FileType = 'image' | 'video' | 'audio' | 'document' | 'folder';
+export type FileType = 'image' | 'video' | 'audio' | 'document' | 'folder' | 'archive';
+
+export interface ArchiveEntry {
+  name: string;
+  size: string;
+  sizeBytes?: number;
+  isDir?: boolean;
+}
 
 export interface CloudFile {
   id: string;
@@ -11,7 +18,10 @@ export interface CloudFile {
   parentFolderId?: string | null;
   url?: string;
   thumbnail?: string;
-  itemCount?: number; // for folders
+  itemCount?: number; // for folders or archive entries
+  content?: string; // Text content for user-created documents/notes
+  extension?: string;
+  archiveEntries?: ArchiveEntry[]; // Inspected entries inside zip files
 }
 
 export interface UserProfile {

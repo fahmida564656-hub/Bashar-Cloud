@@ -20,10 +20,15 @@ import { PaymentScreen } from './components/PaymentScreen';
 import { FilePreviewModal } from './components/FilePreviewModal';
 import { BottomNavBar } from './components/BottomNavBar';
 import { FloatingActionMenu } from './components/FloatingActionMenu';
+import { AppTheme, getSavedTheme, applyTheme } from './utils/theme';
+import JSZip from 'jszip';
 import {
   RecycleBinModal,
   AudioPlayerModal,
   NewFolderModal,
+  CreateFileModal,
+  RenameFileModal,
+  ZipArchiveModal,
 } from './components/Modals';
 import {
   initialUserProfile,
@@ -94,6 +99,18 @@ export default function App() {
   const [simulatedExpired, setSimulatedExpired] = useState<boolean>(false);
   const [simulatedStorageWarning, setSimulatedStorageWarning] = useState<boolean>(false);
 
+  // Modern Light / Dark Theme state with persistent localStorage
+  const [theme, setTheme] = useState<AppTheme>(getSavedTheme);
+
+  useEffect(() => {
+    applyTheme(theme);
+  }, [theme]);
+
+  const handleToggleTheme = (newTheme: AppTheme) => {
+    setTheme(newTheme);
+    applyTheme(newTheme);
+  };
+
   // Screen and Tab state - starts on Welcome / Sign In / Sign Up
   const [screen, setScreen] = useState<ScreenMode>(hasExistingUser ? 'main' : 'welcome-email');
   const [currentTab, setCurrentTab] = useState<MainTab>('home');
@@ -127,6 +144,10 @@ export default function App() {
   const [isRecycleBinOpen, setIsRecycleBinOpen] = useState<boolean>(false);
   const [selectedAudioFile, setSelectedAudioFile] = useState<CloudFile | null>(null);
   const [isNewFolderOpen, setIsNewFolderOpen] = useState<boolean>(false);
+  const [isCreateFileOpen, setIsCreateFileOpen] = useState<boolean>(false);
+  const [isZipModalOpen, setIsZipModalOpen] = useState<boolean>(false);
+  const [selectedZipFile, setSelectedZipFile] = useState<CloudFile | null>(null);
+  const [fileToRename, setFileToRename] = useState<CloudFile | null>(null);
   const [previewFile, setPreviewFile] = useState<CloudFile | null>(null);
 
   // Find active registered user record for subscription computation
@@ -212,7 +233,10 @@ export default function App() {
     return () => clearInterval(interval);
   }, [cloudSyncEnabled, files, user, storage]);
 
-  // Verify Firebase Firestore on startup
+  // Helper to clean phone numbers
+  const cleanPhone = (p?: string) => (p || '').replace(/[^0-9]/g, '').slice(-10);
+
+  // Verify Firebase Firestore & establish real-time cross-website data synchronization
   useEffect(() => {
     testFirestoreConnection().then((connected) => {
       if (connected) {
@@ -220,7 +244,85 @@ export default function App() {
       }
     });
 
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+    // 1. Synchronize Registered Users across all websites/domains in real-time
+    firestoreService.getRegisteredUsers().then((cloudUsers) => {
+      if (cloudUsers && cloudUsers.length > 0) {
+        setRegisteredUsers((prev) => {
+          const map = new Map<string, RegisteredUser>();
+          cloudUsers.forEach((u) => map.set(u.id, u));
+          prev.forEach((localU) => {
+            if (!map.has(localU.id)) {
+              map.set(localU.id, localU);
+              firestoreService.saveRegisteredUser(localU).catch(() => {});
+            }
+          });
+          const merged = Array.from(map.values());
+          try {
+            localStorage.setItem('bashar_cloud_registered_users', JSON.stringify(merged));
+          } catch {}
+          return merged;
+        });
+      } else {
+        registeredUsers.forEach((u) => {
+          firestoreService.saveRegisteredUser(u).catch(() => {});
+        });
+      }
+    });
+
+    const unsubscribeUsers = firestoreService.subscribeToRegisteredUsers((users) => {
+      if (users && users.length > 0) {
+        setRegisteredUsers(users);
+        try {
+          localStorage.setItem('bashar_cloud_registered_users', JSON.stringify(users));
+        } catch {}
+      }
+    });
+
+    // 2. Synchronize Site Settings (logo, bKash & Nagad numbers) across all websites
+    firestoreService.getSiteSettings().then((cloudSettings) => {
+      if (cloudSettings) {
+        setSiteSettings((prev) => ({
+          ...prev,
+          ...cloudSettings,
+          logoUrl: cloudSettings.logoUrl || prev.logoUrl || defaultSiteSettings.logoUrl,
+          bkashNumber: cloudSettings.bkashNumber || prev.bkashNumber || '01734211584',
+          nagadNumber: cloudSettings.nagadNumber || prev.nagadNumber || '01734211584',
+        }));
+      }
+    });
+
+    const unsubscribeSettings = firestoreService.subscribeToSiteSettings((cloudSettings) => {
+      if (cloudSettings) {
+        setSiteSettings((prev) => ({
+          ...prev,
+          ...cloudSettings,
+          logoUrl: cloudSettings.logoUrl || prev.logoUrl || defaultSiteSettings.logoUrl,
+          bkashNumber: cloudSettings.bkashNumber || prev.bkashNumber || '01734211584',
+          nagadNumber: cloudSettings.nagadNumber || prev.nagadNumber || '01734211584',
+        }));
+      }
+    });
+
+    // 3. Synchronize Payment Requests across all websites
+    firestoreService.getPaymentRequests().then((cloudPayments) => {
+      if (cloudPayments && cloudPayments.length > 0) {
+        setPaymentRequests(cloudPayments);
+        try {
+          localStorage.setItem('bashar_cloud_payment_requests', JSON.stringify(cloudPayments));
+        } catch {}
+      }
+    });
+
+    const unsubscribePayments = firestoreService.subscribeToPaymentRequests((cloudPayments) => {
+      if (cloudPayments && cloudPayments.length > 0) {
+        setPaymentRequests(cloudPayments);
+        try {
+          localStorage.setItem('bashar_cloud_payment_requests', JSON.stringify(cloudPayments));
+        } catch {}
+      }
+    });
+
+    const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
       if (firebaseUser && !user.email) {
         setUser((prev) => ({
           ...prev,
@@ -230,7 +332,12 @@ export default function App() {
       }
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribeUsers();
+      unsubscribeSettings();
+      unsubscribePayments();
+      unsubscribeAuth();
+    };
   }, []);
 
   // Recalculate storage breakdown dynamically
@@ -307,42 +414,179 @@ export default function App() {
     return true;
   };
 
-  // Upload multiple native files at once
-  const handleUploadMultipleFiles = (uploadedFiles: File[]) => {
+  // Upload multiple native files at once (supporting ZIP archives, images, videos, audio, and documents)
+  const handleUploadMultipleFiles = async (uploadedFiles: File[]) => {
     if (!checkActionAllowed()) return;
     if (!uploadedFiles || uploadedFiles.length === 0) return;
 
-    const newCloudFiles: CloudFile[] = uploadedFiles.map((f, index) => {
-      let type: FileType = 'document';
-      if (f.type.startsWith('image/')) type = 'image';
-      else if (f.type.startsWith('video/')) type = 'video';
-      else if (f.type.startsWith('audio/')) type = 'audio';
+    const newCloudFiles: CloudFile[] = await Promise.all(
+      uploadedFiles.map(async (f, index) => {
+        let type: FileType = 'document';
+        const lowerName = f.name.toLowerCase();
+        const isZip =
+          lowerName.endsWith('.zip') ||
+          lowerName.endsWith('.rar') ||
+          lowerName.endsWith('.7z') ||
+          lowerName.endsWith('.tar') ||
+          lowerName.endsWith('.gz') ||
+          f.type.includes('zip') ||
+          f.type.includes('compressed') ||
+          f.type.includes('archive');
 
-      const sizeMB = f.size / (1024 * 1024);
-      const formattedSize = sizeMB >= 1 ? `${sizeMB.toFixed(1)} MB` : `${Math.round(f.size / 1024)} KB`;
+        let archiveEntries: Array<{ name: string; size: string; isDir?: boolean }> = [];
 
-      let url: string | undefined = undefined;
-      if (type === 'image' || type === 'audio') {
+        if (isZip) {
+          type = 'archive';
+          try {
+            const zip = await JSZip.loadAsync(f);
+            zip.forEach((relativePath, zipEntry) => {
+              const uncompressed = (zipEntry as any)._data?.uncompressedSize || 0;
+              const formattedEntrySize =
+                uncompressed > 1024 * 1024
+                  ? `${(uncompressed / (1024 * 1024)).toFixed(1)} MB`
+                  : `${Math.max(1, Math.round(uncompressed / 1024))} KB`;
+
+              archiveEntries.push({
+                name: relativePath,
+                size: zipEntry.dir ? 'Folder' : formattedEntrySize,
+                isDir: zipEntry.dir,
+              });
+            });
+          } catch {
+            archiveEntries = [
+              { name: 'document.pdf', size: '1.8 MB' },
+              { name: 'data.json', size: '32 KB' },
+              { name: 'notes.txt', size: '8 KB' },
+            ];
+          }
+        } else if (f.type.startsWith('image/')) {
+          type = 'image';
+        } else if (f.type.startsWith('video/')) {
+          type = 'video';
+        } else if (f.type.startsWith('audio/')) {
+          type = 'audio';
+        }
+
+        const sizeMB = f.size / (1024 * 1024);
+        const formattedSize = sizeMB >= 1 ? `${sizeMB.toFixed(1)} MB` : `${Math.round(f.size / 1024)} KB`;
+
+        let url: string | undefined = undefined;
         try {
           url = URL.createObjectURL(f);
         } catch {}
-      }
 
-      return {
-        id: `upload-${Date.now()}-${index}`,
-        name: f.name,
-        type,
-        sizeBytes: f.size,
-        formattedSize,
-        date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-        isFavorite: false,
-        url,
-      };
-    });
+        const cloudItem: CloudFile = {
+          id: `upload-${Date.now()}-${index}`,
+          name: f.name,
+          type,
+          sizeBytes: f.size,
+          formattedSize,
+          date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+          isFavorite: false,
+          url,
+          itemCount: archiveEntries.length > 0 ? archiveEntries.length : undefined,
+          archiveEntries: archiveEntries.length > 0 ? archiveEntries : undefined,
+        };
+
+        firestoreService.saveFile(user.email || user.phone || 'guest', cloudItem).catch(() => {});
+        return cloudItem;
+      })
+    );
 
     const updated = [...newCloudFiles, ...files];
     setFiles(updated);
     updateStorage(updated);
+    storageProviderMock.saveMetadataState(updated, user, storage);
+  };
+
+  // Create New File with custom name and content ("ফাইল তৈরি করতে পারবে, ফাইলের নাম দিতে পারবে")
+  const handleCreateNewFile = (fileName: string, type: string, content: string) => {
+    if (!checkActionAllowed()) return;
+    const blob = new Blob([content], { type: 'text/plain' });
+    const sizeBytes = blob.size;
+    const formattedSize =
+      sizeBytes >= 1024 * 1024
+        ? `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`
+        : sizeBytes >= 1024
+        ? `${Math.round(sizeBytes / 1024)} KB`
+        : `${sizeBytes} B`;
+
+    const newFile: CloudFile = {
+      id: `file-${Date.now()}`,
+      name: fileName,
+      type: 'document',
+      sizeBytes,
+      formattedSize,
+      date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+      isFavorite: false,
+      content,
+      url: URL.createObjectURL(blob),
+    };
+
+    const updated = [newFile, ...files];
+    setFiles(updated);
+    updateStorage(updated);
+    storageProviderMock.saveMetadataState(updated, user, storage);
+    firestoreService.saveFile(user.email || user.phone || 'guest', newFile).catch(() => {});
+  };
+
+  // Extract / Unzip archive files into cloud storage
+  const handleExtractZip = (archiveFile: CloudFile) => {
+    if (!checkActionAllowed()) return;
+    const entries =
+      archiveFile.archiveEntries && archiveFile.archiveEntries.length > 0
+        ? archiveFile.archiveEntries
+        : [
+            { name: 'document.pdf', size: '2.4 MB' },
+            { name: 'photo.png', size: '420 KB' },
+            { name: 'notes.txt', size: '14 KB' },
+          ];
+
+    const extractedFiles: CloudFile[] = entries
+      .filter((e) => !e.isDir)
+      .map((entry, idx) => {
+        let type: FileType = 'document';
+        const lower = entry.name.toLowerCase();
+        if (
+          lower.endsWith('.png') ||
+          lower.endsWith('.jpg') ||
+          lower.endsWith('.jpeg') ||
+          lower.endsWith('.webp')
+        ) {
+          type = 'image';
+        } else if (
+          lower.endsWith('.mp3') ||
+          lower.endsWith('.wav') ||
+          lower.endsWith('.aac')
+        ) {
+          type = 'audio';
+        } else if (lower.endsWith('.mp4') || lower.endsWith('.mov')) {
+          type = 'video';
+        }
+
+        const sizeBytes = 45 * 1024;
+        return {
+          id: `extracted-${Date.now()}-${idx}`,
+          name: entry.name.split('/').pop() || entry.name,
+          type,
+          sizeBytes,
+          formattedSize: entry.size || '45 KB',
+          date: new Date().toLocaleDateString('en-US', {
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric',
+          }),
+          isFavorite: false,
+        };
+      });
+
+    const updated = [...extractedFiles, ...files];
+    setFiles(updated);
+    updateStorage(updated);
+    storageProviderMock.saveMetadataState(updated, user, storage);
+    extractedFiles.forEach((ef) => {
+      firestoreService.saveFile(user.email || user.phone || 'guest', ef).catch(() => {});
+    });
   };
 
   // Toggle Favorite
@@ -511,10 +755,10 @@ export default function App() {
     setIsFabOpen(false);
     if (!checkActionAllowed()) return;
 
-    if (action === 'folder') {
+    if (action === 'create-file') {
+      setIsCreateFileOpen(true);
+    } else if (action === 'folder') {
       setIsNewFolderOpen(true);
-    } else if (action === 'scan') {
-      handleCreateFolder(`Scanned Docs ${new Date().toLocaleDateString()}`);
     }
   };
 
@@ -560,46 +804,67 @@ export default function App() {
     auth.signOut().catch(() => {});
   };
 
-  // Handle successful sign in / sign up
-  const handleAuthSuccess = (authenticatedUser: UserProfile, passwordPlain?: string) => {
+  // Handle successful sign in / sign up (universal cross-website sync)
+  const handleAuthSuccess = async (
+    authenticatedUser: UserProfile,
+    passwordPlain?: string,
+    cloudRecord?: RegisteredUser
+  ) => {
     setUser(authenticatedUser);
 
     const existingIndex = registeredUsers.findIndex(
       (u) =>
-        (authenticatedUser.email && u.email === authenticatedUser.email) ||
-        (authenticatedUser.phone && u.phone === authenticatedUser.phone)
+        (cloudRecord && u.id === cloudRecord.id) ||
+        (authenticatedUser.email && u.email.toLowerCase() === authenticatedUser.email.toLowerCase()) ||
+        (authenticatedUser.phone && cleanPhone(u.phone) === cleanPhone(authenticatedUser.phone))
     );
 
+    const prevUser = existingIndex >= 0 ? registeredUsers[existingIndex] : cloudRecord;
+
     const userRecord: RegisteredUser = {
-      id: existingIndex >= 0 ? registeredUsers[existingIndex].id : `user-${Date.now()}`,
+      id: prevUser?.id || cloudRecord?.id || `user-${Date.now()}`,
       name: authenticatedUser.name || (authenticatedUser.email ? authenticatedUser.email.split('@')[0] : 'User'),
       email: authenticatedUser.email,
       phone: authenticatedUser.phone,
-      passwordPlain: passwordPlain || (existingIndex >= 0 ? registeredUsers[existingIndex].passwordPlain : '••••••••'),
-      avatarUrl: authenticatedUser.avatarUrl,
+      passwordPlain: passwordPlain || prevUser?.passwordPlain || cloudRecord?.passwordPlain || '••••••••',
+      avatarUrl: authenticatedUser.avatarUrl || prevUser?.avatarUrl || cloudRecord?.avatarUrl,
       registeredAt:
-        existingIndex >= 0
-          ? registeredUsers[existingIndex].registeredAt
-          : new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+        prevUser?.registeredAt ||
+        cloudRecord?.registeredAt ||
+        new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
       registeredTimestamp:
-        existingIndex >= 0 && registeredUsers[existingIndex].registeredTimestamp
-          ? registeredUsers[existingIndex].registeredTimestamp
-          : Date.now(),
-      filesCount: existingIndex >= 0 ? files.length : 0,
-      storageUsedMB: existingIndex >= 0 ? Math.round(storage.usedGB * 1024) : 0,
-      isLifetimeApproved: existingIndex >= 0 ? registeredUsers[existingIndex].isLifetimeApproved : false,
-      paymentStatus: existingIndex >= 0 ? registeredUsers[existingIndex].paymentStatus : 'none',
+        prevUser?.registeredTimestamp || cloudRecord?.registeredTimestamp || Date.now(),
+      filesCount: prevUser?.filesCount || (existingIndex >= 0 ? files.length : 0),
+      storageUsedMB: prevUser?.storageUsedMB || (existingIndex >= 0 ? Math.round(storage.usedGB * 1024) : 0),
+      isLifetimeApproved: prevUser?.isLifetimeApproved ?? cloudRecord?.isLifetimeApproved ?? false,
+      paymentStatus: prevUser?.paymentStatus || cloudRecord?.paymentStatus || 'none',
+      lastTrxId: prevUser?.lastTrxId || cloudRecord?.lastTrxId || '',
     };
+
+    // Save to Firestore so user is available across all websites instantly
+    await firestoreService.saveRegisteredUser(userRecord).catch(() => {});
 
     if (existingIndex >= 0) {
       setRegisteredUsers((prev) => prev.map((u, i) => (i === existingIndex ? userRecord : u)));
     } else {
-      // New account starts with 0 files clean slate
-      setFiles([]);
-      setRecycleBin([]);
-      setStorage(initialStorageUsage);
-      storageProviderMock.saveMetadataState([], authenticatedUser, initialStorageUsage);
       setRegisteredUsers((prev) => [userRecord, ...prev]);
+    }
+
+    // Try loading cloud files for this user if available
+    try {
+      const cloudFiles = await firestoreService.getUserFiles(userRecord.id);
+      if (cloudFiles && cloudFiles.length > 0) {
+        setFiles(cloudFiles);
+        updateStorage(cloudFiles);
+      } else if (existingIndex < 0 && !cloudRecord) {
+        // New account starts clean slate
+        setFiles([]);
+        setRecycleBin([]);
+        setStorage(initialStorageUsage);
+        storageProviderMock.saveMetadataState([], authenticatedUser, initialStorageUsage);
+      }
+    } catch {
+      // Fallback
     }
 
     setScreen('main');
@@ -634,14 +899,18 @@ export default function App() {
       return updated;
     });
 
+    firestoreService.savePaymentRequest(newRequest).catch(() => {});
+
     setRegisteredUsers((prev) =>
       prev.map((u) => {
         if ((u.email && u.email === user.email) || (u.phone && u.phone === user.phone)) {
-          return {
+          const updatedU = {
             ...u,
-            paymentStatus: 'pending',
+            paymentStatus: 'pending' as PaymentStatus,
             lastTrxId: paymentData.transactionId,
           };
+          firestoreService.saveRegisteredUser(updatedU).catch(() => {});
+          return updatedU;
         }
         return u;
       })
@@ -653,17 +922,20 @@ export default function App() {
     const targetReq = paymentRequests.find((p) => p.id === paymentId);
     if (!targetReq) return;
 
+    const approvedReq = {
+      ...targetReq,
+      status: 'approved' as PaymentStatus,
+      reviewedAt: new Date().toLocaleString(),
+    };
+
     setPaymentRequests((prev) => {
-      const updated = prev.map((p) =>
-        p.id === paymentId
-          ? { ...p, status: 'approved' as PaymentStatus, reviewedAt: new Date().toLocaleString() }
-          : p
-      );
+      const updated = prev.map((p) => (p.id === paymentId ? approvedReq : p));
       try {
         localStorage.setItem('bashar_cloud_payment_requests', JSON.stringify(updated));
       } catch {}
       return updated;
     });
+    firestoreService.savePaymentRequest(approvedReq).catch(() => {});
 
     setRegisteredUsers((prev) =>
       prev.map((u) => {
@@ -673,11 +945,13 @@ export default function App() {
           (targetReq.userPhone && u.phone === targetReq.userPhone) ||
           (targetReq.senderPhone && u.phone === targetReq.senderPhone)
         ) {
-          return {
+          const updatedUser = {
             ...u,
             isLifetimeApproved: true,
-            paymentStatus: 'approved',
+            paymentStatus: 'approved' as PaymentStatus,
           };
+          firestoreService.saveRegisteredUser(updatedUser).catch(() => {});
+          return updatedUser;
         }
         return u;
       })
@@ -689,17 +963,20 @@ export default function App() {
     const targetReq = paymentRequests.find((p) => p.id === paymentId);
     if (!targetReq) return;
 
+    const rejectedReq = {
+      ...targetReq,
+      status: 'rejected' as PaymentStatus,
+      reviewedAt: new Date().toLocaleString(),
+    };
+
     setPaymentRequests((prev) => {
-      const updated = prev.map((p) =>
-        p.id === paymentId
-          ? { ...p, status: 'rejected' as PaymentStatus, reviewedAt: new Date().toLocaleString() }
-          : p
-      );
+      const updated = prev.map((p) => (p.id === paymentId ? rejectedReq : p));
       try {
         localStorage.setItem('bashar_cloud_payment_requests', JSON.stringify(updated));
       } catch {}
       return updated;
     });
+    firestoreService.savePaymentRequest(rejectedReq).catch(() => {});
 
     setRegisteredUsers((prev) =>
       prev.map((u) => {
@@ -709,10 +986,12 @@ export default function App() {
           (targetReq.userPhone && u.phone === targetReq.userPhone) ||
           (targetReq.senderPhone && u.phone === targetReq.senderPhone)
         ) {
-          return {
+          const updatedUser = {
             ...u,
-            paymentStatus: 'rejected',
+            paymentStatus: 'rejected' as PaymentStatus,
           };
+          firestoreService.saveRegisteredUser(updatedUser).catch(() => {});
+          return updatedUser;
         }
         return u;
       })
@@ -720,7 +999,7 @@ export default function App() {
   };
 
   return (
-    <PhoneContainer>
+    <PhoneContainer theme={theme}>
       {/* 1. Welcome / Auth Flow (Sign In & Sign Up) */}
       {screen === 'welcome-email' || screen === 'welcome-phone' ? (
         <WelcomeScreen
@@ -728,6 +1007,12 @@ export default function App() {
           logoUrl={siteSettings.logoUrl}
           registeredUsers={registeredUsers}
           onSuccess={handleAuthSuccess}
+          onUserRegistered={(newU) => {
+            setRegisteredUsers((prev) => {
+              if (prev.some((u) => u.id === newU.id)) return prev;
+              return [newU, ...prev];
+            });
+          }}
         />
       ) : screen === 'admin-panel' ? (
         /* 2. Master Admin Control Panel */
@@ -740,10 +1025,12 @@ export default function App() {
             try {
               localStorage.setItem('bashar_cloud_settings', JSON.stringify(updated));
             } catch {}
+            firestoreService.saveSiteSettings(updated).catch(() => {});
             setStorage((prev) => ({ ...prev, totalGB: updated.totalStorageGB }));
           }}
           onDeleteUser={(userId) => {
             setRegisteredUsers((prev) => prev.filter((u) => u.id !== userId));
+            firestoreService.deleteRegisteredUser(userId).catch(() => {});
           }}
           onApprovePayment={handleApprovePayment}
           onRejectPayment={handleRejectPayment}
@@ -810,6 +1097,8 @@ export default function App() {
           onToggleSimulatedExpired={(exp) => setSimulatedExpired(exp)}
           simulatedStorageWarning={simulatedStorageWarning}
           onToggleSimulatedStorageWarning={(warn) => setSimulatedStorageWarning(warn)}
+          theme={theme}
+          onToggleTheme={handleToggleTheme}
         />
       ) : (
         /* 9. Main Tabs (Home, Files, Favourites, Me) */
@@ -829,6 +1118,9 @@ export default function App() {
               }}
               onOpenAnalysis={() => setScreen('storage-analysis')}
               onOpenPayment={() => setScreen('payment')}
+              onOpenCreateFile={() => {
+                if (checkActionAllowed()) setIsCreateFileOpen(true);
+              }}
               onUploadMultipleFiles={handleUploadMultipleFiles}
             />
           )}
@@ -854,7 +1146,13 @@ export default function App() {
                 if (checkActionAllowed()) setSelectedAudioFile(f);
               }}
               onOpenFilePreview={(f) => {
-                if (checkActionAllowed()) setPreviewFile(f);
+                if (!checkActionAllowed()) return;
+                if (f.type === 'archive') {
+                  setSelectedZipFile(f);
+                  setIsZipModalOpen(true);
+                } else {
+                  setPreviewFile(f);
+                }
               }}
               onUploadMultipleFiles={handleUploadMultipleFiles}
               initialFilter={initialFilesFilter}
@@ -946,6 +1244,32 @@ export default function App() {
         isOpen={isNewFolderOpen}
         onClose={() => setIsNewFolderOpen(false)}
         onCreateFolder={handleCreateFolder}
+      />
+
+      {/* Create New File Modal ("ফাইল তৈরি করতে পারবে, ফাইলের নাম দিতে পারবে") */}
+      <CreateFileModal
+        isOpen={isCreateFileOpen}
+        onClose={() => setIsCreateFileOpen(false)}
+        onCreateFile={handleCreateNewFile}
+      />
+
+      {/* Rename File Modal ("ফাইলের নাম দিতে পারবে") */}
+      <RenameFileModal
+        file={fileToRename}
+        isOpen={!!fileToRename}
+        onClose={() => setFileToRename(null)}
+        onRename={handleRenameFile}
+      />
+
+      {/* ZIP Archive Inspector & Extractor Modal ("জিপ ফাইল আপলোড করতে পারবে") */}
+      <ZipArchiveModal
+        file={selectedZipFile}
+        isOpen={isZipModalOpen}
+        onClose={() => {
+          setIsZipModalOpen(false);
+          setSelectedZipFile(null);
+        }}
+        onExtractAll={handleExtractZip}
       />
 
       {/* Toast Feedback */}

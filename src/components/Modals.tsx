@@ -9,6 +9,13 @@ import {
   FolderPlus,
   AlertTriangle,
   Folder,
+  FilePlus,
+  Check,
+  Edit3,
+  Archive,
+  Download,
+  FolderArchive,
+  FileText,
 } from 'lucide-react';
 import { CloudFile } from '../types';
 
@@ -255,3 +262,351 @@ export const NewFolderModal: React.FC<NewFolderProps> = ({ isOpen, onClose, onCr
     </div>
   );
 };
+
+/* ================= CREATE NEW FILE MODAL (ফাইল তৈরি করুন ও ফাইলের নাম দিন) ================= */
+interface CreateFileModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onCreateFile: (fileName: string, type: string, content: string) => void;
+}
+
+export const CreateFileModal: React.FC<CreateFileModalProps> = ({ isOpen, onClose, onCreateFile }) => {
+  const [name, setName] = useState('');
+  const [extension, setExtension] = useState('.txt');
+  const [content, setContent] = useState('');
+
+  if (!isOpen) return null;
+
+  const fileExtensions = [
+    { ext: '.txt', label: 'Text Note (.txt)', type: 'document', color: 'from-blue-500 to-indigo-600' },
+    { ext: '.docx', label: 'Document (.docx)', type: 'document', color: 'from-sky-500 to-blue-600' },
+    { ext: '.md', label: 'Markdown (.md)', type: 'document', color: 'from-purple-500 to-violet-600' },
+    { ext: '.pdf', label: 'PDF Note (.pdf)', type: 'document', color: 'from-rose-500 to-red-600' },
+    { ext: '.json', label: 'Data File (.json)', type: 'document', color: 'from-amber-500 to-orange-600' },
+  ];
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    let finalName = name.trim();
+    if (!finalName) return;
+
+    // Append extension if user didn't type it
+    if (!finalName.toLowerCase().endsWith(extension)) {
+      finalName = `${finalName}${extension}`;
+    }
+
+    onCreateFile(finalName, 'document', content);
+    setName('');
+    setContent('');
+    onClose();
+  };
+
+  const wordCount = content.trim() ? content.trim().split(/\s+/).length : 0;
+  const byteSize = new Blob([content]).size;
+
+  return (
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4">
+      <form
+        onSubmit={handleSubmit}
+        className="bg-[#121c2e] border border-[#20324e] rounded-3xl p-5 max-w-md w-full space-y-4 shadow-2xl animate-in zoom-in-95 max-h-[92vh] flex flex-col"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between pb-2 border-b border-[#1f2f4a]">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center shadow-lg shadow-blue-900/40 shrink-0">
+              <FilePlus className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <span>নতুন ফাইল তৈরি করুন</span>
+                <span className="text-[10px] bg-blue-500/20 text-blue-300 border border-blue-500/30 px-2 py-0.5 rounded-full font-semibold">
+                  Create File
+                </span>
+              </h3>
+              <p className="text-xs text-slate-400">ফাইলের নাম দিন এবং কন্টেন্ট লিখুন</p>
+            </div>
+          </div>
+          <button type="button" onClick={onClose} className="text-slate-400 hover:text-white p-1">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="space-y-3 flex-1 overflow-y-auto pr-0.5">
+          {/* File Name Input */}
+          <div>
+            <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-300 mb-1">
+              ফাইলের নাম (File Name) <span className="text-rose-400">*</span>
+            </label>
+            <div className="flex items-center bg-[#162338] border border-[#273d61] rounded-xl px-3.5 py-2 focus-within:border-blue-500">
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="যেমন: Amar-Notepad বা Project-Summary"
+                required
+                autoFocus
+                className="w-full bg-transparent text-white placeholder-slate-500 focus:outline-none text-sm font-medium"
+              />
+              <span className="text-xs font-bold text-blue-400 bg-blue-950/80 px-2 py-1 rounded-md border border-blue-800/40 ml-2">
+                {extension}
+              </span>
+            </div>
+          </div>
+
+          {/* Extension selector */}
+          <div>
+            <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+              ফাইলের ধরন (File Format)
+            </label>
+            <div className="grid grid-cols-3 gap-1.5">
+              {fileExtensions.map((item) => (
+                <button
+                  key={item.ext}
+                  type="button"
+                  onClick={() => setExtension(item.ext)}
+                  className={`py-2 px-2.5 rounded-xl text-[11px] font-medium border text-center transition-all ${
+                    extension === item.ext
+                      ? 'bg-blue-600 text-white border-blue-400 shadow-md shadow-blue-900/50 scale-[1.02]'
+                      : 'bg-[#162338] text-slate-400 border-[#233857] hover:border-slate-500 hover:text-slate-200'
+                  }`}
+                >
+                  {item.ext}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Content Textarea */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
+                ফাইলের কন্টেন্ট / নোট লিখুন
+              </label>
+              <span className="text-[10px] text-slate-400 font-mono">
+                {wordCount} শব্দ • {byteSize} Bytes
+              </span>
+            </div>
+            <textarea
+              rows={5}
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="এখানে আপনার ফাইল বা নোটের লেখা লিখুন..."
+              className="w-full bg-[#162338] border border-[#273d61] rounded-xl p-3 text-white text-xs placeholder-slate-500 focus:outline-none focus:border-blue-500 resize-none font-mono"
+            />
+          </div>
+        </div>
+
+        {/* Buttons */}
+        <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#1f2f4a]">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2.5 text-xs font-medium text-slate-400 hover:text-white"
+          >
+            বাতিল (Cancel)
+          </button>
+          <button
+            type="submit"
+            className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-bold px-5 py-2.5 rounded-xl shadow-lg shadow-blue-900/40 flex items-center gap-1.5"
+          >
+            <Check className="w-3.5 h-3.5" />
+            <span>তৈরি ও সেভ করুন (Create & Save)</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+};
+
+/* ================= RENAME FILE MODAL (ফাইলের নাম পরিবর্তন করুন) ================= */
+interface RenameFileModalProps {
+  file: CloudFile | null;
+  isOpen: boolean;
+  onClose: () => void;
+  onRename: (fileId: string, newName: string) => void;
+}
+
+export const RenameFileModal: React.FC<RenameFileModalProps> = ({
+  file,
+  isOpen,
+  onClose,
+  onRename,
+}) => {
+  const [newName, setNewName] = useState('');
+
+  React.useEffect(() => {
+    if (file) {
+      setNewName(file.name);
+    }
+  }, [file]);
+
+  if (!isOpen || !file) return null;
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newName.trim()) {
+      onRename(file.id, newName.trim());
+      onClose();
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <form
+        onSubmit={handleSubmit}
+        className="bg-[#121c2e] border border-[#20324e] rounded-3xl p-5 max-w-sm w-full space-y-4 shadow-2xl animate-in zoom-in-95"
+      >
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-blue-950/80 border border-blue-500/40 text-blue-400 flex items-center justify-center shrink-0">
+            <Edit3 className="w-5 h-5" />
+          </div>
+          <div>
+            <h3 className="text-base font-bold text-white">ফাইলের নাম পরিবর্তন</h3>
+            <p className="text-xs text-slate-400 truncate max-w-[200px]">{file.name}</p>
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-300 mb-1">
+            নতুন নাম (New Name)
+          </label>
+          <input
+            type="text"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            required
+            autoFocus
+            className="w-full bg-[#162338] border border-[#273d61] rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-blue-500"
+          />
+        </div>
+
+        <div className="flex items-center justify-end gap-2 pt-1">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 text-xs font-medium text-slate-400 hover:text-white"
+          >
+            বাতিল
+          </button>
+          <button
+            type="submit"
+            className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-5 py-2.5 rounded-xl shadow-md"
+          >
+            সেভ করুন
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+};
+
+/* ================= ZIP ARCHIVE INSPECTOR & EXTRACTOR MODAL ================= */
+interface ZipArchiveModalProps {
+  file: CloudFile | null;
+  isOpen: boolean;
+  onClose: () => void;
+  onExtractAll?: (file: CloudFile) => void;
+}
+
+export const ZipArchiveModal: React.FC<ZipArchiveModalProps> = ({
+  file,
+  isOpen,
+  onClose,
+  onExtractAll,
+}) => {
+  const [extractedToast, setExtractedToast] = useState(false);
+
+  if (!isOpen || !file) return null;
+
+  const entries = file.archiveEntries && file.archiveEntries.length > 0
+    ? file.archiveEntries
+    : [
+        { name: 'document.pdf', size: '2.4 MB', isDir: false },
+        { name: 'assets/logo.png', size: '420 KB', isDir: false },
+        { name: 'notes.txt', size: '14 KB', isDir: false },
+        { name: 'archive-summary.md', size: '6 KB', isDir: false },
+      ];
+
+  const handleExtract = () => {
+    if (onExtractAll) {
+      onExtractAll(file);
+    }
+    setExtractedToast(true);
+    setTimeout(() => {
+      setExtractedToast(false);
+      onClose();
+    }, 1500);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+      <div className="bg-[#121c2e] border-t sm:border border-[#20324e] rounded-t-3xl sm:rounded-3xl p-5 max-w-[420px] w-full max-h-[85vh] flex flex-col animate-in slide-in-from-bottom-8">
+        {/* Header */}
+        <div className="flex items-center justify-between pb-3 border-b border-[#1f2f4a]">
+          <div className="flex items-center gap-2.5">
+            <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-400 flex items-center justify-center shadow-lg shadow-amber-950/40">
+              <Archive className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-white truncate max-w-[220px]">{file.name}</h3>
+              <p className="text-[11px] text-amber-300 font-medium">
+                ZIP Archive • {file.formattedSize} • {entries.length} Files Inside
+              </p>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-white p-1">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Content Entries list */}
+        <div className="py-2.5">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            আর্কাইভের ভেতরের ফাইলসমূহ (Archive Contents):
+          </span>
+        </div>
+
+        <div className="flex-1 overflow-y-auto space-y-2 pr-0.5 max-h-[320px]">
+          {entries.map((entry, idx) => (
+            <div
+              key={idx}
+              className="bg-[#162338] border border-[#233857] rounded-xl p-2.5 flex items-center justify-between gap-2 hover:border-amber-500/30 transition-colors"
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <FileText className="w-4 h-4 text-amber-400 shrink-0" />
+                <span className="text-xs font-mono text-slate-200 truncate">{entry.name}</span>
+              </div>
+              <span className="text-[11px] text-slate-400 font-mono shrink-0 bg-[#0e1726] px-2 py-0.5 rounded border border-slate-800">
+                {entry.size}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {/* Action Buttons */}
+        <div className="pt-3 border-t border-[#1f2f4a] flex items-center gap-2">
+          {file.url && (
+            <a
+              href={file.url}
+              download={file.name}
+              className="flex-1 bg-[#1b2b46] hover:bg-[#233859] border border-[#2e4771] text-slate-200 font-semibold py-2.5 px-3 rounded-xl text-xs transition-colors flex items-center justify-center gap-1.5"
+            >
+              <Download className="w-4 h-4 text-sky-400" />
+              <span>ডাউনলোড জিপ</span>
+            </a>
+          )}
+
+          <button
+            type="button"
+            onClick={handleExtract}
+            className="flex-1 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white font-bold py-2.5 px-3 rounded-xl text-xs transition-all shadow-lg shadow-amber-950/50 flex items-center justify-center gap-1.5"
+          >
+            <FolderArchive className="w-4 h-4" />
+            <span>{extractedToast ? 'ফাইলগুলো এক্সট্র্যাক্ট হচ্ছে...' : 'আনজিপ ও এক্সট্র্যাক্ট করুন'}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+

@@ -16,6 +16,8 @@ import {
   Lock,
   Clock,
   AlertTriangle,
+  FilePlus,
+  Archive,
 } from 'lucide-react';
 import { GPCloudLogo } from './GPCloudLogo';
 import { StorageUsage, FileType, UserSubscription } from '../types';
@@ -33,6 +35,7 @@ interface HomeScreenProps {
   onOpenUpload: () => void;
   onOpenAnalysis: () => void;
   onOpenPayment?: () => void;
+  onOpenCreateFile?: () => void;
   onUploadMultipleFiles?: (files: File[]) => void;
 }
 
@@ -48,9 +51,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   onOpenUpload,
   onOpenAnalysis,
   onOpenPayment,
+  onOpenCreateFile,
   onUploadMultipleFiles,
 }) => {
   const multiFileInputRef = useRef<HTMLInputElement>(null);
+  const zipFileInputRef = useRef<HTMLInputElement>(null);
 
   const totalLimitGB = storage.totalGB || 1000;
   const hasFiles = storage.usedGB > 0 || (storage.imagesCount + storage.videosCount + storage.audiosCount + storage.docsCount > 0);
@@ -80,6 +85,16 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       <input
         type="file"
         ref={multiFileInputRef}
+        multiple
+        onChange={handleMultiFileChange}
+        className="hidden"
+      />
+
+      {/* Hidden ZIP file input specifically for archives */}
+      <input
+        type="file"
+        ref={zipFileInputRef}
+        accept=".zip,.rar,.7z,.tar,.gz"
         multiple
         onChange={handleMultiFileChange}
         className="hidden"
@@ -285,24 +300,35 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       </div>
 
       {/* Storage Analysis Quick Link & Multi-Upload Shortcut */}
-      <div className="flex items-center justify-between px-1 mb-4">
+      <div className="grid grid-cols-3 gap-2 mb-4">
         <button
           type="button"
-          onClick={() => multiFileInputRef.current?.click()}
-          className="flex items-center gap-1.5 text-[11px] font-semibold bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-xl shadow-md transition-all active:scale-95 cursor-pointer"
-          title="Upload multiple files simultaneously"
+          onClick={onOpenCreateFile}
+          className="flex items-center justify-center gap-1.5 text-[11px] font-semibold bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white py-2 px-2 rounded-xl shadow-md transition-all active:scale-95 cursor-pointer border border-blue-400/40"
+          title="নতুন ফাইল তৈরি করুন ও ফাইলের নাম দিন"
         >
-          <Plus className="w-3.5 h-3.5" />
-          <span>Batch Upload</span>
+          <FilePlus className="w-3.5 h-3.5 shrink-0" />
+          <span className="truncate">নতুন ফাইল তৈরি</span>
         </button>
 
         <button
           type="button"
-          onClick={onOpenAnalysis}
-          className="flex items-center gap-1.5 text-[11px] font-semibold bg-[#142033] hover:bg-[#1a2c47] text-sky-400 px-3 py-1.5 rounded-xl border border-[#20324e] transition-colors cursor-pointer"
+          onClick={() => zipFileInputRef.current?.click()}
+          className="flex items-center justify-center gap-1.5 text-[11px] font-semibold bg-[#2a1c0d] hover:bg-[#382613] text-amber-300 py-2 px-2 rounded-xl border border-amber-500/40 transition-colors cursor-pointer shadow-md"
+          title="জিপ ফাইল আপলোড করুন"
         >
-          <PieChartIcon className="w-3.5 h-3.5 text-sky-400" />
-          <span>Storage Analysis</span>
+          <Archive className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+          <span className="truncate">জিপ আপলোড</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => multiFileInputRef.current?.click()}
+          className="flex items-center justify-center gap-1.5 text-[11px] font-semibold bg-[#142033] hover:bg-[#1a2c47] text-sky-400 py-2 px-2 rounded-xl border border-[#20324e] transition-colors cursor-pointer"
+          title="ফাইল ও ছবি আপলোড করুন"
+        >
+          <Upload className="w-3.5 h-3.5 shrink-0 text-sky-400" />
+          <span className="truncate">ফাইল আপলোড</span>
         </button>
       </div>
 
@@ -314,17 +340,38 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         <h2 className="text-base font-bold text-white mb-1">
           Welcome to {websiteName}
         </h2>
-        <p className="text-xs text-slate-400 max-w-[260px] leading-relaxed mb-4">
-          Your cloud storage is looking clean! Start uploading your files, photos, and videos to keep them safe and accessible anywhere.
+        <p className="text-xs text-slate-400 max-w-[280px] leading-relaxed mb-4">
+          নিরাপদ ক্লাউড স্টোরেজ। সহজেই নতুন ফাইল তৈরি করুন, ফাইলের নাম দিন, যেকোনো ফাইল এবং জিপ ফাইল (ZIP) আপলোড করুন।
         </p>
-        <button
-          type="button"
-          onClick={() => multiFileInputRef.current?.click()}
-          className="bg-gradient-to-r from-blue-600 to-sky-600 hover:from-blue-500 hover:to-sky-500 text-white font-semibold text-xs px-5 py-2.5 rounded-xl shadow-lg shadow-blue-900/40 transition-all flex items-center gap-2 active:scale-95 cursor-pointer"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Upload Multiple Files</span>
-        </button>
+
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <button
+            type="button"
+            onClick={onOpenCreateFile}
+            className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold text-xs px-4 py-2.5 rounded-xl shadow-lg shadow-blue-900/40 transition-all flex items-center gap-1.5 active:scale-95 cursor-pointer"
+          >
+            <FilePlus className="w-4 h-4" />
+            <span>নতুন ফাইল তৈরি করুন</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => zipFileInputRef.current?.click()}
+            className="bg-[#2a1c0d] hover:bg-[#3b2713] border border-amber-500/50 text-amber-300 font-semibold text-xs px-4 py-2.5 rounded-xl shadow-lg transition-all flex items-center gap-1.5 active:scale-95 cursor-pointer"
+          >
+            <Archive className="w-4 h-4 text-amber-400" />
+            <span>জিপ আপলোড (.ZIP)</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => multiFileInputRef.current?.click()}
+            className="bg-[#16263f] hover:bg-[#1d3254] border border-blue-500/30 text-sky-300 font-semibold text-xs px-4 py-2.5 rounded-xl transition-all flex items-center gap-1.5 active:scale-95 cursor-pointer"
+          >
+            <Upload className="w-4 h-4" />
+            <span>ফাইল আপলোড</span>
+          </button>
+        </div>
       </div>
 
       {/* Category Grid */}

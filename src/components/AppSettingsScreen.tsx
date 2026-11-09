@@ -1,5 +1,20 @@
 import React, { useState } from 'react';
-import { ChevronLeft, ChevronRight, Lock, Trash2, Check, X, RefreshCw, Cloud, Database, Clock, Sparkles } from 'lucide-react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  Lock,
+  Trash2,
+  Check,
+  X,
+  RefreshCw,
+  Cloud,
+  Database,
+  Clock,
+  Sparkles,
+  Sun,
+  Moon,
+} from 'lucide-react';
+import { AppTheme } from '../utils/theme';
 
 interface AppSettingsScreenProps {
   onBack: () => void;
@@ -14,6 +29,8 @@ interface AppSettingsScreenProps {
   onToggleSimulatedExpired?: (expired: boolean) => void;
   simulatedStorageWarning?: boolean;
   onToggleSimulatedStorageWarning?: (val: boolean) => void;
+  theme?: AppTheme;
+  onToggleTheme?: (newTheme: AppTheme) => void;
 }
 
 export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
@@ -29,6 +46,8 @@ export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
   onToggleSimulatedExpired,
   simulatedStorageWarning = false,
   onToggleSimulatedStorageWarning,
+  theme = 'dark',
+  onToggleTheme,
 }) => {
   const [modalType, setModalType] = useState<'password' | 'delete' | null>(null);
 
@@ -51,6 +70,79 @@ export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
         <h1 className="text-xl font-bold tracking-tight text-white ml-auto mr-auto pr-10">
           App Settings
         </h1>
+      </div>
+
+      {/* 1. Theme Toggle Card (Light / Dark mode) */}
+      <div className="mb-4 bg-[#111e33] border border-[#1f3250] rounded-2xl p-4 shadow-lg shadow-blue-950/20">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2.5">
+            <div className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors ${
+              theme === 'light' ? 'bg-amber-500/20 text-amber-500 shadow-md' : 'bg-indigo-500/20 text-indigo-400'
+            }`}>
+              {theme === 'light' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+            </div>
+            <div>
+              <h4 className="text-[14px] font-bold text-white flex items-center gap-1.5">
+                <span>Theme & Appearance (থিম)</span>
+              </h4>
+              <p className="text-[11px] text-slate-400">
+                {theme === 'light' ? 'আধুনিক লাইট মোড সক্রিয় (Light Theme)' : 'ডার্ক মোড সক্রিয় (Dark Theme)'}
+              </p>
+            </div>
+          </div>
+
+          {/* Toggle Switch */}
+          <button
+            type="button"
+            onClick={() => onToggleTheme && onToggleTheme(theme === 'dark' ? 'light' : 'dark')}
+            className={`w-12 h-6 rounded-full transition-colors relative p-0.5 focus:outline-none cursor-pointer ${
+              theme === 'light' ? 'bg-amber-500' : 'bg-indigo-600'
+            }`}
+            title="Toggle Light and Dark Theme"
+            aria-label="Toggle Light and Dark Theme"
+          >
+            <div
+              className={`w-5 h-5 rounded-full bg-white shadow-md transform transition-transform flex items-center justify-center ${
+                theme === 'light' ? 'translate-x-6' : 'translate-x-0'
+              }`}
+            >
+              {theme === 'light' ? (
+                <Sun className="w-3 h-3 text-amber-500" />
+              ) : (
+                <Moon className="w-3 h-3 text-indigo-700" />
+              )}
+            </div>
+          </button>
+        </div>
+
+        {/* Segmented Picker */}
+        <div className="grid grid-cols-2 gap-2 bg-[#0b1322] p-1 rounded-xl border border-[#18263e]">
+          <button
+            type="button"
+            onClick={() => onToggleTheme && onToggleTheme('dark')}
+            className={`flex items-center justify-center gap-2 py-1.5 px-3 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+              theme === 'dark'
+                ? 'bg-[#182844] text-indigo-300 shadow-sm border border-indigo-500/30 font-bold'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Moon className="w-3.5 h-3.5" />
+            <span>Dark Theme</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onToggleTheme && onToggleTheme('light')}
+            className={`flex items-center justify-center gap-2 py-1.5 px-3 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+              theme === 'light'
+                ? 'bg-amber-500/20 text-amber-300 shadow-sm border border-amber-500/30 font-bold'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Sun className="w-3.5 h-3.5" />
+            <span>Light Theme</span>
+          </button>
+        </div>
       </div>
 
       {/* Cloud Sync Quick Banner / Direct Card */}

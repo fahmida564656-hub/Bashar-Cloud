@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
-import { Mail, Phone, Lock, Eye, EyeOff, User, ArrowRight, Upload, Camera, ShieldCheck, UserPlus, LogIn, AlertCircle } from 'lucide-react';
-import { GPCloudLogo } from './GPCloudLogo';
+import { Mail, Phone, Lock, Eye, EyeOff, User, ArrowRight, Upload, Camera, ShieldCheck, UserPlus, LogIn, AlertCircle, Globe, CheckCircle2, RefreshCw } from 'lucide-react';
 import { UserProfile, RegisteredUser } from '../types';
+import { firestoreService } from '../firebase/firestoreService';
 
 interface AuthScreenProps {
   websiteName?: string;
   logoUrl?: string;
   registeredUsers: RegisteredUser[];
-  onSuccess: (user: UserProfile, passwordPlain?: string) => void;
+  onSuccess: (user: UserProfile, passwordPlain?: string, cloudRecord?: RegisteredUser) => void;
+  onUserRegistered?: (user: RegisteredUser) => void;
 }
 
 export const WelcomeScreen: React.FC<AuthScreenProps> = ({
@@ -15,6 +16,7 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
   logoUrl,
   registeredUsers,
   onSuccess,
+  onUserRegistered,
 }) => {
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
   const [loginMethod, setLoginMethod] = useState<'phone' | 'email'>('phone');
@@ -29,6 +31,7 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
   const [showPassword, setShowPassword] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingText, setLoadingText] = useState('যাচাই করা হচ্ছে...');
 
   // Profile picture upload handler
   const handleAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -44,7 +47,7 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
     }
   };
 
-  const cleanPhone = (p: string) => p.replace(/[^0-9]/g, '').slice(-10);
+  const cleanPhone = (p: string) => (p || '').replace(/[^0-9]/g, '').slice(-10);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -53,7 +56,11 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
 
     try {
       if (authMode === 'signup') {
-        // Validation for Sign Up
+        // ==========================================
+        // SIGN UP (নতুন অ্যাকাউন্ট তৈরি)
+        // ==========================================
+        setLoadingText('অ্যাকাউন্ট তৈরি ও ক্লাউডে সিঙ্ক করা হচ্ছে...');
+
         if (!fullName.trim()) {
           setErrorMessage('অনুগ্রহ করে আপনার পুরো নাম লিখুন (Please enter your full name)');
           setIsLoading(false);
@@ -83,12 +90,25 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
         const normalizedPhone = cleanPhone(phone);
         const normalizedEmail = email.trim().toLowerCase();
 
-        // Check if user already exists
-        const existing = registeredUsers.find(
+        // 1. Check local list first
+        let existing = registeredUsers.find(
           (u) =>
             cleanPhone(u.phone) === normalizedPhone ||
             u.email.toLowerCase() === normalizedEmail
         );
+
+        // 2. Also check directly in Cloud Firestore to prevent duplicates across websites
+        if (!existing) {
+          const cloudCheck = await firestoreService.findRegisteredUser(normalizedPhone);
+          if (cloudCheck) {
+            existing = cloudCheck;
+          } else {
+            const cloudEmailCheck = await firestoreService.findRegisteredUser(normalizedEmail);
+            if (cloudEmailCheck) {
+              existing = cloudEmailCheck;
+            }
+          }
+        }
 
         if (existing) {
           setErrorMessage('এই মোবাইল নম্বর বা ইমেইল দিয়ে ইতিমধ্যে অ্যাকাউন্ট খোলা আছে। অনুগ্রহ করে লগইন করুন।');
@@ -96,105 +116,139 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
           return;
         }
 
-        const newUser: UserProfile = {
+        const newId = `user-${Date.now()}`;
+        const newUserProfile: UserProfile = {
           name: fullName.trim(),
           email: normalizedEmail,
           phone: `(+880) ${normalizedPhone}`,
           avatarUrl: avatarUrl || undefined,
         };
 
-        onSuccess(newUser, password);
+        const newRecord: RegisteredUser = {
+          id: newId,
+          name: fullName.trim(),
+          email: normalizedEmail,
+          phone: `(+880) ${normalizedPhone}`,
+          passwordPlain: password,
+          avatarUrl: avatarUrl || undefined,
+          registeredAt: new Date().toLocaleDateString('en-US', {
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric',
+          }),
+          registeredTimestamp: Date.now(),
+          filesCount: 0,
+          storageUsedMB: 0,
+          isLifetimeApproved: false,
+          paymentStatus: 'none',
+        };
+
+        // Persist to Cloud Firestore immediately so all other sites have it instantly
+        await firestoreService.saveRegisteredUser(newRecord).catch((err) => {
+          console.warn('Firestore cloud user sync warning:', err);
+        });
+
+        if (onUserRegistered) {
+          onUserRegistered(newRecord);
+        }
+
+        onSuccess(newUserProfile, password, newRecord);
         return;
       } else {
-        // Sign In Mode: Strictly check registeredUsers!
-        // "সাইন আপ না করে লগইন করলে লগইন হবে না। ভুল পাসওয়ার্ড দিলে হবে না।"
-        if (loginMethod === 'phone') {
+        // ==========================================
+        // SIGN IN (লগইন)
+        // Cross-domain Firestore verified
+        // ==========================================
+        setLoadingText('ক্লাউড সার্ভারে অ্যাকাউন্ট যাচাই করা হচ্ছে...');
+
+        let searchIdentifier = '';
+        let isPhoneMode = loginMethod === 'phone';
+
+        if (isPhoneMode) {
           const inputPhone = cleanPhone(phone);
           if (!inputPhone) {
             setErrorMessage('অনুগ্রহ করে আপনার মোবাইল নম্বর দিন');
             setIsLoading(false);
             return;
           }
-          if (!password) {
-            setErrorMessage('অনুগ্রহ করে পাসওয়ার্ড দিন');
-            setIsLoading(false);
-            return;
-          }
-
-          // Search registered user by phone
-          const foundUser = registeredUsers.find((u) => cleanPhone(u.phone) === inputPhone);
-          if (!foundUser) {
-            setErrorMessage('কোনো অ্যাকাউন্ট পাওয়া যায়নি! লগইন করতে প্রথমে সাইন আপ করুন। (No account found! Please sign up first.)');
-            setIsLoading(false);
-            return;
-          }
-
-          // Check password
-          if (foundUser.passwordPlain && foundUser.passwordPlain !== password) {
-            setErrorMessage('ভুল পাসওয়ার্ড! সঠিক পাসওয়ার্ড দিন। (Incorrect password! Please try again.)');
-            setIsLoading(false);
-            return;
-          }
-
-          const loggedInUser: UserProfile = {
-            name: foundUser.name,
-            email: foundUser.email,
-            phone: foundUser.phone,
-            avatarUrl: foundUser.avatarUrl,
-          };
-          onSuccess(loggedInUser, password);
-          return;
+          searchIdentifier = inputPhone;
         } else {
-          // Login by email
           const inputEmail = email.trim().toLowerCase();
           if (!inputEmail) {
             setErrorMessage('অনুগ্রহ করে আপনার ইমেইল দিন');
             setIsLoading(false);
             return;
           }
-          if (!password) {
-            setErrorMessage('অনুগ্রহ করে পাসওয়ার্ড দিন');
-            setIsLoading(false);
-            return;
-          }
+          searchIdentifier = inputEmail;
+        }
 
-          // Search registered user by email
-          const foundUser = registeredUsers.find((u) => u.email.toLowerCase() === inputEmail);
-          if (!foundUser) {
-            setErrorMessage('কোনো অ্যাকাউন্ট পাওয়া যায়নি! লগইন করতে প্রথমে সাইন আপ করুন। (No account found! Please sign up first.)');
-            setIsLoading(false);
-            return;
-          }
-
-          // Check password
-          if (foundUser.passwordPlain && foundUser.passwordPlain !== password) {
-            setErrorMessage('ভুল পাসওয়ার্ড! সঠিক পাসওয়ার্ড দিন। (Incorrect password! Please try again.)');
-            setIsLoading(false);
-            return;
-          }
-
-          const loggedInUser: UserProfile = {
-            name: foundUser.name,
-            email: foundUser.email,
-            phone: foundUser.phone,
-            avatarUrl: foundUser.avatarUrl,
-          };
-          onSuccess(loggedInUser, password);
+        if (!password) {
+          setErrorMessage('অনুগ্রহ করে পাসওয়ার্ড দিন');
+          setIsLoading(false);
           return;
         }
+
+        // Step A: Search in local state
+        let foundUser: RegisteredUser | undefined = registeredUsers.find((u) => {
+          if (isPhoneMode) {
+            return cleanPhone(u.phone) === searchIdentifier;
+          } else {
+            return u.email.toLowerCase() === searchIdentifier;
+          }
+        });
+
+        // Step B: If not found in local memory, query directly from Cloud Firestore!
+        // This solves: "একটি ওয়েবসাইটে সাইন আপ করে অন্য ওয়েবসাইটে লগইন করলে আসে না বলে এই সমস্যা"
+        if (!foundUser) {
+          try {
+            const cloudUser = await firestoreService.findRegisteredUser(searchIdentifier);
+            if (cloudUser) {
+              foundUser = cloudUser;
+              if (onUserRegistered) {
+                onUserRegistered(cloudUser);
+              }
+            }
+          } catch (cloudErr) {
+            console.warn('Cloud search error:', cloudErr);
+          }
+        }
+
+        // If user STILL not found anywhere
+        if (!foundUser) {
+          setErrorMessage('কোনো অ্যাকাউন্ট পাওয়া যায়নি! লগইন করতে প্রথমে সাইন আপ করুন। (No account found! Please sign up first.)');
+          setIsLoading(false);
+          return;
+        }
+
+        // Step C: Verify password
+        if (foundUser.passwordPlain && foundUser.passwordPlain !== password) {
+          setErrorMessage('ভুল পাসওয়ার্ড! সঠিক পাসওয়ার্ড দিন। (Incorrect password! Please try again.)');
+          setIsLoading(false);
+          return;
+        }
+
+        const loggedInUser: UserProfile = {
+          name: foundUser.name,
+          email: foundUser.email,
+          phone: foundUser.phone,
+          avatarUrl: foundUser.avatarUrl,
+        };
+
+        onSuccess(loggedInUser, password, foundUser);
+        return;
       }
     } catch (err: any) {
-      setErrorMessage(err.message || 'Authentication failed. Please check your credentials.');
+      setErrorMessage(err.message || 'Authentication error. Please check your network and try again.');
     } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <div className="flex-1 flex flex-col justify-between px-6 pt-6 pb-8 text-white overflow-y-auto">
+    <div className="flex-1 flex flex-col justify-between px-6 pt-5 pb-7 text-white overflow-y-auto">
       {/* Top Branding Header */}
-      <div className="flex flex-col items-center text-center mt-1">
-        <div className="mb-3 relative group">
+      <div className="flex flex-col items-center text-center">
+        <div className="mb-2.5 relative group">
           <div className="w-16 h-16 rounded-2xl overflow-hidden ring-2 ring-blue-500/50 shadow-2xl bg-[#111e33] flex items-center justify-center">
             <img
               src={logoUrl || '/assets/aistudio/0a4ee58c-1d1d-4faa-8126-cfb8779227ba_f85ac4d0.png'}
@@ -203,18 +257,24 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
             />
           </div>
         </div>
-        <h1 className="text-2xl font-black tracking-tight text-white mb-1">
+        <h1 className="text-2xl font-black tracking-tight text-white mb-0.5">
           {websiteName}
         </h1>
-        <p className="text-xs text-slate-300 leading-relaxed max-w-[280px]">
-          নিরাপদ ক্লাউড স্টোরেজ • সহজে আপলোড ও যেকোনো ডিভাইস থেকে ফাইল অ্যাক্সেস
+        <p className="text-[11px] text-slate-300 leading-relaxed max-w-[290px]">
+          নিরাপদ ক্লাউড স্টোরেজ • যেকোনো ওয়েবসাইট ও ডিভাইস থেকে একই একাউন্টে লগইন
         </p>
+
+        {/* Global Cross-Site Cloud Badge */}
+        <div className="mt-2.5 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-[10px] font-medium text-emerald-300 shadow-sm">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span>সার্বজনীন ক্লাউড সিঙ্ক সক্রিয় (Multi-domain Sync)</span>
+        </div>
       </div>
 
       {/* Main Authentication Container */}
-      <div className="w-full mt-5">
+      <div className="w-full mt-4">
         {/* Brand New Modern Sign In / Sign Up Bar ("নতুন করে সাইন আপ বার হবে") */}
-        <div className="relative bg-[#0d1626] border border-[#1f324f] rounded-2xl p-1.5 mb-5 shadow-lg flex items-center">
+        <div className="relative bg-[#0d1626] border border-[#1f324f] rounded-2xl p-1.5 mb-4 shadow-lg flex items-center">
           <button
             type="button"
             onClick={() => {
@@ -249,17 +309,17 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
         </div>
 
         {/* Section Heading */}
-        <div className="mb-4">
+        <div className="mb-3.5">
           <h2 className="text-base font-bold tracking-tight text-white flex items-center gap-2">
             <span>{authMode === 'signin' ? 'অ্যাকাউন্টে প্রবেশ করুন' : 'নতুন অ্যাকাউন্ট তৈরি করুন'}</span>
             <span className="text-[10px] bg-blue-500/20 text-blue-300 border border-blue-500/30 px-2 py-0.5 rounded-full font-semibold">
-              {authMode === 'signin' ? 'Secure Login' : 'Registration'}
+              {authMode === 'signin' ? 'Universal Login' : 'Direct Sign Up'}
             </span>
           </h2>
           <p className="text-[11px] text-slate-400 mt-0.5">
             {authMode === 'signin'
-              ? 'নিবন্ধিত মোবাইল নম্বর বা ইমেইল এবং পাসওয়ার্ড দিয়ে প্রবেশ করুন'
-              : 'সব তথ্য দিয়ে অ্যাকাউন্ট তৈরি করুন (কোনো ভেরিফিকেশন কোডের ঝামেলা নেই)'}
+              ? 'যেকোনো ওয়েবসাইটে নিবন্ধিত নম্বর/ইমেইল এবং পাসওয়ার্ড দিয়ে সরাসরি প্রবেশ করুন'
+              : 'সব তথ্য দিয়ে সাইন আপ করুন। একবার খুললেই সব ওয়েবসাইটে কার্যকর থাকবে।'}
           </p>
         </div>
 
@@ -468,15 +528,22 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
           <button
             type="submit"
             disabled={isLoading}
-            className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 active:scale-[0.99] text-white font-semibold py-3.5 px-4 rounded-xl transition-all shadow-lg shadow-blue-900/40 text-sm flex items-center justify-center gap-2 mt-3 disabled:opacity-50"
+            className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 active:scale-[0.99] text-white font-semibold py-3.5 px-4 rounded-xl transition-all shadow-lg shadow-blue-900/40 text-sm flex items-center justify-center gap-2 mt-3 disabled:opacity-60"
           >
-            <span>{isLoading ? 'যাচাই করা হচ্ছে...' : authMode === 'signin' ? 'লগইন করুন (Sign In)' : 'অ্যাকাউন্ট তৈরি সম্পন্ন করুন'}</span>
-            <ArrowRight className="w-4 h-4" />
+            {isLoading && <RefreshCw className="w-4 h-4 animate-spin text-white" />}
+            <span>
+              {isLoading
+                ? loadingText
+                : authMode === 'signin'
+                ? 'লগইন করুন (Sign In)'
+                : 'অ্যাকাউন্ট তৈরি সম্পন্ন করুন'}
+            </span>
+            {!isLoading && <ArrowRight className="w-4 h-4" />}
           </button>
         </form>
 
-        <div className="mt-5 text-center">
-          <p className="text-[11px] text-slate-500">
+        <div className="mt-4 text-center">
+          <p className="text-[11px] text-slate-400">
             {authMode === 'signin'
               ? 'অ্যাকাউন্ট নেই? উপরের বারে "নতুন অ্যাকাউন্ট (Sign Up)" চাপুন'
               : 'ইতিমধ্যে অ্যাকাউন্ট আছে? উপরের বারে "লগইন (Sign In)" চাপুন'}
