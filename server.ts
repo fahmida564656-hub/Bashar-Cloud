@@ -1,8 +1,9 @@
 import 'dotenv/config';
-import express, { Request, Response } from 'express';
+import express, { type Request, type Response } from 'express';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { GoogleGenAI, ThinkingLevel, GenerateContentResponse } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, type GenerateContentResponse } from '@google/genai';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -96,6 +97,14 @@ function formatGeminiError(err: unknown): { status: number; message: string } {
     };
   }
 
+  if (lower.includes('unavailable') || lower.includes('503') || lower.includes('high demand') || lower.includes('overloaded')) {
+    return {
+      status: 503,
+      message:
+        'এই মুহূর্তে AI সার্ভারে সাময়িকভাবে অতিরিক্ত চাপ রয়েছে। অনুগ্রহ করে কয়েক সেকেন্ড পর আবার Retry করুন বা Fast মোড চেষ্টা করুন।',
+    };
+  }
+
   return {
     status: 500,
     message: `AI উত্তর তৈরি করতে সমস্যা হয়েছে: ${raw}`,
@@ -183,18 +192,41 @@ async function startServer() {
         },
       });
 
-      const chat = ai.chats.create({
-        model,
-        history: historyItems,
-        config: {
-          systemInstruction,
-          thinkingConfig: { thinkingLevel },
-        },
-      });
+      const startStream = async (targetModel: string, targetThinking: ThinkingLevel) => {
+        const chat = ai.chats.create({
+          model: targetModel,
+          history: historyItems,
+          config: {
+            systemInstruction,
+            thinkingConfig: { thinkingLevel: targetThinking },
+          },
+        });
+        return chat.sendMessageStream({ message: userPrompt });
+      };
 
-      sendEvent({ type: 'meta', model });
+      let activeModel: string = model;
+      let stream;
+      try {
+        stream = await startStream(model, thinkingLevel);
+      } catch (primaryErr) {
+        const msg = primaryErr instanceof Error ? primaryErr.message.toLowerCase() : String(primaryErr).toLowerCase();
+        const shouldFallback =
+          msg.includes('not_found') ||
+          msg.includes('404') ||
+          msg.includes('unavailable') ||
+          msg.includes('503') ||
+          msg.includes('high demand') ||
+          msg.includes('overloaded');
+        if (shouldFallback && model !== 'gemini-3.1-flash-lite') {
+          activeModel = 'gemini-3.1-flash-lite';
+          stream = await startStream(activeModel, ThinkingLevel.MINIMAL);
+        } else {
+          throw primaryErr;
+        }
+      }
 
-      const stream = await chat.sendMessageStream({ message: userPrompt });
+      sendEvent({ type: 'meta', model: activeModel });
+
       let accumulated = '';
 
       for await (const chunk of stream) {
@@ -203,7 +235,7 @@ async function startServer() {
         const chunkText = c.text || '';
         if (chunkText) {
           accumulated += chunkText;
-          sendEvent({ type: 'chunk', text: chunkText, model });
+          sendEvent({ type: 'chunk', text: chunkText, model: activeModel });
         }
       }
 
@@ -214,7 +246,7 @@ async function startServer() {
             error: 'AI কোনো উত্তর প্রদান করেনি। অনুগ্রহ করে প্রশ্নটি একটু স্পষ্ট করে আবার চেষ্টা করুন।',
           });
         } else {
-          sendEvent({ type: 'done', model });
+          sendEvent({ type: 'done', model: activeModel });
         }
         res.end();
       }
@@ -228,19 +260,37 @@ async function startServer() {
     }
   });
 
-  if (process.env.NODE_ENV !== 'production') {
-    const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distDir = path.resolve(__dirname, 'dist');
-    app.use(express.static(distDir));
-    app.get('*', (_req: Request, res: Response) => {
-      res.sendFile(path.join(distDir, 'index.html'));
-    });
+  app.all('/api/*', (_req: Request, res: Response) => {
+    res.status(404).json({ error: 'API endpoint পাওয়া যায়নি।' });
+  });
+
+  const distDir = path.resolve(__dirname, 'dist');
+  let useViteDev = process.env.NODE_ENV !== 'production';
+
+  if (useViteDev) {
+    try {
+      const { createServer: createViteServer } = await import('vite');
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } catch {
+      useViteDev = false;
+    }
+  }
+
+  if (!useViteDev) {
+    if (fs.existsSync(distDir)) {
+      app.use(express.static(distDir));
+      app.get('*', (_req: Request, res: Response) => {
+        res.sendFile(path.join(distDir, 'index.html'));
+      });
+    } else {
+      app.get('*', (_req: Request, res: Response) => {
+        res.status(503).send('Application build (dist) is not ready yet.');
+      });
+    }
   }
 
   app.listen(port, '0.0.0.0', () => {
