@@ -26,6 +26,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { SiteSettings, RegisteredUser, PaymentRequest, PaymentStatus } from '../types';
+import { compressImageToSafeDataUrl } from '../utils/fileVault';
 
 interface AdminPanelScreenProps {
   settings: SiteSettings;
@@ -33,6 +34,8 @@ interface AdminPanelScreenProps {
   paymentRequests: PaymentRequest[];
   onSaveSettings: (updated: SiteSettings) => void;
   onDeleteUser: (userId: string) => void;
+  onDeleteAllUsers?: () => void;
+  onClearUserFiles?: (userId: string) => void;
   onApprovePayment: (paymentId: string) => void;
   onRejectPayment: (paymentId: string) => void;
   onBack: () => void;
@@ -44,6 +47,8 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
   paymentRequests,
   onSaveSettings,
   onDeleteUser,
+  onDeleteAllUsers,
+  onClearUserFiles,
   onApprovePayment,
   onRejectPayment,
   onBack,
@@ -64,7 +69,7 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
   const [bkashNumber, setBkashNumber] = useState<string>(settings.bkashNumber || '01734211584');
   const [nagadNumber, setNagadNumber] = useState<string>(settings.nagadNumber || '01734211584');
   const [subscriptionFee, setSubscriptionFee] = useState<number>(settings.subscriptionFee || 100);
-  const [newAdminPassword, setNewAdminPassword] = useState<string>(settings.adminPassword || 'Admin@Bashar2026!');
+  const [newAdminPassword, setNewAdminPassword] = useState<string>(settings.adminPassword || 'Fahmida3421');
   const [showAdminPassword, setShowAdminPassword] = useState<boolean>(false);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState<string>('');
 
@@ -73,11 +78,15 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
   const [paymentFilter, setPaymentFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
   const [revealedPasswords, setRevealedPasswords] = useState<Set<string>>(new Set());
   const [copiedTrxId, setCopiedTrxId] = useState<string | null>(null);
+  const [confirmDeleteAllUsers, setConfirmDeleteAllUsers] = useState<boolean>(false);
+  const [confirmDeleteUserId, setConfirmDeleteUserId] = useState<string | null>(null);
+  const [confirmClearFilesUserId, setConfirmClearFilesUserId] = useState<string | null>(null);
 
-  // Password verification - strictly confidential, never displayed
+  // Password verification - strictly Fahmida3421 or admin-updated password
   const handleVerifyPassword = (e: React.FormEvent) => {
     e.preventDefault();
-    if (enteredPassword === (settings.adminPassword || 'Admin@Bashar2026!')) {
+    const currentActivePassword = settings.adminPassword || 'Fahmida3421';
+    if (enteredPassword === currentActivePassword) {
       setIsAuthenticated(true);
       setAuthError('');
     } else {
@@ -94,22 +103,23 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
       bkashNumber: bkashNumber.trim() || '01734211584',
       nagadNumber: nagadNumber.trim() || '01734211584',
       subscriptionFee: Number(subscriptionFee) || 100,
-      adminPassword: newAdminPassword.trim() || 'Admin@Bashar2026!',
+      adminPassword: newAdminPassword.trim() || 'Fahmida3421',
     });
     setSaveSuccessMsg('ওয়েবসাইটের সেটিংস ও পেমেন্ট নম্বর সফলভাবে আপডেট হয়েছে!');
     setTimeout(() => setSaveSuccessMsg(''), 4000);
   };
 
-  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        if (event.target?.result) {
-          setLogoUrl(event.target.result as string);
-        }
-      };
-      reader.readAsDataURL(file);
+      const compressed = await compressImageToSafeDataUrl(file, {
+        maxDim: 320,
+        maxChars: 200_000,
+        fallbackToRaw: true,
+      });
+      if (compressed) {
+        setLogoUrl(compressed);
+      }
     }
   };
 
@@ -138,7 +148,16 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
     return p.status === paymentFilter;
   });
 
-  const filteredUsers = users.filter((u) => {
+  const uniqueUsers = React.useMemo(() => {
+    const seen = new Set<string>();
+    return users.filter((u) => {
+      if (!u || !u.id || seen.has(u.id)) return false;
+      seen.add(u.id);
+      return true;
+    });
+  }, [users]);
+
+  const filteredUsers = uniqueUsers.filter((u) => {
     const q = userSearchQuery.toLowerCase().trim();
     if (!q) return true;
     return (
@@ -599,12 +618,54 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
               <Users className="w-5 h-5 text-emerald-400" />
               <div>
                 <h3 className="text-sm font-bold text-white">Registered Users Directory</h3>
-                <p className="text-[11px] text-slate-400">সাইন আপ করা ব্যবহারকারীদের তালিকা ও পাসওয়ার্ড ইনস্পেক্টর</p>
+                <p className="text-[11px] text-slate-400">সকল নিবন্ধিত অ্যাকাউন্ট ও পাসওয়ার্ড কন্ট্রোল</p>
               </div>
             </div>
             <span className="text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2.5 py-0.5 rounded-full">
               {users.length} Users
             </span>
+          </div>
+
+          {/* Quick Notice & Master Delete All Accounts Action */}
+          <div className="bg-[#101b2d] border border-[#1e2e48] rounded-xl p-2.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2 text-slate-300 text-[11px]">
+              <ShieldCheck className="w-4 h-4 text-sky-400 shrink-0" />
+              <span>কোনো ডিফল্ট নকল ফাইল বা অ্যাকাউন্ট নেই। অ্যাডমিন যেকোনো অ্যাকাউন্ট বা ফাইল সম্পূর্ণ মুছতে পারবেন।</span>
+            </div>
+
+            {users.length > 0 && onDeleteAllUsers && (
+              confirmDeleteAllUsers ? (
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onDeleteAllUsers();
+                      setConfirmDeleteAllUsers(false);
+                    }}
+                    className="bg-rose-600 hover:bg-rose-500 text-white px-2.5 py-1.5 rounded-lg text-[11px] font-bold cursor-pointer shadow-sm"
+                  >
+                    নিশ্চিত মুছুন
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDeleteAllUsers(false)}
+                    className="bg-[#1b2940] hover:bg-[#233654] text-slate-300 px-2 py-1.5 rounded-lg text-[11px] font-semibold cursor-pointer"
+                  >
+                    বাতিল
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmDeleteAllUsers(true)}
+                  className="bg-rose-950/80 hover:bg-rose-900 border border-rose-500/40 text-rose-300 hover:text-white px-2.5 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1.5 shrink-0 transition-all cursor-pointer shadow-sm"
+                  title="Delete all registered accounts and clear all files"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                  <span>সকল অ্যাকাউন্ট মুছুন (Delete All)</span>
+                </button>
+              )
+            )}
           </div>
 
           {/* Search users */}
@@ -620,21 +681,23 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
           </div>
 
           {/* Users List */}
-          <div className="space-y-2.5 pt-1">
+          <div className="space-y-3 pt-1">
             {filteredUsers.length === 0 ? (
-              <div className="text-center py-8 text-xs text-slate-400">
-                কোনো সাইন আপ করা ব্যবহারকারী নেই।
+              <div className="text-center py-10 text-xs text-slate-400 bg-[#142134]/30 rounded-xl border border-[#20324e]/40 p-4 space-y-1">
+                <p className="font-semibold text-slate-300">কোনো সাইন আপ করা ব্যবহারকারী নেই।</p>
+                <p className="text-[11px] text-slate-400">নতুন ইউজার সাইন আপ করলে সরাসরি এই তালিকায় প্রদর্শিত হবে।</p>
               </div>
             ) : (
-              filteredUsers.map((u) => {
+              filteredUsers.map((u, idx) => {
                 const isRevealed = revealedPasswords.has(u.id);
                 const initial = (u.name.charAt(0) || u.email.charAt(0) || 'U').toUpperCase();
 
                 return (
                   <div
-                    key={u.id}
-                    className="bg-[#152338] border border-[#223654] rounded-xl p-3 space-y-2 text-xs"
+                    key={`${u.id}-${idx}`}
+                    className="bg-[#152338] border border-[#223654] rounded-xl p-3.5 space-y-2.5 text-xs shadow-md"
                   >
+                    {/* Top Row: User Avatar, Name, Email & Delete */}
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2.5 min-w-0">
                         {u.avatarUrl ? (
@@ -658,22 +721,41 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
                             )}
                           </div>
                           <p className="text-[11px] text-slate-300 truncate">{u.email}</p>
-                          {u.phone && <p className="text-[10px] text-slate-400">{u.phone}</p>}
+                          {u.phone && <p className="text-[10px] text-slate-400 font-mono">{u.phone}</p>}
                         </div>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (confirm(`Are you sure you want to delete user ${u.name}?`)) {
-                            onDeleteUser(u.id);
-                          }
-                        }}
-                        className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 transition-colors shrink-0"
-                        title="Delete User"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      {confirmDeleteUserId === u.id ? (
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onDeleteUser(u.id);
+                              setConfirmDeleteUserId(null);
+                            }}
+                            className="px-2 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-bold cursor-pointer"
+                          >
+                            নিশ্চিত
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteUserId(null)}
+                            className="px-2 py-1.5 rounded-lg bg-[#1d2e49] text-slate-300 text-[11px] font-semibold cursor-pointer"
+                          >
+                            বাতিল
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteUserId(u.id)}
+                          className="px-2.5 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-[11px] font-bold transition-colors shrink-0 flex items-center gap-1 cursor-pointer"
+                          title="Delete User Account"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                          <span>ডিলিট (Delete)</span>
+                        </button>
+                      )}
                     </div>
 
                     {/* Password Inspector */}
@@ -689,7 +771,7 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
                       <button
                         type="button"
                         onClick={() => togglePasswordReveal(u.id)}
-                        className="text-slate-400 hover:text-white p-0.5 text-[11px] flex items-center gap-1"
+                        className="text-slate-400 hover:text-white p-0.5 text-[11px] flex items-center gap-1 cursor-pointer"
                       >
                         {isRevealed ? (
                           <>
@@ -705,10 +787,48 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
                       </button>
                     </div>
 
-                    <div className="flex items-center justify-between text-[10px] text-slate-400 pt-0.5 border-t border-[#1a2b42]">
-                      <span>Registered: {u.registeredAt}</span>
-                      <span>{u.filesCount || 0} files ({u.storageUsedMB || 0} MB)</span>
+                    {/* Meta Info */}
+                    <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1 border-t border-[#1a2b42]">
+                      <span>নিবন্ধন: {u.registeredAt}</span>
+                      <span>{u.filesCount || 0} ফাইল ({u.storageUsedMB || 0} MB)</span>
                     </div>
+
+                    {/* Action buttons row for this user */}
+                    {onClearUserFiles && (
+                      <div className="flex items-center gap-2 pt-1 border-t border-[#18273d]">
+                        {confirmClearFilesUserId === u.id ? (
+                          <div className="flex items-center gap-2 w-full">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onClearUserFiles(u.id);
+                                setConfirmClearFilesUserId(null);
+                              }}
+                              className="flex-1 bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-bold py-1.5 px-2 rounded-lg cursor-pointer"
+                            >
+                              হ্যাঁ, সব ফাইল মুছুন
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmClearFilesUserId(null)}
+                              className="px-3 bg-[#1d2e49] text-slate-300 text-[10px] font-semibold py-1.5 rounded-lg cursor-pointer"
+                            >
+                              বাতিল
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmClearFilesUserId(u.id)}
+                            className="flex-1 bg-[#1a263a] hover:bg-[#22334e] border border-[#283e61] text-slate-300 hover:text-white text-[10px] font-semibold py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer"
+                            title="Clear all files for this user"
+                          >
+                            <Trash2 className="w-3 h-3 text-amber-400" />
+                            <span>সকল ফাইল মুছুন</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Mail, Phone, Lock, Eye, EyeOff, User, ArrowRight, Upload, Camera, ShieldCheck, UserPlus, LogIn, AlertCircle, Globe, CheckCircle2, RefreshCw } from 'lucide-react';
 import { UserProfile, RegisteredUser } from '../types';
 import { firestoreService } from '../firebase/firestoreService';
+import { compressImageToSafeDataUrl } from '../utils/fileVault';
 
 interface AuthScreenProps {
   websiteName?: string;
@@ -33,17 +34,18 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [loadingText, setLoadingText] = useState('যাচাই করা হচ্ছে...');
 
-  // Profile picture upload handler
-  const handleAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Profile picture upload handler (compressed cleanly so Firestore 1MB limit is never exceeded)
+  const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        if (event.target?.result) {
-          setAvatarUrl(event.target.result as string);
-        }
-      };
-      reader.readAsDataURL(file);
+      const compressed = await compressImageToSafeDataUrl(file, {
+        maxDim: 320,
+        maxChars: 150_000,
+        fallbackToRaw: true,
+      });
+      if (compressed) {
+        setAvatarUrl(compressed);
+      }
     }
   };
 
@@ -245,7 +247,8 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
   };
 
   return (
-    <div className="flex-1 flex flex-col justify-between px-6 pt-5 pb-7 text-white overflow-y-auto">
+    <div className="flex-1 flex flex-col px-6 py-7 text-white overflow-y-auto">
+      <div className="my-auto flex flex-col gap-5">
       {/* Top Branding Header */}
       <div className="flex flex-col items-center text-center">
         <div className="mb-2.5 relative group">
@@ -266,7 +269,7 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
 
         {/* Global Cross-Site Cloud Badge */}
         <div className="mt-2.5 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-[10px] font-medium text-emerald-300 shadow-sm">
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
           <span>সার্বজনীন ক্লাউড সিঙ্ক সক্রিয় (Multi-domain Sync)</span>
         </div>
       </div>
@@ -549,6 +552,7 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
               : 'ইতিমধ্যে অ্যাকাউন্ট আছে? উপরের বারে "লগইন (Sign In)" চাপুন'}
           </p>
         </div>
+      </div>
       </div>
     </div>
   );

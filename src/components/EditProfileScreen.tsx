@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ChevronLeft, User, Phone, Mail, Camera, Upload, Check, Save } from 'lucide-react';
 import { UserProfile } from '../types';
+import { compressImageToSafeDataUrl } from '../utils/fileVault';
 
 interface EditProfileScreenProps {
   user: UserProfile;
@@ -18,26 +19,29 @@ export const EditProfileScreen: React.FC<EditProfileScreenProps> = ({
   const [email, setEmail] = useState(user.email || '');
   const [avatarUrl, setAvatarUrl] = useState<string>(user.avatarUrl || '');
   const [successMsg, setSuccessMsg] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
 
-  // Handle avatar upload
-  const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Handle avatar upload (compressed cleanly so Firestore 1MB limit is never exceeded)
+  const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        if (event.target?.result) {
-          setAvatarUrl(event.target.result as string);
-        }
-      };
-      reader.readAsDataURL(file);
+      const compressed = await compressImageToSafeDataUrl(file, {
+        maxDim: 320,
+        maxChars: 150_000,
+        fallbackToRaw: true,
+      });
+      if (compressed) {
+        setAvatarUrl(compressed);
+      }
     }
   };
 
   // Direct save without any OTP or verification code ("ভেরিফিকেশন করতে হবে না")
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
+    setErrorMsg('');
     if (!fullName.trim()) {
-      alert('অনুগ্রহ করে আপনার পুরো নাম লিখুন (Please enter your name)');
+      setErrorMsg('অনুগ্রহ করে আপনার পুরো নাম লিখুন (Please enter your name)');
       return;
     }
 
@@ -162,6 +166,12 @@ export const EditProfileScreen: React.FC<EditProfileScreenProps> = ({
               />
             </div>
           </div>
+
+          {errorMsg && (
+            <div className="p-3 bg-rose-950/70 border border-rose-500/40 rounded-xl text-xs text-rose-300 flex items-center justify-center gap-2">
+              <span>{errorMsg}</span>
+            </div>
+          )}
 
           {successMsg && (
             <div className="p-3 bg-emerald-950/70 border border-emerald-500/40 rounded-xl text-xs text-emerald-300 flex items-center justify-center gap-2 animate-in fade-in">

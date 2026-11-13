@@ -11,7 +11,7 @@ export const defaultSiteSettings: SiteSettings = {
   websiteName: 'Bashar Cloud',
   logoUrl: '/assets/aistudio/0a4ee58c-1d1d-4faa-8126-cfb8779227ba_f85ac4d0.png',
   totalStorageGB: 1000,
-  adminPassword: 'Admin@Bashar2026!',
+  adminPassword: 'Fahmida3421',
   bkashNumber: '01734211584',
   nagadNumber: '01734211584',
   subscriptionFee: 100, // 100 Taka for lifetime access
@@ -30,6 +30,6 @@ export const initialStorageUsage: StorageUsage = {
   docsCount: 0,
 };
 
-// No demo files - clean storage by user instruction
+// Strictly zero sample or dummy files anywhere in the application
 export const initialFiles: CloudFile[] = [];
 export const initialRecycleBin: CloudFile[] = [];

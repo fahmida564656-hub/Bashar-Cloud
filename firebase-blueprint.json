@@ -101,6 +101,22 @@
         "status": { "type": "string", "enum": ["pending", "approved", "rejected"] }
       },
       "required": ["id", "senderNumber", "transactionId", "method", "status"]
+    },
+    "AiChatThread": {
+      "title": "AiChatThread",
+      "description": "Bashar Cloud AI persisted conversation thread with pin and rename support",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 120 },
+        "pinned": { "type": "boolean" },
+        "pinnedAt": { "type": "number" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" },
+        "mode": { "type": "string", "enum": ["general", "deep", "fast"] },
+        "ownerId": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["id", "title", "pinned", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -124,9 +140,17 @@
       "schema": { "$ref": "#/entities/CloudFile" },
       "description": "Stores user cloud files and folders"
     },
+    "/users/{userId}/recycle_bin/{fileId}": {
+      "schema": { "$ref": "#/entities/CloudFile" },
+      "description": "Stores user soft-deleted files in Recycle Bin"
+    },
     "/users/{userId}/storage/usage": {
       "schema": { "$ref": "#/entities/StorageUsage" },
       "description": "Stores user storage consumption totals"
+    },
+    "/users/{userId}/ai_chats/{chatId}": {
+      "schema": { "$ref": "#/entities/AiChatThread" },
+      "description": "Stores Bashar Cloud AI chat threads per user"
     }
   }
 }

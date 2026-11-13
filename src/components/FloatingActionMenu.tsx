@@ -25,6 +25,7 @@ interface FloatingActionMenuProps {
   onToggle: () => void;
   onSelectAction: (action: FabActionType) => void;
   onUploadNativeFile?: (file: File) => void;
+  onUploadFiles?: (files: File[]) => void;
 }
 
 export const FloatingActionMenu: React.FC<FloatingActionMenuProps> = ({
@@ -32,31 +33,66 @@ export const FloatingActionMenu: React.FC<FloatingActionMenuProps> = ({
   onToggle,
   onSelectAction,
   onUploadNativeFile,
+  onUploadFiles,
 }) => {
-  const genericInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const videoInputRef = useRef<HTMLInputElement>(null);
+  const audioInputRef = useRef<HTMLInputElement>(null);
+  const docInputRef = useRef<HTMLInputElement>(null);
   const zipInputRef = useRef<HTMLInputElement>(null);
 
   const handleNativeUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0] && onUploadNativeFile) {
-      onUploadNativeFile(e.target.files[0]);
+    if (e.target.files && e.target.files.length > 0) {
+      const fileList = Array.from(e.target.files);
+      if (onUploadFiles) {
+        onUploadFiles(fileList);
+      } else if (onUploadNativeFile) {
+        onUploadNativeFile(fileList[0]);
+      }
+      e.target.value = '';
     }
   };
 
   return (
     <>
-      {/* Hidden file input for general files */}
+      {/* Category-specific hidden file inputs */}
       <input
         type="file"
-        ref={genericInputRef}
+        ref={imageInputRef}
+        accept="image/*"
+        multiple
         onChange={handleNativeUpload}
         className="hidden"
       />
-
-      {/* Hidden file input for ZIP files specifically */}
+      <input
+        type="file"
+        ref={videoInputRef}
+        accept="video/*"
+        multiple
+        onChange={handleNativeUpload}
+        className="hidden"
+      />
+      <input
+        type="file"
+        ref={audioInputRef}
+        accept="audio/*"
+        multiple
+        onChange={handleNativeUpload}
+        className="hidden"
+      />
+      <input
+        type="file"
+        ref={docInputRef}
+        accept=".pdf,.doc,.docx,.txt,.md,.csv,.json,.xls,.xlsx,.ppt,.pptx,.xml,.log"
+        multiple
+        onChange={handleNativeUpload}
+        className="hidden"
+      />
       <input
         type="file"
         ref={zipInputRef}
         accept=".zip,.rar,.7z,.tar,.gz"
+        multiple
         onChange={handleNativeUpload}
         className="hidden"
       />
@@ -70,10 +106,10 @@ export const FloatingActionMenu: React.FC<FloatingActionMenuProps> = ({
       )}
 
       {/* Action items stack */}
-      <div className="absolute bottom-20 right-4 flex flex-col items-end gap-2.5 z-40">
+      <div className="fixed sm:absolute bottom-[68px] right-4 flex flex-col items-end gap-2.5 z-40">
         {isOpen && (
           <div className="flex flex-col items-end gap-2.5 mb-1 animate-in fade-in slide-in-from-bottom-5 duration-200">
-            {/* 1. Create New File ("ফাইল তৈরি করতে পারবে, ফাইলের নাম দিতে পারবে") */}
+            {/* 1. Create New File */}
             <div className="flex items-center gap-2">
               <span className="bg-[#121c2e] border border-blue-500/30 text-white text-[11px] font-semibold px-2.5 py-1 rounded-lg shadow-lg">
                 নতুন ফাইল তৈরি করুন
@@ -91,7 +127,7 @@ export const FloatingActionMenu: React.FC<FloatingActionMenuProps> = ({
               </button>
             </div>
 
-            {/* 2. Upload ZIP Archive ("জিপ ফাইল আপলোড করতে পারবে") */}
+            {/* 2. Upload ZIP Archive */}
             <div className="flex items-center gap-2">
               <span className="bg-[#121c2e] border border-amber-500/30 text-amber-300 text-[11px] font-semibold px-2.5 py-1 rounded-lg shadow-lg">
                 জিপ ফাইল আপলোড (ZIP)
@@ -99,7 +135,6 @@ export const FloatingActionMenu: React.FC<FloatingActionMenuProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  onSelectAction('upload-zip');
                   zipInputRef.current?.click();
                   onToggle();
                 }}
@@ -136,8 +171,7 @@ export const FloatingActionMenu: React.FC<FloatingActionMenuProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  onSelectAction('image');
-                  genericInputRef.current?.click();
+                  imageInputRef.current?.click();
                   onToggle();
                 }}
                 className="w-11 h-11 rounded-2xl bg-[#132d42] border border-[#1d4d73] text-[#06b6d4] shadow-xl flex items-center justify-center hover:scale-110 active:scale-95 transition-all group"
@@ -155,8 +189,7 @@ export const FloatingActionMenu: React.FC<FloatingActionMenuProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  onSelectAction('document');
-                  genericInputRef.current?.click();
+                  docInputRef.current?.click();
                   onToggle();
                 }}
                 className="w-11 h-11 rounded-2xl bg-[#2a1c42] border border-[#522d86] text-[#a855f7] shadow-xl flex items-center justify-center hover:scale-110 active:scale-95 transition-all group"
@@ -174,8 +207,7 @@ export const FloatingActionMenu: React.FC<FloatingActionMenuProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  onSelectAction('video');
-                  genericInputRef.current?.click();
+                  videoInputRef.current?.click();
                   onToggle();
                 }}
                 className="w-11 h-11 rounded-2xl bg-[#3b1928] border border-[#6b2545] text-rose-400 shadow-xl flex items-center justify-center hover:scale-110 active:scale-95 transition-all group"
@@ -193,8 +225,7 @@ export const FloatingActionMenu: React.FC<FloatingActionMenuProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  onSelectAction('audio');
-                  genericInputRef.current?.click();
+                  audioInputRef.current?.click();
                   onToggle();
                 }}
                 className="w-11 h-11 rounded-2xl bg-[#332b13] border border-[#63531f] text-yellow-400 shadow-xl flex items-center justify-center hover:scale-110 active:scale-95 transition-all group"
@@ -210,7 +241,7 @@ export const FloatingActionMenu: React.FC<FloatingActionMenuProps> = ({
         <button
           type="button"
           onClick={onToggle}
-          className={`w-14 h-14 rounded-2xl shadow-2xl flex items-center justify-center transition-all duration-200 active:scale-95 ${
+          className={`w-12 h-12 rounded-2xl shadow-2xl flex items-center justify-center transition-all duration-200 active:scale-95 cursor-pointer ${
             isOpen
               ? 'bg-[#1b2b46] border border-[#2c4570] text-blue-400 rotate-90 shadow-blue-900/40'
               : 'bg-[#5b87f7] hover:bg-blue-600 text-white shadow-blue-600/50 hover:shadow-blue-500/60'
@@ -218,9 +249,9 @@ export const FloatingActionMenu: React.FC<FloatingActionMenuProps> = ({
           title={isOpen ? 'Close menu' : 'Add files or folders'}
         >
           {isOpen ? (
-            <X className="w-6 h-6" />
+            <X className="w-5 h-5" />
           ) : (
-            <Plus className="w-7 h-7 stroke-[2.5]" />
+            <Plus className="w-6 h-6 stroke-[2.5]" />
           )}
         </button>
       </div>

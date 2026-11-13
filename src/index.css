@@ -87,14 +87,23 @@ html.light .text-slate-500 {
   color: #94a3b8 !important;
 }
 
-html.light input:not([type="checkbox"]):not([type="radio"]) {
+html.light input:not([type="checkbox"]):not([type="radio"]),
+html.light textarea,
+html.light select {
   background-color: #ffffff !important;
   color: #0f172a !important;
   border-color: #cbd5e1 !important;
 }
 
-html.light input::placeholder {
+html.light input::placeholder,
+html.light textarea::placeholder {
   color: #94a3b8 !important;
+}
+
+html.light .bg-blue-600.text-white,
+html.light .bg-gradient-to-r.text-white,
+html.light .ai-solid-text-white {
+  color: #ffffff !important;
 }
 
 html.light nav.bg-\[\#0b111c\]\/90,

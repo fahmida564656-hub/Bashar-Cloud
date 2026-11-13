@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import {
   Search,
   Grid as GridIcon,
@@ -26,15 +26,19 @@ import {
   Sparkles,
   ArrowUpDown,
   ChevronDown,
+  ChevronLeft,
   Calendar,
   HardDrive,
   ArrowDownAZ,
   Archive,
   FilePlus,
+  Info,
+  History,
 } from 'lucide-react';
-import { CloudFile, FileType } from '../types';
+import { CloudFile, FileType, FileVersion } from '../types';
 import { ViewMode, toggleViewMode, normalizeViewMode } from '../utils/fileView';
 import { SortKey, SortOrder, SORT_OPTIONS, sortFiles } from '../utils/fileSort';
+import { FileInfoModal } from './Modals';
 
 interface FilesScreenProps {
   files: CloudFile[];
@@ -56,7 +60,11 @@ interface FilesScreenProps {
   onPlayAudio?: (file: CloudFile) => void;
   onOpenFilePreview?: (file: CloudFile) => void;
   onUploadMultipleFiles?: (files: File[]) => void;
+  onClearAllFiles?: () => void;
+  onRestoreVersion?: (file: CloudFile, version: FileVersion) => void;
+  onUploadNewVersion?: (file: CloudFile, newFile: File) => void;
   initialFilter?: string;
+  initialFolderId?: string | null;
 }
 
 export const FilesScreen: React.FC<FilesScreenProps> = ({
@@ -79,9 +87,25 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
   onPlayAudio,
   onOpenFilePreview,
   onUploadMultipleFiles,
+  onClearAllFiles,
+  onRestoreVersion,
+  onUploadNewVersion,
   initialFilter = 'all',
+  initialFolderId = null,
 }) => {
+  const [isDragging, setIsDragging] = useState(false);
+  const [selectedInfoFile, setSelectedInfoFile] = useState<CloudFile | null>(null);
   const [filter, setFilter] = useState<string>(initialFilter);
+  const [activeFolderId, setActiveFolderId] = useState<string | null>(initialFolderId ?? null);
+
+  useEffect(() => {
+    setFilter(initialFilter);
+  }, [initialFilter]);
+
+  useEffect(() => {
+    setActiveFolderId(initialFolderId ?? null);
+  }, [initialFolderId]);
+
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     try {
       const saved = localStorage.getItem('bashar_cloud_files_view');
@@ -165,10 +189,18 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
     { id: 'archive', label: 'ZIP Files', icon: <Archive className="w-3.5 h-3.5 mr-1" /> },
   ];
 
-  // Filter and sort files by key (name, date, size) and order (asc, desc)
+  const activeFolder = useMemo(
+    () => (activeFolderId ? files.find((f) => f.id === activeFolderId && f.type === 'folder') || null : null),
+    [files, activeFolderId]
+  );
+
+  // Filter and sort files by folder, type, key (name, date, size) and order (asc, desc)
   const filteredFiles = useMemo(() => {
     const filtered = files.filter((f) => {
-      if (filter === 'all') return true;
+      if (filter === 'all') {
+        const folderTarget = activeFolder ? activeFolder.id : null;
+        return (f.parentFolderId ?? null) === folderTarget && f.id !== folderTarget;
+      }
       if (filter === 'image') return f.type === 'image';
       if (filter === 'video') return f.type === 'video';
       if (filter === 'audio') return f.type === 'audio';
@@ -177,9 +209,12 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
       return true;
     });
     return sortFiles(filtered, sortKey, sortOrder, true);
-  }, [files, filter, sortKey, sortOrder]);
+  }, [files, filter, activeFolder, sortKey, sortOrder]);
 
   const availableFolders = files.filter((f) => f.type === 'folder');
+  const activeInfoFile = selectedInfoFile
+    ? files.find((f) => f.id === selectedInfoFile.id) || selectedInfoFile
+    : null;
 
   const requireUnlocked = (actionLabel: string): boolean => {
     if (isLocked) {
@@ -229,8 +264,10 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
 
     if (!requireUnlocked('ফাইল দেখতে')) return;
 
-    if (file.type === 'folder' && onOpenFolder) {
-      onOpenFolder(file);
+    if (file.type === 'folder') {
+      setActiveFolderId(file.id);
+      setFilter('all');
+      if (onOpenFolder) onOpenFolder(file);
     } else if (file.type === 'audio' && onPlayAudio) {
       onPlayAudio(file);
     } else if (onOpenFilePreview) {
@@ -372,8 +409,44 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
 
   const isAllSelected = filteredFiles.length > 0 && selectedIds.size === filteredFiles.length;
 
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0 && onUploadMultipleFiles) {
+      if (requireUnlocked('ফাইল আপলোড করতে')) {
+        onUploadMultipleFiles(Array.from(e.dataTransfer.files));
+      }
+    }
+  };
+
   return (
-    <div className="flex-1 flex flex-col px-4 pt-3 pb-24 text-white relative">
+    <div
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className="flex-1 flex flex-col px-4 pt-3 pb-24 text-white relative"
+    >
+      {/* Drag & Drop Visual Overlay */}
+      {isDragging && (
+        <div className="absolute inset-0 z-50 bg-blue-950/90 backdrop-blur-md border-2 border-dashed border-blue-400 rounded-3xl m-2 flex flex-col items-center justify-center p-6 text-center animate-in fade-in">
+          <div className="w-16 h-16 rounded-2xl bg-blue-600/30 border border-blue-400 flex items-center justify-center text-blue-300 mb-3 animate-bounce">
+            <Upload className="w-8 h-8" />
+          </div>
+          <h3 className="text-lg font-bold text-white mb-1">ফাইলগুলো এখানে ছেড়ে দিন (Drop Files Here)</h3>
+          <p className="text-xs text-blue-200">ফাইলগুলো সরাসরি Bashar Cloud ড্রাইভে আপলোড ও সেভ হবে</p>
+        </div>
+      )}
+
       {/* Hidden Multi-file input */}
       <input
         type="file"
@@ -385,10 +458,23 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
 
       {/* Top Header */}
       <div className="flex items-center justify-between mb-2">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-white leading-tight">
-            All Files
-          </h1>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            {activeFolder && filter === 'all' && (
+              <button
+                type="button"
+                onClick={() => setActiveFolderId(activeFolder.parentFolderId ?? null)}
+                className="w-8 h-8 rounded-xl bg-[#131f32] border border-[#20324e] flex items-center justify-center text-slate-300 hover:text-white shrink-0 cursor-pointer"
+                title="Back to parent folder"
+                aria-label="Back to parent folder"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+            )}
+            <h1 className="text-2xl font-bold tracking-tight text-white leading-tight truncate">
+              {activeFolder && filter === 'all' ? activeFolder.name : 'All Files'}
+            </h1>
+          </div>
           <p className="text-[12px] text-slate-400">
             {filteredFiles.length} item{filteredFiles.length !== 1 ? 's' : ''} available
           </p>
@@ -608,28 +694,54 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
         </div>
       )}
 
-      {/* Files List / Grid */}
-      {filteredFiles.length === 0 ? (
-        <div className="flex-1 flex flex-col items-center justify-center text-center py-16 px-4">
-          <div className="w-16 h-16 rounded-2xl bg-[#142134] border border-[#20324e] flex items-center justify-center mb-3">
-            <Folder className="w-8 h-8 text-slate-500" />
-          </div>
-          <h3 className="text-sm font-bold text-white mb-1">No files found</h3>
-          <p className="text-xs text-slate-400 mb-4 max-w-[240px]">
-            {filter !== 'all' ? `No ${filter}s in your cloud storage yet.` : 'Start by uploading your files or photos.'}
-          </p>
+      {/* Folder Breadcrumb Bar when inside a subfolder */}
+      {activeFolder && filter === 'all' && (
+        <div className="flex items-center gap-1.5 text-xs text-slate-300 bg-[#111b2c] border border-[#1d2e4a] rounded-xl px-3 py-1.5 mb-2">
           <button
             type="button"
-            onClick={() => {
-              if (requireUnlocked('ফাইল আপলোড করতে')) {
-                fileInputRef.current?.click();
-              }
-            }}
-            className="bg-[#3658dc] hover:bg-blue-600 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-md flex items-center gap-1.5 cursor-pointer"
+            onClick={() => setActiveFolderId(null)}
+            className="text-sky-400 hover:text-sky-300 font-semibold cursor-pointer"
           >
-            <Upload className="w-4 h-4" />
-            <span>Upload Files</span>
+            All Files
           </button>
+          <span className="text-slate-500">/</span>
+          <span className="text-white font-semibold truncate">{activeFolder.name}</span>
+        </div>
+      )}
+
+      {/* Files List / Grid */}
+      {filteredFiles.length === 0 ? (
+        <div className="flex-1 flex flex-col items-center justify-center text-center py-16 px-4 bg-[#121c2c]/60 rounded-3xl border border-[#1f3049]/60 my-2 shadow-inner">
+          <div className="w-16 h-16 rounded-2xl bg-[#142134] border border-[#20324e] flex items-center justify-center mb-3 text-slate-400">
+            <Folder className="w-8 h-8 text-blue-400/80" />
+          </div>
+          <h3 className="text-base font-bold text-white mb-1">
+            {activeFolder && filter === 'all'
+              ? `"${activeFolder.name}" ফোল্ডারটি খালি`
+              : filter !== 'all'
+              ? `কোনো ${filter} ফাইল নেই`
+              : 'আপনার ক্লাউড ড্রাইভ সম্পূর্ণ খালি'}
+          </h3>
+          <p className="text-xs text-slate-400 mb-4 max-w-[280px] leading-relaxed">
+            {filter !== 'all'
+              ? 'এই ক্যাটাগরিতে কোনো ফাইল নেই। নতুন ফাইল আপলোড করুন।'
+              : 'এখানে আপনার আপলোড করা বা তৈরি করা ফাইলগুলো সুরক্ষিত থাকবে। শুরু করতে নতুন ফাইল আপলোড করুন।'}
+          </p>
+
+          <div className="flex flex-col sm:flex-row items-center gap-2.5 w-full max-w-[260px]">
+            <button
+              type="button"
+              onClick={() => {
+                if (requireUnlocked('ফাইল আপলোড করতে')) {
+                  fileInputRef.current?.click();
+                }
+              }}
+              className="w-full bg-[#3658dc] hover:bg-blue-600 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-md flex items-center justify-center gap-1.5 cursor-pointer transition-all active:scale-95"
+            >
+              <Upload className="w-4 h-4" />
+              <span>ফাইল আপলোড (Upload Files)</span>
+            </button>
+          </div>
         </div>
       ) : viewMode === 'grid' ? (
         /* GRID VIEW */
@@ -703,6 +815,19 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                           >
                             <button
                               type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setActiveMenuFileId(null);
+                                setSelectedInfoFile(file);
+                              }}
+                              className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-[#182944] text-slate-200 flex items-center gap-2"
+                            >
+                              <Info className="w-3.5 h-3.5 text-amber-400" />
+                              <span>তথ্য ও ভার্সন ইতিহাস</span>
+                            </button>
+
+                            <button
+                              type="button"
                               onClick={(e) => handleOpenRename(file, e)}
                               className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-[#182944] text-slate-200 flex items-center gap-2"
                             >
@@ -769,9 +894,9 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                 {/* Visual Preview / Thumbnail Area (Enhanced for Images visibility) */}
                 {file.type === 'image' ? (
                   <div className="w-full h-28 rounded-xl overflow-hidden bg-[#09111f] mb-2 relative flex items-center justify-center border border-[#1b2a42] group-hover:border-blue-500/50 transition-colors">
-                    {file.url ? (
+                    {(file.thumbnail || file.url) ? (
                       <img
-                        src={file.url}
+                        src={file.url || file.thumbnail}
                         alt={file.name}
                         className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                         loading="lazy"
@@ -808,7 +933,9 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                   }`}>
                     {getFileIcon(file.type)}
                     <span className="text-[10px] font-semibold capitalize mt-1 opacity-80">
-                      {file.type === 'folder' ? `${file.itemCount || 0} items` : file.type}
+                      {file.type === 'folder'
+                        ? `${files.filter((c) => c.parentFolderId === file.id).length} items`
+                        : file.type}
                     </span>
                   </div>
                 )}
@@ -862,9 +989,9 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                     {isSelected && <Check className="w-3.5 h-3.5" />}
                   </div>
 
-                  {file.type === 'image' && file.url ? (
+                  {file.type === 'image' && (file.url || file.thumbnail) ? (
                     <div className="w-10 h-10 rounded-xl overflow-hidden shrink-0 border border-[#1b2a42] bg-[#09111f]">
-                      <img src={file.url} alt={file.name} className="w-full h-full object-cover" />
+                      <img src={file.url || file.thumbnail} alt={file.name} className="w-full h-full object-cover" />
                     </div>
                   ) : (
                     <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
@@ -918,6 +1045,19 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                           onClick={(e) => e.stopPropagation()}
                           className="absolute right-0 top-7 z-30 w-44 bg-[#101b2d] border border-[#203454] rounded-2xl p-1.5 shadow-2xl text-xs space-y-1 animate-in zoom-in-95"
                         >
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveMenuFileId(null);
+                              setSelectedInfoFile(file);
+                            }}
+                            className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-[#182944] text-slate-200 flex items-center gap-2"
+                          >
+                            <Info className="w-3.5 h-3.5 text-amber-400" />
+                            <span>তথ্য ও ভার্সন ইতিহাস</span>
+                          </button>
+
                           <button
                             type="button"
                             onClick={(e) => handleOpenRename(file, e)}
@@ -1282,6 +1422,17 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* FILE INFO & VERSION HISTORY MODAL */}
+      {activeInfoFile && (
+        <FileInfoModal
+          file={activeInfoFile}
+          isOpen={!!activeInfoFile}
+          onClose={() => setSelectedInfoFile(null)}
+          onRestoreVersion={onRestoreVersion}
+          onUploadNewVersion={onUploadNewVersion}
+        />
       )}
     </div>
   );

@@ -7,6 +7,18 @@ export interface ArchiveEntry {
   isDir?: boolean;
 }
 
+export interface FileVersion {
+  versionId: string;
+  versionNumber: number;
+  timestamp: string;
+  sizeBytes: number;
+  formattedSize: string;
+  action: 'Created' | 'Modified' | 'Renamed' | 'Re-uploaded' | 'Restored';
+  modifiedBy?: string;
+  note?: string;
+  name?: string;
+}
+
 export interface CloudFile {
   id: string;
   name: string;
@@ -22,6 +34,8 @@ export interface CloudFile {
   content?: string; // Text content for user-created documents/notes
   extension?: string;
   archiveEntries?: ArchiveEntry[]; // Inspected entries inside zip files
+  ownerId?: string;
+  versions?: FileVersion[]; // File version history of uploads & modifications
 }
 
 export interface UserProfile {
@@ -99,7 +113,39 @@ export interface UserSubscription {
   daysRemaining: number;
 }
 
-export type MainTab = 'home' | 'files' | 'favourites' | 'me';
+export type MainTab = 'home' | 'ai' | 'files' | 'favourites' | 'me';
+
+export type AiMode = 'general' | 'deep' | 'fast';
+
+export type AiMessageRole = 'user' | 'model';
+
+export interface AiAttachment {
+  id: string;
+  name: string;
+  snippet: string;
+}
+
+export interface AiMessage {
+  id: string;
+  role: AiMessageRole;
+  text: string;
+  createdAt: number;
+  mode?: AiMode;
+  modelUsed?: string;
+  attachment?: AiAttachment;
+  isError?: boolean;
+}
+
+export interface AiChatThread {
+  id: string;
+  title: string;
+  pinned: boolean;
+  pinnedAt?: number | null;
+  createdAt: number;
+  updatedAt: number;
+  mode: AiMode;
+  messages: AiMessage[];
+}
 
 export type ScreenMode = 
   | 'main' 

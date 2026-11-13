@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Search,
   Bell,
@@ -18,13 +18,17 @@ import {
   AlertTriangle,
   FilePlus,
   Archive,
+  Folder,
+  ChevronRight,
+  Star,
 } from 'lucide-react';
-import { GPCloudLogo } from './GPCloudLogo';
-import { StorageUsage, FileType, UserSubscription } from '../types';
+import { CloudFile, StorageUsage, FileType, UserSubscription } from '../types';
 import { getStorageAlertLevel, getStorageAlertStyles } from '../utils/storageAlert';
+import { formatTotalBytesUsed } from '../utils/fileVault';
 
 interface HomeScreenProps {
   storage: StorageUsage;
+  files?: CloudFile[];
   subscription?: UserSubscription;
   websiteName?: string;
   logoUrl?: string;
@@ -37,10 +41,13 @@ interface HomeScreenProps {
   onOpenPayment?: () => void;
   onOpenCreateFile?: () => void;
   onUploadMultipleFiles?: (files: File[]) => void;
+  onOpenFilePreview?: (file: CloudFile) => void;
+  onViewAllFiles?: () => void;
 }
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({
   storage,
+  files = [],
   subscription,
   websiteName = 'Bashar Cloud',
   logoUrl,
@@ -48,18 +55,31 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   onOpenNotifications,
   onSelectCategory,
   onOpenRecycleBin,
-  onOpenUpload,
   onOpenAnalysis,
   onOpenPayment,
   onOpenCreateFile,
   onUploadMultipleFiles,
+  onOpenFilePreview,
+  onViewAllFiles,
 }) => {
+  const [isDragging, setIsDragging] = useState(false);
   const multiFileInputRef = useRef<HTMLInputElement>(null);
   const zipFileInputRef = useRef<HTMLInputElement>(null);
 
   const totalLimitGB = storage.totalGB || 1000;
-  const hasFiles = storage.usedGB > 0 || (storage.imagesCount + storage.videosCount + storage.audiosCount + storage.docsCount > 0);
-  const usedSpaceText = hasFiles ? `${storage.usedGB} GB` : '0 B';
+  const realTotalBytes = files.reduce((sum, f) => sum + (Number(f.sizeBytes) || 0), 0);
+  const hasFiles =
+    storage.usedGB > 0 ||
+    files.length > 0 ||
+    storage.imagesCount + storage.videosCount + storage.audiosCount + storage.docsCount > 0;
+  const usedSpaceText =
+    storage.usedGB >= 1
+      ? `${storage.usedGB} GB`
+      : realTotalBytes > 0
+      ? formatTotalBytesUsed(realTotalBytes)
+      : storage.usedGB > 0
+      ? `${storage.usedGB} GB`
+      : '0 B';
   const availableSpaceText = `${Math.max(0, totalLimitGB - storage.usedGB).toFixed(hasFiles ? 1 : 0)} GB`;
   const percentUsed = Math.min(100, Math.round((storage.usedGB / totalLimitGB) * 100));
 
@@ -67,6 +87,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const alertLevel = getStorageAlertLevel(storage.usedGB, totalLimitGB);
   const alertStyles = getStorageAlertStyles(alertLevel);
   const isStorageWarning = alertLevel !== 'normal';
+
+  const recentFiles = files.slice(0, 4);
 
   const handleMultiFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0 && onUploadMultipleFiles) {
@@ -79,8 +101,42 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const isApproved = subscription?.isLifetimeApproved;
   const isExpired = subscription?.isExpired && !isApproved;
 
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0 && onUploadMultipleFiles) {
+      onUploadMultipleFiles(Array.from(e.dataTransfer.files));
+    }
+  };
+
   return (
-    <div className="flex-1 flex flex-col px-4 pt-3 pb-24 text-white">
+    <div
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className="relative flex-1 flex flex-col px-4 pt-3 pb-24 text-white"
+    >
+      {/* Drag & Drop Visual Overlay */}
+      {isDragging && (
+        <div className="absolute inset-0 z-50 bg-blue-950/90 backdrop-blur-md border-2 border-dashed border-blue-400 rounded-3xl m-2 flex flex-col items-center justify-center p-6 text-center animate-in fade-in">
+          <div className="w-16 h-16 rounded-2xl bg-blue-600/30 border border-blue-400 flex items-center justify-center text-blue-300 mb-3 animate-bounce">
+            <Upload className="w-8 h-8" />
+          </div>
+          <h3 className="text-lg font-bold text-white mb-1">ফাইলগুলো এখানে ছেড়ে দিন (Drop Files Here)</h3>
+          <p className="text-xs text-blue-200">ছবি, ভিডিও, অডিও, ডকুমেন্ট বা জিপ ফাইল ড্রাইভ আপলোড হবে</p>
+        </div>
+      )}
+
       {/* Hidden Multi-file input for uploading multiple files at once */}
       <input
         type="file"
@@ -201,7 +257,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       {/* Total Storage Card with Visual Progress Bar Alert (Threshold: >= 90% of 1000GB) */}
       <div
         onClick={onOpenAnalysis}
-        className={`cursor-pointer relative overflow-hidden rounded-3xl p-5 mb-4 shadow-xl border transition-all ${alertStyles.cardBorder}`}
+        className={`cursor-pointer relative overflow-hidden rounded-3xl p-3.5 mb-2.5 shadow-xl border transition-all ${alertStyles.cardBorder}`}
         title="Tap to view Storage Analysis"
       >
         {/* Soft background glow */}
@@ -210,7 +266,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         }`} />
 
         {/* Top storage title */}
-        <div className="flex items-center justify-between mb-4 relative z-10">
+        <div className="flex items-center justify-between mb-2.5 relative z-10">
           <div className="flex items-center gap-3">
             <div className={`w-10 h-10 rounded-2xl border backdrop-blur-md flex items-center justify-center ${
               isStorageWarning ? 'bg-amber-500/20 border-amber-400/40 text-amber-300' : 'bg-white/10 border-white/20 text-white'
@@ -230,14 +286,14 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           {/* Used percentage badge with visual warning indicator */}
           <div className={`flex items-center gap-1.5 backdrop-blur-md border px-3 py-1 rounded-full text-xs font-bold shadow-sm ${alertStyles.badgeClass}`}>
             {isStorageWarning && (
-              <AlertTriangle className="w-3.5 h-3.5 text-amber-300 animate-pulse" />
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-300" />
             )}
             <span>{percentUsed}% Used</span>
           </div>
         </div>
 
         {/* Space Stats */}
-        <div className="flex items-baseline justify-between mb-3 relative z-10">
+        <div className="flex items-baseline justify-between mb-2 relative z-10">
           <div>
             <span className={`text-2xl font-black tracking-tight ${
               isStorageWarning ? 'text-amber-200' : 'text-white'
@@ -275,7 +331,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           >
             <div className="flex items-center gap-2.5 min-w-0">
               <div className="w-8 h-8 rounded-xl bg-amber-500/25 border border-amber-400/40 text-amber-300 flex items-center justify-center shrink-0">
-                <AlertTriangle className="w-4 h-4 animate-pulse" />
+                <AlertTriangle className="w-4 h-4" />
               </div>
               <div className="min-w-0">
                 <h4 className="font-bold text-white text-[12px] truncate">
@@ -300,7 +356,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       </div>
 
       {/* Storage Analysis Quick Link & Multi-Upload Shortcut */}
-      <div className="grid grid-cols-3 gap-2 mb-4">
+      <div className="grid grid-cols-3 gap-2 mb-2.5">
         <button
           type="button"
           onClick={onOpenCreateFile}
@@ -332,56 +388,128 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         </button>
       </div>
 
-      {/* Clean Slate Empty State */}
-      <div className="flex-1 flex flex-col items-center justify-center text-center p-6 bg-[#121c2c] border border-[#1f3049] rounded-3xl mb-4 shadow-inner">
-        <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-[#162744] to-[#1e345e] border border-[#264375] flex items-center justify-center text-blue-400 mb-3 shadow-lg">
-          <Upload className="w-8 h-8" />
+      {/* Vault Content Area: Shows Recent Files when populated, or Clean Empty Vault State */}
+      {recentFiles.length > 0 ? (
+        <div className="bg-[#121c2c] border border-[#1f3049] rounded-3xl p-4 mb-3 flex flex-col">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h2 className="text-sm font-bold text-white">সাম্প্রতিক ফাইল (Recent Files)</h2>
+              <p className="text-[11px] text-slate-400">সুরক্ষিত ক্লাউড ভল্টে {files.length}টি আইটেম সংরক্ষিত</p>
+            </div>
+            {onViewAllFiles && (
+              <button
+                type="button"
+                onClick={onViewAllFiles}
+                className="text-xs font-semibold text-sky-400 hover:text-sky-300 flex items-center gap-0.5 cursor-pointer"
+              >
+                <span>সব দেখুন</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          <div className="space-y-2 flex-1">
+            {recentFiles.map((file) => {
+              const previewSrc = file.thumbnail || file.url;
+              return (
+                <button
+                  key={file.id}
+                  type="button"
+                  onClick={() => (onOpenFilePreview ? onOpenFilePreview(file) : onViewAllFiles?.())}
+                  className="w-full text-left bg-[#152236] hover:bg-[#192942] border border-[#213552] rounded-2xl p-2.5 flex items-center justify-between gap-3 transition-colors cursor-pointer"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    {file.type === 'image' && previewSrc ? (
+                      <img
+                        src={previewSrc}
+                        alt={file.name}
+                        className="w-10 h-10 rounded-xl object-cover shrink-0 border border-[#243b5e]"
+                      />
+                    ) : (
+                      <div className="w-10 h-10 rounded-xl bg-[#1a2b46] border border-[#253c61] flex items-center justify-center shrink-0">
+                        {file.type === 'folder' ? (
+                          <Folder className="w-5 h-5 text-sky-400" />
+                        ) : file.type === 'video' ? (
+                          <Video className="w-5 h-5 text-purple-400" />
+                        ) : file.type === 'audio' ? (
+                          <Music className="w-5 h-5 text-amber-400" />
+                        ) : file.type === 'archive' ? (
+                          <Archive className="w-5 h-5 text-amber-400" />
+                        ) : file.type === 'image' ? (
+                          <ImageIcon className="w-5 h-5 text-blue-400" />
+                        ) : (
+                          <FileText className="w-5 h-5 text-emerald-400" />
+                        )}
+                      </div>
+                    )}
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold text-white truncate">{file.name}</div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">
+                        {file.formattedSize} • {file.date}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {file.isFavorite && <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />}
+                    <ChevronRight className="w-4 h-4 text-slate-500" />
+                  </div>
+                </button>
+              );
+            })}
+          </div>
         </div>
-        <h2 className="text-base font-bold text-white mb-1">
-          Welcome to {websiteName}
-        </h2>
-        <p className="text-xs text-slate-400 max-w-[280px] leading-relaxed mb-4">
-          নিরাপদ ক্লাউড স্টোরেজ। সহজেই নতুন ফাইল তৈরি করুন, ফাইলের নাম দিন, যেকোনো ফাইল এবং জিপ ফাইল (ZIP) আপলোড করুন।
-        </p>
+      ) : (
+        <div className="flex flex-col items-center justify-center text-center p-3 bg-[#121c2c] border border-[#1f3049] rounded-3xl mb-2.5 shadow-inner">
+          <div className="w-9 h-9 rounded-2xl bg-gradient-to-tr from-[#162744] to-[#1e345e] border border-[#264375] flex items-center justify-center text-blue-400 mb-1.5 shadow-lg">
+            <ShieldCheck className="w-4.5 h-4.5" />
+          </div>
+          <h2 className="text-sm font-bold text-white mb-0.5">
+            Welcome to {websiteName}
+          </h2>
+          <p className="text-[11px] text-slate-400 max-w-[290px] leading-snug mb-2">
+            নিরাপদ ও স্থায়ী ক্লাউড স্টোরেজ। সহজেই নতুন ফাইল তৈরি করুন, ফাইলের নাম দিন, অথবা আপনার যেকোনো ফাইল ও জিপ ফাইল (ZIP) আপলোড করুন।
+          </p>
 
-        <div className="flex flex-wrap items-center justify-center gap-2">
-          <button
-            type="button"
-            onClick={onOpenCreateFile}
-            className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold text-xs px-4 py-2.5 rounded-xl shadow-lg shadow-blue-900/40 transition-all flex items-center gap-1.5 active:scale-95 cursor-pointer"
-          >
-            <FilePlus className="w-4 h-4" />
-            <span>নতুন ফাইল তৈরি করুন</span>
-          </button>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <button
+              type="button"
+              onClick={onOpenCreateFile}
+              className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold text-xs px-3.5 py-2 rounded-xl shadow-lg shadow-blue-900/40 transition-all flex items-center gap-1.5 active:scale-95 cursor-pointer"
+            >
+              <FilePlus className="w-4 h-4" />
+              <span>নতুন ফাইল তৈরি করুন</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => zipFileInputRef.current?.click()}
-            className="bg-[#2a1c0d] hover:bg-[#3b2713] border border-amber-500/50 text-amber-300 font-semibold text-xs px-4 py-2.5 rounded-xl shadow-lg transition-all flex items-center gap-1.5 active:scale-95 cursor-pointer"
-          >
-            <Archive className="w-4 h-4 text-amber-400" />
-            <span>জিপ আপলোড (.ZIP)</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => zipFileInputRef.current?.click()}
+              className="bg-[#2a1c0d] hover:bg-[#3b2713] border border-amber-500/50 text-amber-300 font-semibold text-xs px-3.5 py-2 rounded-xl shadow-lg transition-all flex items-center gap-1.5 active:scale-95 cursor-pointer"
+            >
+              <Archive className="w-4 h-4 text-amber-400" />
+              <span>জিপ আপলোড (.ZIP)</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => multiFileInputRef.current?.click()}
-            className="bg-[#16263f] hover:bg-[#1d3254] border border-blue-500/30 text-sky-300 font-semibold text-xs px-4 py-2.5 rounded-xl transition-all flex items-center gap-1.5 active:scale-95 cursor-pointer"
-          >
-            <Upload className="w-4 h-4" />
-            <span>ফাইল আপলোড</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => multiFileInputRef.current?.click()}
+              className="bg-[#16263f] hover:bg-[#1d3254] border border-blue-500/30 text-sky-300 font-semibold text-xs px-3.5 py-2 rounded-xl transition-all flex items-center gap-1.5 active:scale-95 cursor-pointer"
+            >
+              <Upload className="w-4 h-4" />
+              <span>ফাইল আপলোড</span>
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Category Grid */}
-      <div className="grid grid-cols-4 gap-2 mb-4">
+      <div className="grid grid-cols-4 gap-2 mb-2">
         <div
           onClick={() => onSelectCategory('image')}
-          className="flex flex-col items-center justify-center p-3 rounded-2xl bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] cursor-pointer transition-all active:scale-95"
+          className="flex flex-col items-center justify-center p-2 rounded-2xl bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] cursor-pointer transition-all active:scale-95"
         >
-          <div className="w-10 h-10 rounded-xl bg-blue-500/10 text-blue-400 flex items-center justify-center mb-1.5">
-            <ImageIcon className="w-5 h-5" />
+          <div className="w-9 h-9 rounded-xl bg-blue-500/10 text-blue-400 flex items-center justify-center mb-1">
+            <ImageIcon className="w-4.5 h-4.5" />
           </div>
           <span className="text-[11px] font-medium text-slate-300">Images</span>
           <span className="text-[9px] text-slate-500">{storage.imagesCount}</span>
@@ -389,10 +517,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
         <div
           onClick={() => onSelectCategory('video')}
-          className="flex flex-col items-center justify-center p-3 rounded-2xl bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] cursor-pointer transition-all active:scale-95"
+          className="flex flex-col items-center justify-center p-2 rounded-2xl bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] cursor-pointer transition-all active:scale-95"
         >
-          <div className="w-10 h-10 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center mb-1.5">
-            <Video className="w-5 h-5" />
+          <div className="w-9 h-9 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center mb-1">
+            <Video className="w-4.5 h-4.5" />
           </div>
           <span className="text-[11px] font-medium text-slate-300">Videos</span>
           <span className="text-[9px] text-slate-500">{storage.videosCount}</span>
@@ -400,10 +528,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
         <div
           onClick={() => onSelectCategory('audio')}
-          className="flex flex-col items-center justify-center p-3 rounded-2xl bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] cursor-pointer transition-all active:scale-95"
+          className="flex flex-col items-center justify-center p-2 rounded-2xl bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] cursor-pointer transition-all active:scale-95"
         >
-          <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center mb-1.5">
-            <Music className="w-5 h-5" />
+          <div className="w-9 h-9 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center mb-1">
+            <Music className="w-4.5 h-4.5" />
           </div>
           <span className="text-[11px] font-medium text-slate-300">Audios</span>
           <span className="text-[9px] text-slate-500">{storage.audiosCount}</span>
@@ -411,10 +539,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
         <div
           onClick={() => onSelectCategory('document')}
-          className="flex flex-col items-center justify-center p-3 rounded-2xl bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] cursor-pointer transition-all active:scale-95"
+          className="flex flex-col items-center justify-center p-2 rounded-2xl bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] cursor-pointer transition-all active:scale-95"
         >
-          <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center mb-1.5">
-            <FileText className="w-5 h-5" />
+          <div className="w-9 h-9 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center mb-1">
+            <FileText className="w-4.5 h-4.5" />
           </div>
           <span className="text-[11px] font-medium text-slate-300">Docs</span>
           <span className="text-[9px] text-slate-500">{storage.docsCount}</span>
@@ -425,7 +553,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       <button
         type="button"
         onClick={onOpenRecycleBin}
-        className="w-full bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] rounded-2xl p-3 flex items-center justify-between text-xs text-slate-300 transition-colors"
+        className="w-full bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] rounded-2xl py-2.5 pl-3 pr-16 flex items-center justify-between text-xs text-slate-300 transition-colors cursor-pointer"
       >
         <div className="flex items-center gap-2.5">
           <Trash2 className="w-4 h-4 text-rose-400" />

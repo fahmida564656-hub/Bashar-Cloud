@@ -1,6 +1,11 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Test collection for verifying Firestore connectivity on boot
+    match /test/{docId} {
+      allow read: if true;
+    }
+
     // Registered users collection across all websites and domains
     match /registered_users/{userId} {
       allow read, write: if true;
@@ -25,8 +30,18 @@ service cloud.firestore {
         allow read, write: if true;
       }
 
+      // User recycle bin subcollection
+      match /recycle_bin/{fileId} {
+        allow read, write: if true;
+      }
+
       // User storage usage subcollection
       match /storage/{docId} {
+        allow read, write: if true;
+      }
+
+      // User Bashar Cloud AI chats subcollection
+      match /ai_chats/{chatId} {
         allow read, write: if true;
       }
     }

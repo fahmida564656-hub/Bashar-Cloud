@@ -158,7 +158,7 @@ export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
               <h4 className="text-[14px] font-bold text-white flex items-center gap-1.5">
                 <span>Cloud Synchronization</span>
                 {cloudSyncEnabled && (
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                  <span className="w-2 h-2 rounded-full bg-emerald-400" />
                 )}
               </h4>
               <p className="text-[11px] text-slate-400">
