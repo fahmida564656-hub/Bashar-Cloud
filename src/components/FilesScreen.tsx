@@ -31,13 +31,17 @@ import {
   HardDrive,
   ArrowDownAZ,
   Archive,
-  FilePlus,
   Info,
-  History,
+  Share2,
 } from 'lucide-react';
 import { CloudFile, FileType, FileVersion } from '../types';
 import { ViewMode, toggleViewMode, normalizeViewMode } from '../utils/fileView';
 import { SortKey, SortOrder, SORT_OPTIONS, sortFiles } from '../utils/fileSort';
+import {
+  getFileAccentTheme,
+  summarizeSelectedFiles,
+  buildBulkShareText,
+} from '../utils/fileBulkActions';
 import { FileInfoModal } from './Modals';
 
 interface FilesScreenProps {
@@ -65,6 +69,7 @@ interface FilesScreenProps {
   onUploadNewVersion?: (file: CloudFile, newFile: File) => void;
   initialFilter?: string;
   initialFolderId?: string | null;
+  onSelectionStateChange?: (active: boolean) => void;
 }
 
 export const FilesScreen: React.FC<FilesScreenProps> = ({
@@ -87,11 +92,11 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
   onPlayAudio,
   onOpenFilePreview,
   onUploadMultipleFiles,
-  onClearAllFiles,
   onRestoreVersion,
   onUploadNewVersion,
   initialFilter = 'all',
   initialFolderId = null,
+  onSelectionStateChange,
 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [selectedInfoFile, setSelectedInfoFile] = useState<CloudFile | null>(null);
@@ -160,6 +165,10 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
   const [isSelectionMode, setIsSelectionMode] = useState<boolean>(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
+  // Share modal & bulk action toast state
+  const [shareModalFiles, setShareModalFiles] = useState<CloudFile[] | null>(null);
+  const [shareCopied, setShareCopied] = useState<boolean>(false);
+
   // Lockout modal state
   const [showLockModal, setShowLockModal] = useState<boolean>(false);
   const [lockModalAction, setLockModalAction] = useState<string>('দেখা বা ব্যবহার');
@@ -179,6 +188,24 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
   const [permanentDeleteTargetIds, setPermanentDeleteTargetIds] = useState<string[] | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    onSelectionStateChange?.(isSelectionMode || selectedIds.size > 0);
+  }, [isSelectionMode, selectedIds.size, onSelectionStateChange]);
+
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      if (prev.size === 0) return prev;
+      const validIds = new Set(files.map((f) => f.id));
+      let changed = false;
+      const next = new Set<string>();
+      prev.forEach((id) => {
+        if (validIds.has(id)) next.add(id);
+        else changed = true;
+      });
+      return changed ? next : prev;
+    });
+  }, [files]);
 
   const filterTabs = [
     { id: 'all', label: 'All', icon: null },
@@ -407,6 +434,73 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
     }
   };
 
+  const selectionSummary = useMemo(
+    () => summarizeSelectedFiles(files, selectedIds),
+    [files, selectedIds]
+  );
+
+  const handleExecuteBulkShare = async () => {
+    if (!requireUnlocked('শেয়ার করতে')) return;
+    const targets = selectionSummary.selectedFiles;
+    if (targets.length === 0) return;
+
+    const shareText = buildBulkShareText(targets, 'Bashar Cloud');
+    if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+      try {
+        await navigator.share({
+          title: `Bashar Cloud — ${targets.length} File${targets.length > 1 ? 's' : ''}`,
+          text: shareText,
+        });
+        handleExitSelection();
+        return;
+      } catch (err) {
+        if ((err as Error)?.name === 'AbortError') return;
+      }
+    }
+
+    setShareCopied(false);
+    setShareModalFiles(targets);
+  };
+
+  const handleExecuteBulkDownload = () => {
+    if (!requireUnlocked('ডাউনলোড করতে')) return;
+    const targets = selectionSummary.selectedFiles.filter((f) => f.type !== 'folder');
+    if (targets.length === 0) return;
+
+    targets.forEach((file, index) => {
+      setTimeout(() => {
+        let href = file.url || '';
+        let shouldRevoke = false;
+        if (!href && typeof file.content === 'string') {
+          const blob = new Blob([file.content], { type: 'text/plain;charset=utf-8' });
+          href = URL.createObjectURL(blob);
+          shouldRevoke = true;
+        }
+        if (!href) return;
+        const a = document.createElement('a');
+        a.href = href;
+        a.download = file.name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        if (shouldRevoke) {
+          setTimeout(() => URL.revokeObjectURL(href), 1500);
+        }
+      }, index * 180);
+    });
+    handleExitSelection();
+  };
+
+  const handleCopyShareSummary = async () => {
+    if (!shareModalFiles || shareModalFiles.length === 0) return;
+    const text = buildBulkShareText(shareModalFiles, 'Bashar Cloud');
+    try {
+      await navigator.clipboard.writeText(text);
+      setShareCopied(true);
+      setTimeout(() => setShareCopied(false), 2000);
+    } catch {}
+  };
+
   const isAllSelected = filteredFiles.length > 0 && selectedIds.size === filteredFiles.length;
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -434,7 +528,9 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className="flex-1 flex flex-col px-4 pt-3 pb-24 text-white relative"
+      className={`flex-1 flex flex-col px-4 pt-3 text-white relative ${
+        selectedIds.size > 0 ? 'pb-3' : 'pb-24'
+      }`}
     >
       {/* Drag & Drop Visual Overlay */}
       {isDragging && (
@@ -516,13 +612,24 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                 setIsSelectionMode(true);
               }
             }}
-            className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
+            aria-pressed={isSelectionMode}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
               isSelectionMode
-                ? 'bg-blue-600 text-white border-blue-500 shadow-md'
-                : 'bg-[#131f32] border-[#20324e] text-slate-300 hover:text-white'
+                ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white border-blue-400 shadow-md shadow-blue-900/40'
+                : 'bg-[#131f32] border-[#20324e] text-slate-300 hover:text-white hover:border-blue-500/40'
             }`}
           >
-            {isSelectionMode ? 'Cancel' : 'Select'}
+            {isSelectionMode ? (
+              <>
+                <X className="w-3.5 h-3.5" />
+                <span>Cancel</span>
+              </>
+            ) : (
+              <>
+                <CheckSquare className="w-3.5 h-3.5 text-sky-400" />
+                <span>Select</span>
+              </>
+            )}
           </button>
 
           {/* Search Icon */}
@@ -745,54 +852,314 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
         </div>
       ) : viewMode === 'grid' ? (
         /* GRID VIEW */
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-3 pb-3">
           {filteredFiles.map((file) => {
             const isSelected = selectedIds.has(file.id);
             const isMenuOpen = activeMenuFileId === file.id;
+            const accent = getFileAccentTheme(file.type);
 
             return (
               <div
                 key={file.id}
                 onClick={() => handleItemClick(file)}
-                className={`group relative bg-[#121c2c] hover:bg-[#162338] border rounded-2xl p-2.5 cursor-pointer transition-all flex flex-col justify-between select-none ${
+                className={`group orbit-card relative overflow-hidden bg-[#121c2c] hover:bg-[#162338] rounded-2xl cursor-pointer transition-all flex flex-col justify-between select-none shadow-md ${
                   isSelected
-                    ? 'border-blue-500 ring-2 ring-blue-500/50 bg-[#162847]'
-                    : 'border-[#1f3049]'
+                    ? 'ring-2 ring-blue-500/80 bg-[#162847]'
+                    : ''
                 }`}
               >
-                {/* Top Action & Star & Three-dot menu */}
-                <div className="flex items-center justify-between mb-2">
-                  {/* Selection Checkbox */}
-                  <div
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleSelectFile(file.id);
-                    }}
-                    className={`w-5 h-5 rounded-md flex items-center justify-center transition-all cursor-pointer ${
-                      isSelected
-                        ? 'bg-blue-600 text-white shadow-md'
-                        : isSelectionMode
-                        ? 'border border-slate-400 bg-[#0b1322]'
-                        : 'opacity-40 group-hover:opacity-100 border border-slate-500 bg-[#0b1322]'
-                    }`}
-                  >
-                    {isSelected && <Check className="w-3.5 h-3.5" />}
+                <div className="p-2.5 flex flex-col justify-between flex-1 relative z-10">
+                  {/* Top Action & Type Badge & Star & Three-dot menu */}
+                  <div className="flex items-center justify-between gap-1 mb-2">
+                    <div className="flex items-center gap-1.5">
+                      {/* Selection Checkbox */}
+                      <button
+                        type="button"
+                        aria-label={isSelected ? `Deselect ${file.name}` : `Select ${file.name}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleSelectFile(file.id);
+                        }}
+                        className={`w-5 h-5 rounded-md flex items-center justify-center transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-blue-600 text-white shadow-md'
+                            : isSelectionMode
+                            ? 'border-2 border-sky-400/80 bg-[#0b1322]'
+                            : 'opacity-55 group-hover:opacity-100 border border-slate-500 bg-[#0b1322]'
+                        }`}
+                      >
+                        {isSelected && <Check className="w-3.5 h-3.5" />}
+                      </button>
+
+                      <span
+                        className={`text-[9.5px] font-bold tracking-wider px-1.5 py-0.5 rounded-md border ${accent.badgeClass}`}
+                      >
+                        {accent.shortTag}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-0.5">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onToggleFavorite(file.id);
+                        }}
+                        className="p-1 text-slate-400 hover:text-amber-400 transition-colors cursor-pointer"
+                        title={file.isFavorite ? 'Remove from Favorites' : 'Add to Favorites'}
+                      >
+                        <Star className={`w-4 h-4 ${file.isFavorite ? 'fill-amber-400 text-amber-400' : ''}`} />
+                      </button>
+
+                      {/* Three-dot Action Trigger */}
+                      {!isSelectionMode && (
+                        <div className="relative">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveMenuFileId(isMenuOpen ? null : file.id);
+                            }}
+                            className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-[#1a2d47] transition-colors cursor-pointer"
+                            title="More actions"
+                          >
+                            <MoreVertical className="w-4 h-4" />
+                          </button>
+
+                          {/* Dropdown Menu */}
+                          {isMenuOpen && (
+                            <div
+                              onClick={(e) => e.stopPropagation()}
+                              className="absolute right-0 top-7 z-30 w-44 bg-[#101b2d] border border-[#203454] rounded-2xl p-1.5 shadow-2xl text-xs space-y-1 animate-in zoom-in-95"
+                            >
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveMenuFileId(null);
+                                  setSelectedInfoFile(file);
+                                }}
+                                className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-[#182944] text-slate-200 flex items-center gap-2"
+                              >
+                                <Info className="w-3.5 h-3.5 text-amber-400" />
+                                <span>তথ্য ও ভার্সন ইতিহাস</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={(e) => handleOpenRename(file, e)}
+                                className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-[#182944] text-slate-200 flex items-center gap-2"
+                              >
+                                <Edit2 className="w-3.5 h-3.5 text-sky-400" />
+                                <span>Rename</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={(e) => handleSingleCopy(file, e)}
+                                className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-[#182944] text-slate-200 flex items-center gap-2"
+                              >
+                                <Copy className="w-3.5 h-3.5 text-blue-400" />
+                                <span>Copy</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={(e) => handleOpenSingleMove(file.id, e)}
+                                className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-[#182944] text-slate-200 flex items-center gap-2"
+                              >
+                                <FolderInput className="w-3.5 h-3.5 text-emerald-400" />
+                                <span>Move</span>
+                              </button>
+
+                              <div className="border-t border-[#1b2b42] my-1" />
+
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveMenuFileId(null);
+                                  if (!requireUnlocked('ডিলিট করতে')) return;
+                                  onDeleteFile(file.id);
+                                }}
+                                className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-rose-500/15 text-rose-300 flex items-center gap-2"
+                              >
+                                <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                                <span>Recycle Bin</span>
+                              </button>
+
+                              {onDeletePermanently && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setActiveMenuFileId(null);
+                                    if (!requireUnlocked('ডিলিট করতে')) return;
+                                    setPermanentDeleteTargetIds([file.id]);
+                                  }}
+                                  className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-rose-600/25 text-rose-400 font-semibold flex items-center gap-2"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+                                  <span>Delete Forever</span>
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
 
-                  <div className="flex items-center gap-1">
+                  {/* Visual Preview / Thumbnail Area */}
+                  {file.type === 'image' ? (
+                    <div className="w-full h-24 rounded-xl overflow-hidden bg-[#09111f] mb-2 relative flex items-center justify-center border border-[#1b2a42] group-hover:border-blue-500/50 transition-colors">
+                      {(file.thumbnail || file.url) ? (
+                        <img
+                          src={file.url || file.thumbnail}
+                          alt={file.name}
+                          className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#12233f] to-[#0a111e] text-blue-400 p-2 text-center">
+                          <ImageIcon className="w-7 h-7 mb-1 opacity-80" />
+                          <span className="text-[10px] font-semibold text-blue-300">Photo Preview</span>
+                        </div>
+                      )}
+                      <span className="absolute bottom-1.5 right-1.5 bg-black/70 backdrop-blur-xs text-[9px] text-white font-medium px-1.5 py-0.5 rounded shadow">
+                        {file.formattedSize}
+                      </span>
+                    </div>
+                  ) : file.type === 'video' ? (
+                    <div className="w-full h-24 rounded-xl overflow-hidden bg-[#0f0e1a] mb-2 relative flex items-center justify-center border border-[#2c1d3f] group-hover:border-purple-500/50 transition-colors">
+                      {file.url ? (
+                        <video src={file.url} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#24133b] to-[#0f0e1a] text-purple-400 p-2 text-center">
+                          <Video className="w-7 h-7 mb-1 opacity-80" />
+                          <span className="text-[10px] font-semibold text-purple-300">Video</span>
+                        </div>
+                      )}
+                      <span className="absolute bottom-1.5 right-1.5 bg-black/70 backdrop-blur-xs text-[9px] text-white font-medium px-1.5 py-0.5 rounded shadow">
+                        {file.formattedSize}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className={`w-full h-20 rounded-xl flex flex-col items-center justify-center mb-2 border transition-all ${
+                      file.type === 'audio' ? 'bg-[#291e10]/45 border-amber-500/25 text-amber-400' :
+                      file.type === 'archive' ? 'bg-[#2a190d]/50 border-orange-500/25 text-orange-400' :
+                      file.type === 'folder' ? 'bg-[#16263f]/45 border-sky-500/25 text-sky-400' :
+                      'bg-[#0f2923]/45 border-emerald-500/25 text-emerald-400'
+                    }`}>
+                      {getFileIcon(file.type)}
+                      <span className="text-[10px] font-semibold capitalize mt-1 opacity-85">
+                        {file.type === 'folder'
+                          ? `${files.filter((c) => c.parentFolderId === file.id).length} items`
+                          : file.type}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* File info */}
+                  <div className="pt-0.5">
+                    <h4 className="text-xs font-semibold text-white truncate mb-0.5" title={file.name}>
+                      {file.name}
+                    </h4>
+                    <div className="flex items-center justify-between text-[11px] text-slate-400">
+                      <span>{file.formattedSize}</span>
+                      <span>{file.date}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        /* LIST VIEW */
+        <div className="space-y-2 pb-3">
+          {filteredFiles.map((file) => {
+            const isSelected = selectedIds.has(file.id);
+            const isMenuOpen = activeMenuFileId === file.id;
+            const accent = getFileAccentTheme(file.type);
+
+            return (
+              <div
+                key={file.id}
+                onClick={() => handleItemClick(file)}
+                className={`group orbit-card relative overflow-hidden bg-[#121c2c] hover:bg-[#162338] rounded-2xl cursor-pointer transition-all select-none shadow-sm ${
+                  isSelected
+                    ? 'ring-2 ring-blue-500/80 bg-[#162847]'
+                    : ''
+                }`}
+              >
+                <div className="flex items-center justify-between p-2.5">
+                  <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                    {/* Selection Checkbox */}
+                    <button
+                      type="button"
+                      aria-label={isSelected ? `Deselect ${file.name}` : `Select ${file.name}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleSelectFile(file.id);
+                      }}
+                      className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 transition-all cursor-pointer ${
+                        isSelected
+                          ? 'bg-blue-600 text-white shadow-md'
+                          : isSelectionMode
+                          ? 'border-2 border-sky-400/80 bg-[#0b1322]'
+                          : 'opacity-50 group-hover:opacity-100 border border-slate-500 bg-[#0b1322]'
+                      }`}
+                    >
+                      {isSelected && <Check className="w-3.5 h-3.5" />}
+                    </button>
+
+                    {file.type === 'image' && (file.url || file.thumbnail) ? (
+                      <div className="w-10 h-10 rounded-xl overflow-hidden shrink-0 border border-[#1b2a42] bg-[#09111f]">
+                        <img src={file.url || file.thumbnail} alt={file.name} className="w-full h-full object-cover" />
+                      </div>
+                    ) : (
+                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                        file.type === 'image' ? 'bg-[#15233c] text-blue-400' :
+                        file.type === 'video' ? 'bg-[#25173c] text-purple-400' :
+                        file.type === 'audio' ? 'bg-[#291e10] text-amber-400' :
+                        file.type === 'archive' ? 'bg-[#2a190d] text-orange-400' :
+                        file.type === 'folder' ? 'bg-[#16263f] text-sky-400' :
+                        'bg-[#0f2923] text-emerald-400'
+                      }`}>
+                        {getFileIcon(file.type)}
+                      </div>
+                    )}
+
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <h4 className="text-xs font-semibold text-white truncate" title={file.name}>
+                          {file.name}
+                        </h4>
+                        <span
+                          className={`text-[8.5px] font-bold px-1.5 py-0.5 rounded border shrink-0 ${accent.badgeClass}`}
+                        >
+                          {accent.shortTag}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        {file.formattedSize} • {file.date}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1 shrink-0">
                     <button
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         onToggleFavorite(file.id);
                       }}
-                      className="p-1 text-slate-400 hover:text-amber-400 transition-colors"
-                      title={file.isFavorite ? 'Remove from Favorites' : 'Add to Favorites'}
+                      className="p-1 text-slate-400 hover:text-amber-400 transition-colors cursor-pointer"
                     >
                       <Star className={`w-4 h-4 ${file.isFavorite ? 'fill-amber-400 text-amber-400' : ''}`} />
                     </button>
 
-                    {/* Three-dot Action Trigger */}
                     {!isSelectionMode && (
                       <div className="relative">
                         <button
@@ -801,13 +1168,11 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                             e.stopPropagation();
                             setActiveMenuFileId(isMenuOpen ? null : file.id);
                           }}
-                          className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-[#1a2d47] transition-colors"
-                          title="More actions"
+                          className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-[#1a2d47] transition-colors cursor-pointer"
                         >
                           <MoreVertical className="w-4 h-4" />
                         </button>
 
-                        {/* Dropdown Menu */}
                         {isMenuOpen && (
                           <div
                             onClick={(e) => e.stopPropagation()}
@@ -890,334 +1255,148 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                     )}
                   </div>
                 </div>
-
-                {/* Visual Preview / Thumbnail Area (Enhanced for Images visibility) */}
-                {file.type === 'image' ? (
-                  <div className="w-full h-28 rounded-xl overflow-hidden bg-[#09111f] mb-2 relative flex items-center justify-center border border-[#1b2a42] group-hover:border-blue-500/50 transition-colors">
-                    {(file.thumbnail || file.url) ? (
-                      <img
-                        src={file.url || file.thumbnail}
-                        alt={file.name}
-                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                        loading="lazy"
-                      />
-                    ) : (
-                      <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#12233f] to-[#0a111e] text-blue-400 p-2 text-center">
-                        <ImageIcon className="w-8 h-8 mb-1 opacity-80" />
-                        <span className="text-[10px] font-semibold text-blue-300">Photo Preview</span>
-                      </div>
-                    )}
-                    <span className="absolute bottom-1.5 right-1.5 bg-black/70 backdrop-blur-xs text-[9px] text-white font-medium px-1.5 py-0.5 rounded shadow">
-                      {file.formattedSize}
-                    </span>
-                  </div>
-                ) : file.type === 'video' ? (
-                  <div className="w-full h-28 rounded-xl overflow-hidden bg-[#0f0e1a] mb-2 relative flex items-center justify-center border border-[#2c1d3f] group-hover:border-purple-500/50 transition-colors">
-                    {file.url ? (
-                      <video src={file.url} className="w-full h-full object-cover" />
-                    ) : (
-                      <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#24133b] to-[#0f0e1a] text-purple-400 p-2 text-center">
-                        <Video className="w-8 h-8 mb-1 opacity-80" />
-                        <span className="text-[10px] font-semibold text-purple-300">Video</span>
-                      </div>
-                    )}
-                    <span className="absolute bottom-1.5 right-1.5 bg-black/70 backdrop-blur-xs text-[9px] text-white font-medium px-1.5 py-0.5 rounded shadow">
-                      {file.formattedSize}
-                    </span>
-                  </div>
-                ) : (
-                  <div className={`w-full h-24 rounded-xl flex flex-col items-center justify-center mb-2 border transition-all ${
-                    file.type === 'audio' ? 'bg-[#291e10]/40 border-amber-500/20 text-amber-400' :
-                    file.type === 'folder' ? 'bg-[#16263f]/40 border-sky-500/20 text-sky-400' :
-                    'bg-[#0f2923]/40 border-emerald-500/20 text-emerald-400'
-                  }`}>
-                    {getFileIcon(file.type)}
-                    <span className="text-[10px] font-semibold capitalize mt-1 opacity-80">
-                      {file.type === 'folder'
-                        ? `${files.filter((c) => c.parentFolderId === file.id).length} items`
-                        : file.type}
-                    </span>
-                  </div>
-                )}
-
-                {/* File info */}
-                <div className="pt-0.5">
-                  <h4 className="text-xs font-semibold text-white truncate mb-0.5" title={file.name}>
-                    {file.name}
-                  </h4>
-                  <div className="flex items-center justify-between text-[11px] text-slate-400">
-                    <span>{file.formattedSize}</span>
-                    <span>{file.date}</span>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        /* LIST VIEW */
-        <div className="space-y-2">
-          {filteredFiles.map((file) => {
-            const isSelected = selectedIds.has(file.id);
-            const isMenuOpen = activeMenuFileId === file.id;
-
-            return (
-              <div
-                key={file.id}
-                onClick={() => handleItemClick(file)}
-                className={`group flex items-center justify-between bg-[#121c2c] hover:bg-[#162338] border rounded-2xl p-3 cursor-pointer transition-all select-none relative ${
-                  isSelected
-                    ? 'border-blue-500 ring-2 ring-blue-500/50 bg-[#162847]'
-                    : 'border-[#1f3049]'
-                }`}
-              >
-                <div className="flex items-center gap-3 min-w-0 pr-2">
-                  {/* Selection Checkbox */}
-                  <div
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleSelectFile(file.id);
-                    }}
-                    className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 transition-all ${
-                      isSelected
-                        ? 'bg-blue-600 text-white shadow-md'
-                        : isSelectionMode
-                        ? 'border border-slate-400 bg-[#0b1322]'
-                        : 'opacity-0 group-hover:opacity-100 border border-slate-500 bg-[#0b1322]'
-                    }`}
-                  >
-                    {isSelected && <Check className="w-3.5 h-3.5" />}
-                  </div>
-
-                  {file.type === 'image' && (file.url || file.thumbnail) ? (
-                    <div className="w-10 h-10 rounded-xl overflow-hidden shrink-0 border border-[#1b2a42] bg-[#09111f]">
-                      <img src={file.url || file.thumbnail} alt={file.name} className="w-full h-full object-cover" />
-                    </div>
-                  ) : (
-                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
-                      file.type === 'image' ? 'bg-[#15233c] text-blue-400' :
-                      file.type === 'video' ? 'bg-[#25173c] text-purple-400' :
-                      file.type === 'audio' ? 'bg-[#291e10] text-amber-400' :
-                      file.type === 'folder' ? 'bg-[#16263f] text-sky-400' :
-                      'bg-[#0f2923] text-emerald-400'
-                    }`}>
-                      {getFileIcon(file.type)}
-                    </div>
-                  )}
-
-                  <div className="min-w-0">
-                    <h4 className="text-xs font-semibold text-white truncate" title={file.name}>
-                      {file.name}
-                    </h4>
-                    <p className="text-[11px] text-slate-400 mt-0.5">
-                      {file.formattedSize} • {file.date}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onToggleFavorite(file.id);
-                    }}
-                    className="p-1 text-slate-400 hover:text-amber-400 transition-colors"
-                  >
-                    <Star className={`w-4 h-4 ${file.isFavorite ? 'fill-amber-400 text-amber-400' : ''}`} />
-                  </button>
-
-                  {!isSelectionMode && (
-                    <div className="relative">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setActiveMenuFileId(isMenuOpen ? null : file.id);
-                        }}
-                        className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-[#1a2d47] transition-colors"
-                      >
-                        <MoreVertical className="w-4 h-4" />
-                      </button>
-
-                      {isMenuOpen && (
-                        <div
-                          onClick={(e) => e.stopPropagation()}
-                          className="absolute right-0 top-7 z-30 w-44 bg-[#101b2d] border border-[#203454] rounded-2xl p-1.5 shadow-2xl text-xs space-y-1 animate-in zoom-in-95"
-                        >
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setActiveMenuFileId(null);
-                              setSelectedInfoFile(file);
-                            }}
-                            className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-[#182944] text-slate-200 flex items-center gap-2"
-                          >
-                            <Info className="w-3.5 h-3.5 text-amber-400" />
-                            <span>তথ্য ও ভার্সন ইতিহাস</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={(e) => handleOpenRename(file, e)}
-                            className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-[#182944] text-slate-200 flex items-center gap-2"
-                          >
-                            <Edit2 className="w-3.5 h-3.5 text-sky-400" />
-                            <span>Rename</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={(e) => handleSingleCopy(file, e)}
-                            className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-[#182944] text-slate-200 flex items-center gap-2"
-                          >
-                            <Copy className="w-3.5 h-3.5 text-blue-400" />
-                            <span>Copy</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={(e) => handleOpenSingleMove(file.id, e)}
-                            className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-[#182944] text-slate-200 flex items-center gap-2"
-                          >
-                            <FolderInput className="w-3.5 h-3.5 text-emerald-400" />
-                            <span>Move</span>
-                          </button>
-
-                          <div className="border-t border-[#1b2b42] my-1" />
-
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setActiveMenuFileId(null);
-                              if (!requireUnlocked('ডিলিট করতে')) return;
-                              onDeleteFile(file.id);
-                            }}
-                            className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-rose-500/15 text-rose-300 flex items-center gap-2"
-                          >
-                            <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-                            <span>Recycle Bin</span>
-                          </button>
-
-                          {onDeletePermanently && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setActiveMenuFileId(null);
-                                if (!requireUnlocked('ডিলিট করতে')) return;
-                                setPermanentDeleteTargetIds([file.id]);
-                              }}
-                              className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-rose-600/25 text-rose-400 font-semibold flex items-center gap-2"
-                            >
-                              <Trash2 className="w-3.5 h-3.5 text-rose-500" />
-                              <span>Delete Forever</span>
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
               </div>
             );
           })}
         </div>
       )}
 
-      {/* Sticky Action Bar that appears when at least one file is selected */}
+      {/* Professional 2-Row Bulk Actions Dock (Sits cleanly directly ABOVE the 5 bottom navigation tabs) */}
       {selectedIds.size > 0 && (
-        <div className="fixed bottom-20 left-4 right-4 z-40 max-w-[410px] mx-auto bg-[#101b2e]/95 backdrop-blur-xl border border-blue-500/50 rounded-2xl p-2.5 shadow-2xl flex items-center justify-between text-white animate-in slide-in-from-bottom-5">
-          <div className="flex items-center gap-1.5 pl-1 shrink-0">
-            <span className="text-xs font-bold text-sky-300">
-              {selectedIds.size}
-            </span>
-            <button
-              type="button"
-              onClick={handleExitSelection}
-              className="text-[10px] text-slate-400 hover:text-white px-1.5 py-0.5 rounded bg-[#182945]"
-            >
-              Clear
-            </button>
+        <div
+          role="region"
+          aria-label="Bulk file actions"
+          className="orbit-card-vivid sticky bottom-2 z-30 mt-auto rounded-2xl overflow-hidden bg-[#0e182a]/95 backdrop-blur-xl shadow-2xl shadow-black/60 text-white animate-in fade-in slide-in-from-bottom-3"
+        >
+          {/* Compact Selection Status Strip */}
+          <div className="px-3 py-1.5 border-b border-[#1c2d48] flex items-center justify-between gap-2 text-[11px]">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="inline-flex items-center gap-1 font-bold text-sky-300 whitespace-nowrap">
+                <Check className="w-3.5 h-3.5 text-blue-400" />
+                {selectionSummary.count} selected
+              </span>
+              <span className="text-slate-400 truncate">• {selectionSummary.formattedTotalSize}</span>
+            </div>
+
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={handleSelectAll}
+                className="px-2 py-0.5 rounded-lg bg-[#16253e] hover:bg-[#1d3152] border border-[#273e63] text-sky-300 font-semibold transition-colors cursor-pointer"
+              >
+                {isAllSelected ? 'Deselect All' : 'Select All'}
+              </button>
+              <button
+                type="button"
+                onClick={handleExitSelection}
+                aria-label="Clear selection"
+                className="px-2 py-0.5 rounded-lg bg-[#1a273d] hover:bg-[#243452] text-slate-300 hover:text-white font-semibold transition-colors cursor-pointer"
+              >
+                Clear
+              </button>
+            </div>
           </div>
 
-          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-            {/* If exactly 1 file selected, show Rename button */}
-            {selectedIds.size === 1 && (
+          {/* Two Clean Rows of Bulk Actions */}
+          <div className="p-2 space-y-1.5">
+            {/* Row 1: Share, Move, Copy, Fav */}
+            <div className="grid grid-cols-4 gap-1.5">
+              <button
+                type="button"
+                onClick={handleExecuteBulkShare}
+                className="flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-xl bg-gradient-to-b from-sky-500/20 to-blue-600/15 hover:from-sky-500/30 hover:to-blue-600/25 border border-sky-400/35 text-sky-200 transition-all active:scale-95 cursor-pointer"
+                title="Share selected files"
+              >
+                <Share2 className="w-4 h-4 text-sky-400" />
+                <span className="text-[10.5px] font-semibold leading-none">Share</span>
+              </button>
+
               <button
                 type="button"
                 onClick={() => {
-                  const targetId = Array.from(selectedIds)[0];
-                  const targetFile = files.find((f) => f.id === targetId);
-                  if (targetFile) handleOpenRename(targetFile);
+                  setSingleMoveFileId(null);
+                  setIsMoveModalOpen(true);
                 }}
-                className="flex items-center gap-1 bg-[#182945] hover:bg-[#20375c] border border-[#2b446e] px-2 py-1.5 rounded-xl text-xs font-medium text-sky-300 transition-colors shrink-0"
-                title="Rename file"
+                className="flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-xl bg-gradient-to-b from-emerald-500/20 to-teal-600/15 hover:from-emerald-500/30 hover:to-teal-600/25 border border-emerald-400/35 text-emerald-200 transition-all active:scale-95 cursor-pointer"
+                title="Move selected files to folder"
               >
-                <Edit2 className="w-3.5 h-3.5" />
-                <span>Rename</span>
+                <FolderInput className="w-4 h-4 text-emerald-400" />
+                <span className="text-[10.5px] font-semibold leading-none">Move</span>
               </button>
-            )}
 
-            {/* Bulk Favorite */}
-            <button
-              type="button"
-              onClick={() => handleExecuteBulkFavorite(true)}
-              className="flex items-center gap-1 bg-[#182945] hover:bg-[#20375c] border border-[#2b446e] px-2 py-1.5 rounded-xl text-xs font-medium text-amber-300 transition-colors shrink-0"
-              title="Add all to Favorites"
-            >
-              <Star className="w-3.5 h-3.5 fill-amber-400" />
-              <span>Fav</span>
-            </button>
+              <button
+                type="button"
+                onClick={handleExecuteBulkCopy}
+                className="flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-xl bg-gradient-to-b from-blue-500/20 to-indigo-600/15 hover:from-blue-500/30 hover:to-indigo-600/25 border border-blue-400/35 text-blue-200 transition-all active:scale-95 cursor-pointer"
+                title="Copy selected files"
+              >
+                <Copy className="w-4 h-4 text-blue-400" />
+                <span className="text-[10.5px] font-semibold leading-none">Copy</span>
+              </button>
 
-            {/* Bulk Copy */}
-            <button
-              type="button"
-              onClick={handleExecuteBulkCopy}
-              className="flex items-center gap-1 bg-[#182945] hover:bg-[#20375c] border border-[#2b446e] px-2 py-1.5 rounded-xl text-xs font-medium text-blue-300 transition-colors shrink-0"
-              title="Copy selected files"
-            >
-              <Copy className="w-3.5 h-3.5" />
-              <span>Copy</span>
-            </button>
+              <button
+                type="button"
+                onClick={() => handleExecuteBulkFavorite(!selectionSummary.allFavorites)}
+                className="flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-xl bg-gradient-to-b from-amber-500/20 to-orange-600/15 hover:from-amber-500/30 hover:to-orange-600/25 border border-amber-400/35 text-amber-200 transition-all active:scale-95 cursor-pointer"
+                title={selectionSummary.allFavorites ? 'Remove from Favorites' : 'Add all to Favorites'}
+              >
+                <Star className={`w-4 h-4 text-amber-400 ${selectionSummary.allFavorites ? '' : 'fill-amber-400'}`} />
+                <span className="text-[10.5px] font-semibold leading-none">
+                  {selectionSummary.allFavorites ? 'Unfav' : 'Favorite'}
+                </span>
+              </button>
+            </div>
 
-            {/* Bulk Move */}
-            <button
-              type="button"
-              onClick={() => {
-                setSingleMoveFileId(null);
-                setIsMoveModalOpen(true);
-              }}
-              className="flex items-center gap-1 bg-[#182945] hover:bg-[#20375c] border border-[#2b446e] px-2 py-1.5 rounded-xl text-xs font-medium text-emerald-300 transition-colors shrink-0"
-              title="Move selected files to a folder"
-            >
-              <FolderInput className="w-3.5 h-3.5" />
-              <span>Move</span>
-            </button>
+            {/* Row 2: Download, Rename, Recycle Bin, Delete Forever */}
+            <div className="grid grid-cols-4 gap-1.5">
+              <button
+                type="button"
+                onClick={handleExecuteBulkDownload}
+                className="flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-xl bg-gradient-to-b from-indigo-500/20 to-violet-600/15 hover:from-indigo-500/30 hover:to-violet-600/25 border border-indigo-400/35 text-indigo-200 transition-all active:scale-95 cursor-pointer"
+                title="Download selected files"
+              >
+                <Download className="w-4 h-4 text-indigo-400" />
+                <span className="text-[10.5px] font-semibold leading-none">Download</span>
+              </button>
 
-            {/* Bulk Delete to Recycle Bin */}
-            <button
-              type="button"
-              onClick={handleExecuteBulkDelete}
-              className="flex items-center gap-1 bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 px-2 py-1.5 rounded-xl text-xs font-medium text-rose-300 transition-colors shrink-0"
-              title="Move selected files to Recycle Bin"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Bin</span>
-            </button>
+              <button
+                type="button"
+                disabled={!selectionSummary.canRename}
+                onClick={() => {
+                  const target = selectionSummary.selectedFiles[0];
+                  if (target) handleOpenRename(target);
+                }}
+                className={`flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-xl border transition-all ${
+                  selectionSummary.canRename
+                    ? 'bg-gradient-to-b from-cyan-500/20 to-teal-600/15 hover:from-cyan-500/30 hover:to-teal-600/25 border-cyan-400/35 text-cyan-200 active:scale-95 cursor-pointer'
+                    : 'bg-[#121e33]/60 border-[#1c2d49] text-slate-500 cursor-not-allowed'
+                }`}
+                title={selectionSummary.canRename ? 'Rename selected file' : 'Select a single file to rename'}
+              >
+                <Edit2 className="w-4 h-4" />
+                <span className="text-[10.5px] font-semibold leading-none">Rename</span>
+              </button>
 
-            {/* Bulk Permanent Delete (সারা জীবনের জন্য ডিলিট) */}
-            <button
-              type="button"
-              onClick={() => setPermanentDeleteTargetIds(Array.from(selectedIds))}
-              className="flex items-center gap-1 bg-rose-600 hover:bg-rose-500 text-white px-2 py-1.5 rounded-xl text-xs font-semibold transition-colors shrink-0 shadow-md"
-              title="Permanently Delete Forever"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Forever</span>
-            </button>
+              <button
+                type="button"
+                onClick={handleExecuteBulkDelete}
+                className="flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/35 text-rose-200 transition-all active:scale-95 cursor-pointer"
+                title="Move selected files to Recycle Bin"
+              >
+                <Trash2 className="w-4 h-4 text-rose-400" />
+                <span className="text-[10.5px] font-semibold leading-none">Bin</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPermanentDeleteTargetIds(Array.from(selectedIds))}
+                className="flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-xl bg-gradient-to-b from-rose-600 to-red-700 hover:from-rose-500 hover:to-red-600 border border-rose-400/50 text-white ai-solid-text-white shadow-md transition-all active:scale-95 cursor-pointer"
+                title="Permanently Delete Forever"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span className="text-[10.5px] font-semibold leading-none">Delete</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1418,6 +1597,75 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                 className="bg-rose-600 hover:bg-rose-500 text-white font-semibold px-4 py-2 rounded-xl text-xs shadow-md"
               >
                 Yes, Delete Forever
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BULK SHARE MODAL */}
+      {shareModalFiles && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#121c2e] border border-sky-500/40 rounded-3xl p-5 max-w-[380px] w-full text-white space-y-3.5 shadow-2xl animate-in zoom-in-95">
+            <div className="flex items-center justify-between pb-2.5 border-b border-[#1f2f4a]">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-sky-500/15 border border-sky-400/35 flex items-center justify-center text-sky-400">
+                  <Share2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">
+                    Share {shareModalFiles.length} Item{shareModalFiles.length > 1 ? 's' : ''}
+                  </h3>
+                  <p className="text-[10.5px] text-slate-400">ফাইল তালিকা ও বিবরণ শেয়ার করুন</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShareModalFiles(null)}
+                aria-label="Close share dialog"
+                className="text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="max-h-40 overflow-y-auto space-y-1.5 bg-[#0c1423] border border-[#1d2e4a] rounded-2xl p-2.5 text-xs">
+              {shareModalFiles.map((sf) => (
+                <div key={sf.id} className="flex items-center justify-between gap-2 py-1 border-b border-[#18263f] last:border-b-0">
+                  <span className="truncate font-medium text-slate-200">{sf.name}</span>
+                  <span className="text-[10.5px] text-slate-400 shrink-0">{sf.formattedSize}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={handleCopyShareSummary}
+                className="flex-1 bg-gradient-to-r from-sky-600 to-blue-600 hover:from-sky-500 hover:to-blue-500 text-white font-semibold py-2.5 px-3 rounded-xl text-xs shadow-md flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                {shareCopied ? (
+                  <>
+                    <Check className="w-4 h-4 text-emerald-300" />
+                    <span>Copied Summary!</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-4 h-4" />
+                    <span>Copy Share Details</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setShareModalFiles(null);
+                  handleExitSelection();
+                }}
+                className="px-3.5 py-2.5 rounded-xl bg-[#18263e] hover:bg-[#213354] text-xs font-semibold text-slate-300 hover:text-white cursor-pointer"
+              >
+                Done
               </button>
             </div>
           </div>

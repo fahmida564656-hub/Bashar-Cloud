@@ -24,6 +24,7 @@ import {
   sanitizeFileForPersistence,
   sanitizeFirestoreMediaUrl,
   fitFilePayloadToFirestoreLimit,
+  stripUndefinedDeep,
 } from '../utils/fileVault';
 
 export const firestoreService = {
@@ -472,27 +473,30 @@ export const firestoreService = {
   },
 
   async saveFile(userId: string, file: CloudFile): Promise<void> {
+    if (!userId || userId === 'guest_user') return;
     const path = `users/${userId}/files/${file.id}`;
     try {
       const safe = sanitizeFileForPersistence(file);
-      const boundedPayload = fitFilePayloadToFirestoreLimit({
-        name: safe.name,
-        type: safe.type,
-        sizeBytes: safe.sizeBytes,
-        formattedSize: safe.formattedSize,
-        date: safe.date,
-        isFavorite: Boolean(safe.isFavorite),
-        parentFolderId: safe.parentFolderId || null,
-        url: safe.url || '',
-        thumbnail: safe.thumbnail || '',
-        itemCount: safe.itemCount || 0,
-        content: safe.content || '',
-        extension: safe.extension || '',
-        archiveEntries: safe.archiveEntries || [],
-        versions: safe.versions || [],
-        ownerId: userId,
-        updatedAt: new Date().toISOString(),
-      });
+      const boundedPayload = stripUndefinedDeep(
+        fitFilePayloadToFirestoreLimit({
+          name: safe.name,
+          type: safe.type,
+          sizeBytes: safe.sizeBytes,
+          formattedSize: safe.formattedSize,
+          date: safe.date,
+          isFavorite: Boolean(safe.isFavorite),
+          parentFolderId: safe.parentFolderId ?? null,
+          url: safe.url || '',
+          thumbnail: safe.thumbnail || '',
+          itemCount: safe.itemCount ?? 0,
+          content: safe.content || '',
+          extension: safe.extension || '',
+          archiveEntries: safe.archiveEntries || [],
+          versions: safe.versions || [],
+          ownerId: userId,
+          updatedAt: new Date().toISOString(),
+        })
+      );
       await setDoc(doc(db, 'users', userId, 'files', safe.id), boundedPayload, { merge: true });
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
@@ -509,27 +513,30 @@ export const firestoreService = {
   },
 
   async saveDeletedFile(userId: string, file: CloudFile): Promise<void> {
+    if (!userId || userId === 'guest_user') return;
     const path = `users/${userId}/recycle_bin/${file.id}`;
     try {
       const safe = sanitizeFileForPersistence(file);
-      const boundedPayload = fitFilePayloadToFirestoreLimit({
-        name: safe.name,
-        type: safe.type,
-        sizeBytes: safe.sizeBytes,
-        formattedSize: safe.formattedSize,
-        date: safe.date,
-        isFavorite: Boolean(safe.isFavorite),
-        parentFolderId: safe.parentFolderId || null,
-        url: safe.url || '',
-        thumbnail: safe.thumbnail || '',
-        itemCount: safe.itemCount || 0,
-        content: safe.content || '',
-        extension: safe.extension || '',
-        archiveEntries: safe.archiveEntries || [],
-        versions: safe.versions || [],
-        ownerId: userId,
-        deletedAt: new Date().toISOString(),
-      });
+      const boundedPayload = stripUndefinedDeep(
+        fitFilePayloadToFirestoreLimit({
+          name: safe.name,
+          type: safe.type,
+          sizeBytes: safe.sizeBytes,
+          formattedSize: safe.formattedSize,
+          date: safe.date,
+          isFavorite: Boolean(safe.isFavorite),
+          parentFolderId: safe.parentFolderId ?? null,
+          url: safe.url || '',
+          thumbnail: safe.thumbnail || '',
+          itemCount: safe.itemCount ?? 0,
+          content: safe.content || '',
+          extension: safe.extension || '',
+          archiveEntries: safe.archiveEntries || [],
+          versions: safe.versions || [],
+          ownerId: userId,
+          deletedAt: new Date().toISOString(),
+        })
+      );
       await setDoc(doc(db, 'users', userId, 'recycle_bin', safe.id), boundedPayload, { merge: true });
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
@@ -717,17 +724,19 @@ export const firestoreService = {
         isError: Boolean(m.isError),
       }));
 
-      const boundedPayload = fitFilePayloadToFirestoreLimit({
-        id: thread.id,
-        title: (thread.title || 'নতুন চ্যাট').slice(0, 120),
-        pinned: Boolean(thread.pinned),
-        pinnedAt: thread.pinnedAt ?? null,
-        createdAt: thread.createdAt || Date.now(),
-        updatedAt: thread.updatedAt || Date.now(),
-        mode: thread.mode || 'general',
-        messages: trimmedMessages,
-        ownerId: userId,
-      });
+      const boundedPayload = stripUndefinedDeep(
+        fitFilePayloadToFirestoreLimit({
+          id: thread.id,
+          title: (thread.title || 'নতুন চ্যাট').slice(0, 120),
+          pinned: Boolean(thread.pinned),
+          pinnedAt: thread.pinnedAt ?? null,
+          createdAt: thread.createdAt || Date.now(),
+          updatedAt: thread.updatedAt || Date.now(),
+          mode: thread.mode || 'general',
+          messages: trimmedMessages,
+          ownerId: userId,
+        })
+      );
 
       await setDoc(doc(db, 'users', userId, 'ai_chats', thread.id), boundedPayload, { merge: true });
     } catch (error) {

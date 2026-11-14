@@ -23,6 +23,12 @@ import { FloatingActionMenu } from './components/FloatingActionMenu';
 import { UploadFlowModal } from './components/UploadFlowModal';
 import { BasharAiScreen } from './components/BasharAiScreen';
 import { AppTheme, getSavedTheme, applyTheme } from './utils/theme';
+import {
+  OrbitThemePresetId,
+  getSavedOrbitTheme,
+  applyOrbitTheme,
+  getOrbitThemePresetById,
+} from './utils/orbitTheme';
 import JSZip from 'jszip';
 import {
   RecycleBinModal,
@@ -55,6 +61,10 @@ import {
   deleteFileBlob,
   clearAllFileBlobs,
   copyFileBlob,
+  loadDeletedFileIds,
+  addDeletedFileIds,
+  removeDeletedFileIds,
+  clearDeletedFileIds,
 } from './utils/fileVault';
 import { formatBytes } from './utils/uploadFlow';
 import {
@@ -146,6 +156,23 @@ export default function App() {
     applyTheme(newTheme);
   };
 
+  // Rotating Perimeter Glow Color Preset (1..5, persistent in localStorage)
+  const [orbitPreset, setOrbitPreset] = useState<OrbitThemePresetId>(() => getSavedOrbitTheme());
+
+  useEffect(() => {
+    applyOrbitTheme(orbitPreset);
+  }, [orbitPreset]);
+
+  const handleChangeOrbitPreset = (presetId: OrbitThemePresetId, showFeedback = true) => {
+    setOrbitPreset(presetId);
+    applyOrbitTheme(presetId, canonicalUserId);
+    if (showFeedback) {
+      const preset = getOrbitThemePresetById(presetId);
+      setSyncToast(`বর্ডার কালার #${preset.numberLabel} (${preset.bnName}) সেট হয়েছে!`);
+      setTimeout(() => setSyncToast(null), 2200);
+    }
+  };
+
   // Screen and Tab state - starts on Welcome / Sign In / Sign Up
   const [screen, setScreen] = useState<ScreenMode>(hasExistingUser ? 'main' : 'welcome-email');
   const [currentTab, setCurrentTab] = useState<MainTab>('home');
@@ -180,6 +207,7 @@ export default function App() {
 
   // View state
   const [isFabOpen, setIsFabOpen] = useState<boolean>(false);
+  const [isFilesBulkActive, setIsFilesBulkActive] = useState<boolean>(false);
 
   // Modals state
   const [isRecycleBinOpen, setIsRecycleBinOpen] = useState<boolean>(false);
@@ -226,8 +254,14 @@ export default function App() {
     (cleanPhone(user.phone) ? `phone_${cleanPhone(user.phone)}` : '') ||
     'guest_user';
 
-  // Hydrate IndexedDB blobs on boot and whenever active user changes
+  // Hydrate IndexedDB blobs & user's saved orbit preset on boot and whenever active user changes
   useEffect(() => {
+    if (canonicalUserId && canonicalUserId !== 'guest_user') {
+      const userOrbit = getSavedOrbitTheme(canonicalUserId);
+      setOrbitPreset(userOrbit);
+      applyOrbitTheme(userOrbit, canonicalUserId);
+    }
+
     let cancelled = false;
     if (!hasExistingUser && (!canonicalUserId || canonicalUserId === 'guest_user')) {
       return;
@@ -237,11 +271,13 @@ export default function App() {
       const scoped = storageProviderMock.loadMetadataState(
         canonicalUserId !== 'guest_user' ? canonicalUserId : undefined
       );
-      const localFiles = scoped.files && scoped.files.length > 0 ? scoped.files : filesRef.current;
+      const deletedIds = loadDeletedFileIds(canonicalUserId);
+      const scopedFiles = scoped.files || [];
+      const mergedLocal = mergeCloudAndLocalFiles(scopedFiles, filesRef.current, deletedIds);
       const localBin = scoped.recycleBin && scoped.recycleBin.length > 0 ? scoped.recycleBin : recycleBinRef.current;
 
       const [hydratedFiles, hydratedBin] = await Promise.all([
-        hydrateCloudFiles(localFiles),
+        hydrateCloudFiles(mergedLocal),
         hydrateCloudFiles(localBin),
       ]);
 
@@ -304,19 +340,25 @@ export default function App() {
       }
     });
 
-    const unsub = firestoreService.subscribeToFiles(canonicalUserId, async (cloudFiles, meta) => {
+    const unsub = firestoreService.subscribeToFiles(canonicalUserId, async (cloudFiles) => {
       if (!active) return;
-      if (cloudFiles.length > 0) {
-        const merged = mergeCloudAndLocalFiles(cloudFiles, filesRef.current);
-        const hydrated = await hydrateCloudFiles(merged);
-        if (!active) return;
-        setFiles(hydrated);
-        const nextStorage = computeStorageBreakdown(hydrated, siteSettings.totalStorageGB || 1000);
-        setStorage(nextStorage);
-        storageProviderMock.saveMetadataState(hydrated, user, nextStorage, recycleBinRef.current, canonicalUserId);
-      } else if (!meta?.fromCache && filesRef.current.length === 0) {
-        setFiles([]);
-      }
+      const deletedIds = loadDeletedFileIds(canonicalUserId);
+      const merged = mergeCloudAndLocalFiles(cloudFiles, filesRef.current, deletedIds);
+      const hydrated = await hydrateCloudFiles(merged);
+      if (!active) return;
+
+      setFiles(hydrated);
+      const nextStorage = computeStorageBreakdown(hydrated, siteSettings.totalStorageGB || 1000);
+      setStorage(nextStorage);
+      storageProviderMock.saveMetadataState(hydrated, user, nextStorage, recycleBinRef.current, canonicalUserId);
+
+      // Push any locally-uploaded active files that are not yet present in Firestore snapshot
+      const cloudIdSet = new Set(cloudFiles.map((f) => f.id));
+      hydrated.forEach((f) => {
+        if (!cloudIdSet.has(f.id) && !deletedIds.has(f.id)) {
+          firestoreService.saveFile(canonicalUserId, f).catch(() => {});
+        }
+      });
     });
 
     return () => {
@@ -600,46 +642,61 @@ export default function App() {
   // Commit files from the 4-step Upload Flow into IndexedDB, localStorage & Cloud Firestore
   const handleCommitUploadFlow = async (
     uploadedFiles: CloudFile[],
-    destinationFolderId?: string | null
+    destinationFolderId?: string | null,
+    options?: { navigateToFiles?: boolean }
   ) => {
     if (!checkActionAllowed()) return;
-    if (!uploadedFiles || uploadedFiles.length === 0) return;
+    const navigateToFiles = options?.navigateToFiles !== false;
 
-    const finalizedFiles: CloudFile[] = uploadedFiles.map((file) => ({
-      ...file,
-      parentFolderId: destinationFolderId ?? file.parentFolderId ?? null,
-      versions:
-        file.versions && file.versions.length > 0
-          ? file.versions
-          : [
-              createInitialVersion(
-                {
-                  id: file.id,
-                  name: file.name,
-                  sizeBytes: file.sizeBytes,
-                  formattedSize: file.formattedSize,
-                  date: file.date || 'Today',
-                },
-                user.name
-              ),
-            ],
-    }));
+    if (uploadedFiles && uploadedFiles.length > 0) {
+      const finalizedFiles: CloudFile[] = uploadedFiles.map((file) => ({
+        ...file,
+        parentFolderId: destinationFolderId ?? file.parentFolderId ?? null,
+        versions:
+          file.versions && file.versions.length > 0
+            ? file.versions
+            : [
+                createInitialVersion(
+                  {
+                    id: file.id,
+                    name: file.name,
+                    sizeBytes: file.sizeBytes,
+                    formattedSize: file.formattedSize,
+                    date: file.date || 'Today',
+                  },
+                  user.name
+                ),
+              ],
+      }));
 
-    const updated = [...finalizedFiles, ...filesRef.current];
-    setFiles(updated);
-    persistVaultState(updated);
+      removeDeletedFileIds(
+        canonicalUserId,
+        finalizedFiles.map((f) => f.id)
+      );
 
-    await Promise.all(
-      finalizedFiles.map((f) =>
-        firestoreService.saveFile(canonicalUserId, f).catch(() => {})
-      )
-    );
+      const newIds = new Set(finalizedFiles.map((f) => f.id));
+      const existingFiltered = filesRef.current.filter((f) => !newIds.has(f.id));
+      const updated = [...finalizedFiles, ...existingFiltered];
+      setFiles(updated);
+      persistVaultState(updated);
 
-    setInitialFilesFilter('all');
-    setInitialFilesFolderId(destinationFolderId ?? null);
-    setCurrentTab('files');
-    setSyncToast(`সফলভাবে ${finalizedFiles.length}টি ফাইল সুরক্ষিতভাবে সেভ হয়েছে!`);
-    setTimeout(() => setSyncToast(null), 3500);
+      if (canonicalUserId && canonicalUserId !== 'guest_user') {
+        await Promise.all(
+          finalizedFiles.map((f) =>
+            firestoreService.saveFile(canonicalUserId, f).catch(() => {})
+          )
+        );
+      }
+
+      setSyncToast(`সফলভাবে ${finalizedFiles.length}টি ফাইল স্থায়ীভাবে সেভ হয়েছে!`);
+      setTimeout(() => setSyncToast(null), 3500);
+    }
+
+    if (navigateToFiles) {
+      setInitialFilesFilter('all');
+      setInitialFilesFolderId(destinationFolderId ?? null);
+      setCurrentTab('files');
+    }
   };
 
   // Create folder directly from inside the Upload Flow (Step 3: Create Folder)
@@ -812,6 +869,7 @@ export default function App() {
     const fileToDelete = filesRef.current.find((f) => f.id === id);
     if (!fileToDelete) return;
 
+    addDeletedFileIds(canonicalUserId, [id]);
     const updatedFiles = filesRef.current.filter((f) => f.id !== id);
     const updatedBin = [fileToDelete, ...recycleBinRef.current];
     setFiles(updatedFiles);
@@ -825,6 +883,7 @@ export default function App() {
   // Permanent Delete (removes from state, IndexedDB blobs, Recycle Bin & Firestore)
   const handlePermanentDelete = (id: string) => {
     if (!checkActionAllowed()) return;
+    addDeletedFileIds(canonicalUserId, [id]);
     const updatedFiles = filesRef.current.filter((f) => f.id !== id);
     const updatedRecycle = recycleBinRef.current.filter((f) => f.id !== id);
     setFiles(updatedFiles);
@@ -839,6 +898,7 @@ export default function App() {
   // Bulk Permanent Delete
   const handleBulkPermanentDelete = (ids: string[]) => {
     if (!checkActionAllowed()) return;
+    addDeletedFileIds(canonicalUserId, ids);
     const idSet = new Set(ids);
     const updatedFiles = filesRef.current.filter((f) => !idSet.has(f.id));
     const updatedRecycle = recycleBinRef.current.filter((f) => !idSet.has(f.id));
@@ -856,6 +916,7 @@ export default function App() {
   // Bulk Delete to Recycle Bin
   const handleBulkDelete = (ids: string[]) => {
     if (!checkActionAllowed()) return;
+    addDeletedFileIds(canonicalUserId, ids);
     const idSet = new Set(ids);
     const filesToDelete = filesRef.current.filter((f) => idSet.has(f.id));
     const updatedFiles = filesRef.current.filter((f) => !idSet.has(f.id));
@@ -1038,6 +1099,7 @@ export default function App() {
     const fileToRestore = recycleBinRef.current.find((f) => f.id === id);
     if (!fileToRestore) return;
 
+    removeDeletedFileIds(canonicalUserId, [id]);
     const updatedBin = recycleBinRef.current.filter((f) => f.id !== id);
     const updatedFiles = [fileToRestore, ...filesRef.current];
     setRecycleBin(updatedBin);
@@ -1199,6 +1261,7 @@ export default function App() {
   // Clear all files for a specific user
   const handleClearUserFiles = async (userId: string) => {
     storageProviderMock.clearUserLocalVault(userId);
+    clearDeletedFileIds(userId);
     await firestoreService.clearAllUserFiles(userId).catch(() => {});
     const isCurrent = canonicalUserId === userId;
     if (isCurrent) {
@@ -1216,6 +1279,8 @@ export default function App() {
 
   // Clear all files in active drive
   const handleClearAllFiles = async () => {
+    const allIds = [...filesRef.current, ...recycleBinRef.current].map((f) => f.id);
+    addDeletedFileIds(canonicalUserId, allIds);
     setFiles([]);
     setRecycleBin([]);
     persistVaultState([], []);
@@ -1305,10 +1370,8 @@ export default function App() {
         firestoreService.getUserDeletedFiles(userRecord.id),
       ]);
 
-      const mergedFiles =
-        cloudFiles && cloudFiles.length > 0
-          ? mergeCloudAndLocalFiles(cloudFiles, localFiles)
-          : localFiles;
+      const deletedIds = loadDeletedFileIds(userRecord.id);
+      const mergedFiles = mergeCloudAndLocalFiles(cloudFiles || [], localFiles, deletedIds);
       const mergedBin =
         cloudBin && cloudBin.length > 0
           ? mergeCloudAndLocalFiles(cloudBin, localBin)
@@ -1793,6 +1856,8 @@ export default function App() {
           onToggleSimulatedStorageWarning={(warn) => setSimulatedStorageWarning(warn)}
           theme={theme}
           onToggleTheme={handleToggleTheme}
+          orbitPreset={orbitPreset}
+          onChangeOrbitPreset={(preset) => handleChangeOrbitPreset(preset, true)}
         />
       ) : (
         /* 9. Main Tabs (Home, Bashar Cloud Ai, Files, Favourites, Me) */
@@ -1838,6 +1903,8 @@ export default function App() {
                   setInitialFilesFolderId(null);
                   setCurrentTab('files');
                 }}
+                orbitPreset={orbitPreset}
+                onChangeOrbitPreset={(preset) => handleChangeOrbitPreset(preset, true)}
               />
             )}
 
@@ -1906,6 +1973,7 @@ export default function App() {
                 onUploadNewVersion={handleUploadNewVersion}
                 initialFilter={initialFilesFilter}
                 initialFolderId={initialFilesFolderId}
+                onSelectionStateChange={setIsFilesBulkActive}
               />
             )}
 
@@ -1950,8 +2018,8 @@ export default function App() {
             )}
           </div>
 
-          {/* Floating Action Menu (Positioned low on Home, Files, Favourites; hidden on AI & Me) */}
-          {currentTab !== 'me' && currentTab !== 'ai' && (
+          {/* Floating Action Menu (Hidden on AI, Me, and Files select mode so bulk bar sits cleanly above bottom tabs) */}
+          {currentTab !== 'me' && currentTab !== 'ai' && !(currentTab === 'files' && isFilesBulkActive) && (
             <FloatingActionMenu
               isOpen={isFabOpen}
               onToggle={() => {
@@ -1970,6 +2038,9 @@ export default function App() {
               if (tab === 'files' && currentTab !== 'files') {
                 setInitialFilesFilter('all');
                 setInitialFilesFolderId(null);
+              }
+              if (tab !== 'files') {
+                setIsFilesBulkActive(false);
               }
               setCurrentTab(tab);
               setIsFabOpen(false);

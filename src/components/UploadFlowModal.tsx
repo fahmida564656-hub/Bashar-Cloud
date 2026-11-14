@@ -42,7 +42,11 @@ interface UploadFlowModalProps {
   websiteName?: string;
   existingFolders?: CloudFile[];
   onClose: () => void;
-  onFinishUpload: (uploadedFiles: CloudFile[], destinationFolderId?: string | null) => void;
+  onFinishUpload: (
+    uploadedFiles: CloudFile[],
+    destinationFolderId?: string | null,
+    options?: { navigateToFiles?: boolean }
+  ) => Promise<void> | void;
   onCreateFolder?: (folderName: string) => CloudFile;
 }
 
@@ -83,14 +87,19 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
   const [queue, setQueue] = useState<UploadQueueItem[]>([]);
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [isCommitting, setIsCommitting] = useState<boolean>(false);
-  const [uploadSpeedMs] = useState<number>(280); // smooth progress tick
+  const [savedBatchCount, setSavedBatchCount] = useState<number>(0);
+  const [uploadSpeedMs] = useState<number>(180); // snappy smooth progress tick
+  const committedIdsRef = useRef<Set<string>>(new Set());
 
   // Hidden input for "Upload More"
   const uploadMoreInputRef = useRef<HTMLInputElement>(null);
 
-  // Initialize queue ONLY with real user-selected files (never inject fake/sample files)
+  // Initialize queue ONLY with real user-selected files (never reset on websiteName updates)
   useEffect(() => {
     if (!isOpen) return;
+
+    committedIdsRef.current = new Set();
+    setSavedBatchCount(0);
 
     if (initialFiles && initialFiles.length > 0) {
       const items = initialFiles.map((file, idx) =>
@@ -107,7 +116,7 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
     setIsCreateFolderSheetOpen(false);
     setIsPaused(false);
     setIsCommitting(false);
-  }, [isOpen, initialFiles, websiteName]);
+  }, [isOpen, initialFiles]);
 
   // Keep folders synchronized with existingFolders
   useEffect(() => {
@@ -137,10 +146,10 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
           nextQueue[activeIndex] = {
             ...activeItem,
             status: 'uploading',
-            progress: 15,
+            progress: 25,
           };
         } else if (activeItem.status === 'uploading') {
-          const nextProgress = activeItem.progress + 25;
+          const nextProgress = activeItem.progress + 38;
           if (nextProgress >= 100) {
             nextQueue[activeIndex] = {
               ...activeItem,
@@ -161,6 +170,78 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
 
     return () => clearInterval(interval);
   }, [isOpen, currentStep, isPaused, uploadSpeedMs]);
+
+  const buildAndCommitItems = async (
+    itemsToCommit: UploadQueueItem[],
+    navigateToFiles: boolean
+  ) => {
+    const uncommitted = itemsToCommit.filter((i) => !committedIdsRef.current.has(i.id));
+    if (uncommitted.length === 0) {
+      if (navigateToFiles) {
+        onFinishUpload([], destination.id, { navigateToFiles: true });
+        onClose();
+      }
+      return;
+    }
+
+    uncommitted.forEach((i) => committedIdsRef.current.add(i.id));
+    setIsCommitting(true);
+    try {
+      const baseTime = Date.now();
+      const finalFiles: CloudFile[] = await Promise.all(
+        uncommitted.map(async (item, idx) => {
+          const uniqueId = `uploaded-${baseTime}-${idx}-${Math.random().toString(36).slice(2, 6)}`;
+          if (item.fileObj) {
+            return await buildCloudFileFromBrowserFile(item.fileObj, {
+              id: uniqueId,
+              parentFolderId: destination.id,
+              uploaderName: user.name,
+              typeOverride: item.type,
+            });
+          }
+
+          return {
+            id: uniqueId,
+            name: item.name,
+            type: item.type,
+            sizeBytes: item.sizeBytes,
+            formattedSize: item.formattedSize,
+            date: new Date().toLocaleDateString('en-US', {
+              month: 'short',
+              day: 'numeric',
+              year: 'numeric',
+            }),
+            isFavorite: false,
+            parentFolderId: destination.id,
+          };
+        })
+      );
+
+      await onFinishUpload(finalFiles, destination.id, { navigateToFiles });
+      setSavedBatchCount((prev) => prev + finalFiles.length);
+      if (navigateToFiles) {
+        onClose();
+      }
+    } catch (err) {
+      // Allow retry if build failed unexpectedly
+      uncommitted.forEach((i) => committedIdsRef.current.delete(i.id));
+      console.error('Upload commit error:', err);
+    } finally {
+      setIsCommitting(false);
+    }
+  };
+
+  // Auto-commit files permanently to IndexedDB + localStorage + Firestore the moment they finish uploading!
+  useEffect(() => {
+    if (!isOpen || currentStep !== 4 || queue.length === 0 || isCommitting) return;
+    const allFinished = queue.every((i) => i.status === 'done');
+    if (!allFinished) return;
+
+    const uncommittedDone = queue.filter((i) => i.status === 'done' && !committedIdsRef.current.has(i.id));
+    if (uncommittedDone.length > 0) {
+      void buildAndCommitItems(uncommittedDone, false);
+    }
+  }, [isOpen, currentStep, queue, isCommitting]);
 
   if (!isOpen) return null;
 
@@ -192,50 +273,15 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
     }
   };
 
-  // Handler for finishing and committing uploaded files to permanent drive storage (IndexedDB + Cloud Firestore)
+  // Handler for finishing and viewing uploaded files (commits any remaining items if clicked early)
   const handleFinishAndCommit = async () => {
-    if (isCommitting || queue.length === 0) {
-      if (queue.length === 0) onClose();
+    if (isCommitting) return;
+    if (queue.length === 0) {
+      onClose();
       return;
     }
 
-    setIsCommitting(true);
-    try {
-      const baseTime = Date.now();
-      const finalFiles: CloudFile[] = await Promise.all(
-        queue.map(async (item, idx) => {
-          const uniqueId = `uploaded-${baseTime}-${idx}-${Math.random().toString(36).slice(2, 6)}`;
-          if (item.fileObj) {
-            return await buildCloudFileFromBrowserFile(item.fileObj, {
-              id: uniqueId,
-              parentFolderId: destination.id,
-              uploaderName: user.name,
-              typeOverride: item.type,
-            });
-          }
-
-          return {
-            id: uniqueId,
-            name: item.name,
-            type: item.type,
-            sizeBytes: item.sizeBytes,
-            formattedSize: item.formattedSize,
-            date: new Date().toLocaleDateString('en-US', {
-              month: 'short',
-              day: 'numeric',
-              year: 'numeric',
-            }),
-            isFavorite: false,
-            parentFolderId: destination.id,
-          };
-        })
-      );
-
-      await onFinishUpload(finalFiles, destination.id);
-      onClose();
-    } finally {
-      setIsCommitting(false);
-    }
+    await buildAndCommitItems(queue, true);
   };
 
   // Handler for creating a new folder in Step 3
@@ -600,6 +646,13 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
 
               {/* Action Buttons: "Upload More" and "View Uploaded Files" */}
               <div className="space-y-2.5">
+                {savedBatchCount > 0 && !isCommitting && (
+                  <div className="bg-emerald-950/60 border border-emerald-500/40 rounded-xl px-3 py-2 flex items-center justify-center gap-2 text-xs font-semibold text-emerald-300 shadow-sm">
+                    <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>{savedBatchCount}টি ফাইল ড্রাইভে স্থায়ীভাবে সেভ হয়েছে ✓</span>
+                  </div>
+                )}
+
                 <button
                   type="button"
                   disabled={isCommitting}
@@ -614,7 +667,11 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
                   type="button"
                   disabled={isCommitting || queue.length === 0}
                   onClick={handleFinishAndCommit}
-                  className="w-full py-3.5 rounded-xl bg-[#152338] hover:bg-[#1c2e48] disabled:opacity-60 border border-[#233755] text-white font-bold text-sm flex items-center justify-center gap-2 shadow-sm transition-all cursor-pointer"
+                  className={`w-full py-3.5 rounded-xl disabled:opacity-60 border text-white font-bold text-sm flex items-center justify-center gap-2 shadow-sm transition-all cursor-pointer ${
+                    doneCount === totalCount && totalCount > 0
+                      ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 border-emerald-400/50 shadow-lg shadow-emerald-900/40'
+                      : 'bg-[#152338] hover:bg-[#1c2e48] border-[#233755]'
+                  }`}
                 >
                   {isCommitting ? (
                     <>
@@ -623,7 +680,7 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
                     </>
                   ) : (
                     <>
-                      <Eye className="w-4 h-4 text-sky-400" />
+                      <Eye className="w-4 h-4 text-white" />
                       <span>View Uploaded Files</span>
                     </>
                   )}

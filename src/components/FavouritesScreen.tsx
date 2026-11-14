@@ -132,7 +132,7 @@ export const FavouritesScreen: React.FC<FavouritesScreenProps> = ({
           {favoriteFiles.map((file) => (
             <div
               key={file.id}
-              className="bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] rounded-2xl p-4 flex flex-col justify-between min-h-[148px] cursor-pointer transition-all relative"
+              className="orbit-card bg-[#121c2c] hover:bg-[#162338] rounded-2xl p-4 flex flex-col justify-between min-h-[148px] cursor-pointer transition-all relative"
             >
               <button
                 type="button"
@@ -191,7 +191,7 @@ export const FavouritesScreen: React.FC<FavouritesScreenProps> = ({
           {favoriteFiles.map((file) => (
             <div
               key={file.id}
-              className="bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] rounded-2xl px-4 py-3 flex items-center justify-between transition-all"
+              className="orbit-card bg-[#121c2c] hover:bg-[#162338] rounded-2xl px-4 py-3 flex items-center justify-between transition-all"
             >
               <div className="flex items-center gap-3.5 min-w-0">
                 <div className="w-10 h-10 rounded-xl bg-[#17253d] border border-[#253b60] flex items-center justify-center text-blue-400 shrink-0">

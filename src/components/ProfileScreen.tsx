@@ -58,7 +58,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       </div>
 
       {/* User Info Card */}
-      <div className="bg-[#121c2c] border border-[#1f3049] rounded-2xl p-4 flex items-center justify-between shadow-lg">
+      <div className="orbit-card bg-[#121c2c] rounded-2xl p-4 flex items-center justify-between shadow-lg">
         <div className="flex items-center gap-3.5">
           {user.avatarUrl ? (
             <img
@@ -141,8 +141,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       {/* Storage usage breakdown card */}
       <div
         onClick={onOpenAnalysis}
-        className={`bg-[#121c2c] border border-[#1f3049] rounded-2xl p-4 space-y-3 ${
-          onOpenAnalysis ? 'cursor-pointer hover:border-blue-500/40 hover:bg-[#152338] transition-all' : ''
+        className={`orbit-card bg-[#121c2c] rounded-2xl p-4 space-y-3 ${
+          onOpenAnalysis ? 'cursor-pointer hover:bg-[#152338] transition-all' : ''
         }`}
         title={onOpenAnalysis ? 'Tap to view Storage Analysis' : undefined}
       >

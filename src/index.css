@@ -141,3 +141,317 @@ html.light ::-webkit-scrollbar-thumb {
 .animate-pulse-subtle {
   animation: pulseSubtle 3s ease-in-out infinite;
 }
+
+/* Smooth Rotating Multi-Color Outer Perimeter Border (5 Selectable Presets) */
+@property --orbit-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes orbitSpin {
+  from {
+    --orbit-angle: 0deg;
+  }
+  to {
+    --orbit-angle: 360deg;
+  }
+}
+
+/* Preset 1 (Default): Original Aurora Prism Multi-Color Spectrum */
+:root,
+html[data-orbit="1"] {
+  --orbit-frame-1: #3b82f6;
+  --orbit-frame-2: #06b6d4;
+  --orbit-frame-3: #10b981;
+  --orbit-frame-4: #eab308;
+  --orbit-frame-5: #ef4444;
+  --orbit-frame-6: #6366f1;
+  --orbit-frame-fade: rgba(59, 130, 246, 0.28);
+
+  --orbit-aura-1: rgba(59, 130, 246, 0.55);
+  --orbit-aura-2: rgba(6, 182, 212, 0.5);
+  --orbit-aura-3: rgba(16, 185, 129, 0.48);
+  --orbit-aura-4: rgba(234, 179, 8, 0.45);
+  --orbit-aura-5: rgba(239, 68, 68, 0.48);
+  --orbit-aura-6: rgba(99, 102, 241, 0.42);
+  --orbit-aura-fade: rgba(59, 130, 246, 0.08);
+
+  --orbit-card-1: rgba(56, 189, 248, 0.78);
+  --orbit-card-2: rgba(16, 185, 129, 0.72);
+  --orbit-card-3: rgba(245, 158, 11, 0.72);
+  --orbit-card-4: rgba(239, 68, 68, 0.65);
+  --orbit-card-5: rgba(99, 102, 241, 0.55);
+  --orbit-card-fade: rgba(148, 163, 184, 0.16);
+
+  --orbit-comp-shadow1: rgba(56, 189, 248, 0.25);
+  --orbit-comp-shadow2: rgba(245, 158, 11, 0.18);
+}
+
+/* Preset 2: Sapphire Cyber Wave */
+html[data-orbit="2"] {
+  --orbit-frame-1: #2563eb;
+  --orbit-frame-2: #00e5ff;
+  --orbit-frame-3: #38bdf8;
+  --orbit-frame-4: #bae6fd;
+  --orbit-frame-5: #0284c7;
+  --orbit-frame-6: #1d4ed8;
+  --orbit-frame-fade: rgba(56, 189, 248, 0.24);
+
+  --orbit-aura-1: rgba(37, 99, 235, 0.56);
+  --orbit-aura-2: rgba(0, 229, 255, 0.48);
+  --orbit-aura-3: rgba(56, 189, 248, 0.46);
+  --orbit-aura-4: rgba(186, 230, 253, 0.36);
+  --orbit-aura-5: rgba(2, 132, 199, 0.46);
+  --orbit-aura-6: rgba(29, 78, 216, 0.45);
+  --orbit-aura-fade: rgba(37, 99, 235, 0.08);
+
+  --orbit-card-1: rgba(0, 229, 255, 0.82);
+  --orbit-card-2: rgba(56, 189, 248, 0.76);
+  --orbit-card-3: rgba(186, 230, 253, 0.7);
+  --orbit-card-4: rgba(37, 99, 235, 0.72);
+  --orbit-card-5: rgba(2, 132, 199, 0.62);
+  --orbit-card-fade: rgba(56, 189, 248, 0.15);
+
+  --orbit-comp-shadow1: rgba(0, 229, 255, 0.26);
+  --orbit-comp-shadow2: rgba(37, 99, 235, 0.22);
+}
+
+/* Preset 3: Emerald Quantum Jade */
+html[data-orbit="3"] {
+  --orbit-frame-1: #10b981;
+  --orbit-frame-2: #2dd4bf;
+  --orbit-frame-3: #6ee7b7;
+  --orbit-frame-4: #a3e635;
+  --orbit-frame-5: #14b8a6;
+  --orbit-frame-6: #059669;
+  --orbit-frame-fade: rgba(16, 185, 129, 0.25);
+
+  --orbit-aura-1: rgba(16, 185, 129, 0.54);
+  --orbit-aura-2: rgba(45, 212, 191, 0.48);
+  --orbit-aura-3: rgba(110, 231, 183, 0.4);
+  --orbit-aura-4: rgba(163, 230, 53, 0.38);
+  --orbit-aura-5: rgba(20, 184, 166, 0.45);
+  --orbit-aura-6: rgba(5, 150, 105, 0.44);
+  --orbit-aura-fade: rgba(16, 185, 129, 0.08);
+
+  --orbit-card-1: rgba(16, 185, 129, 0.82);
+  --orbit-card-2: rgba(45, 212, 191, 0.75);
+  --orbit-card-3: rgba(163, 230, 53, 0.66);
+  --orbit-card-4: rgba(110, 231, 183, 0.68);
+  --orbit-card-5: rgba(5, 150, 105, 0.65);
+  --orbit-card-fade: rgba(45, 212, 191, 0.16);
+
+  --orbit-comp-shadow1: rgba(16, 185, 129, 0.26);
+  --orbit-comp-shadow2: rgba(45, 212, 191, 0.2);
+}
+
+/* Preset 4 (Flagship Executive Pro): Sovereign Champagne Gold, Platinum & Deep Sapphire Metallic Trim */
+html[data-orbit="4"] {
+  --orbit-frame-1: #e7c16a;
+  --orbit-frame-2: #f8fafc;
+  --orbit-frame-3: #94a3b8;
+  --orbit-frame-4: #3b82f6;
+  --orbit-frame-5: #d4a34b;
+  --orbit-frame-6: #cbd5e1;
+  --orbit-frame-fade: rgba(231, 193, 106, 0.22);
+
+  --orbit-aura-1: rgba(231, 193, 106, 0.48);
+  --orbit-aura-2: rgba(248, 250, 252, 0.28);
+  --orbit-aura-3: rgba(148, 163, 184, 0.34);
+  --orbit-aura-4: rgba(59, 130, 246, 0.42);
+  --orbit-aura-5: rgba(212, 163, 75, 0.44);
+  --orbit-aura-6: rgba(203, 213, 225, 0.26);
+  --orbit-aura-fade: rgba(231, 193, 106, 0.06);
+
+  --orbit-card-1: rgba(231, 193, 106, 0.86);
+  --orbit-card-2: rgba(248, 250, 252, 0.68);
+  --orbit-card-3: rgba(59, 130, 246, 0.72);
+  --orbit-card-4: rgba(212, 163, 75, 0.8);
+  --orbit-card-5: rgba(148, 163, 184, 0.56);
+  --orbit-card-fade: rgba(231, 193, 106, 0.14);
+
+  --orbit-comp-shadow1: rgba(231, 193, 106, 0.26);
+  --orbit-comp-shadow2: rgba(59, 130, 246, 0.2);
+}
+
+/* Preset 5: Royal Velvet Amethyst */
+html[data-orbit="5"] {
+  --orbit-frame-1: #6366f1;
+  --orbit-frame-2: #a855f7;
+  --orbit-frame-3: #ec4899;
+  --orbit-frame-4: #f59e0b;
+  --orbit-frame-5: #8b5cf6;
+  --orbit-frame-6: #4f46e5;
+  --orbit-frame-fade: rgba(168, 85, 247, 0.25);
+
+  --orbit-aura-1: rgba(99, 102, 241, 0.52);
+  --orbit-aura-2: rgba(168, 85, 247, 0.5);
+  --orbit-aura-3: rgba(236, 72, 153, 0.44);
+  --orbit-aura-4: rgba(245, 158, 11, 0.36);
+  --orbit-aura-5: rgba(139, 92, 246, 0.48);
+  --orbit-aura-6: rgba(79, 70, 229, 0.44);
+  --orbit-aura-fade: rgba(168, 85, 247, 0.08);
+
+  --orbit-card-1: rgba(168, 85, 247, 0.82);
+  --orbit-card-2: rgba(236, 72, 153, 0.74);
+  --orbit-card-3: rgba(245, 158, 11, 0.68);
+  --orbit-card-4: rgba(99, 102, 241, 0.78);
+  --orbit-card-5: rgba(139, 92, 246, 0.72);
+  --orbit-card-fade: rgba(168, 85, 247, 0.16);
+
+  --orbit-comp-shadow1: rgba(168, 85, 247, 0.26);
+  --orbit-comp-shadow2: rgba(236, 72, 153, 0.2);
+}
+
+.orbit-website-frame {
+  --orbit-angle: 0deg;
+  background: conic-gradient(
+    from var(--orbit-angle),
+    var(--orbit-frame-1) 0deg,
+    var(--orbit-frame-2) 52deg,
+    var(--orbit-frame-3) 112deg,
+    var(--orbit-frame-4) 170deg,
+    var(--orbit-frame-5) 225deg,
+    var(--orbit-frame-6) 278deg,
+    var(--orbit-frame-fade) 322deg,
+    var(--orbit-frame-1) 360deg
+  );
+  animation: orbitSpin 6.5s linear infinite;
+}
+
+.orbit-website-aura {
+  --orbit-angle: 0deg;
+  background: conic-gradient(
+    from var(--orbit-angle),
+    var(--orbit-aura-1) 0deg,
+    var(--orbit-aura-2) 55deg,
+    var(--orbit-aura-3) 115deg,
+    var(--orbit-aura-4) 172deg,
+    var(--orbit-aura-5) 225deg,
+    var(--orbit-aura-6) 280deg,
+    var(--orbit-aura-fade) 325deg,
+    var(--orbit-aura-1) 360deg
+  );
+  filter: blur(18px);
+  animation: orbitSpin 6.5s linear infinite;
+}
+
+.orbit-card {
+  position: relative;
+}
+
+.orbit-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1.25px;
+  border-radius: inherit;
+  background: conic-gradient(
+    from var(--orbit-angle),
+    var(--orbit-card-1) 0deg,
+    var(--orbit-card-2) 60deg,
+    var(--orbit-card-3) 120deg,
+    var(--orbit-card-4) 180deg,
+    var(--orbit-card-5) 235deg,
+    var(--orbit-card-fade) 300deg,
+    var(--orbit-card-1) 360deg
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 2;
+  animation: orbitSpin 7s linear infinite;
+  transition: opacity 0.25s ease;
+}
+
+.orbit-card:hover::before {
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--orbit-angle),
+    var(--orbit-frame-1) 0deg,
+    var(--orbit-frame-2) 60deg,
+    var(--orbit-frame-3) 120deg,
+    var(--orbit-frame-4) 180deg,
+    var(--orbit-frame-5) 235deg,
+    var(--orbit-frame-fade) 305deg,
+    var(--orbit-frame-1) 360deg
+  );
+}
+
+.orbit-card-vivid {
+  position: relative;
+}
+
+.orbit-card-vivid::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1.5px;
+  border-radius: inherit;
+  background: conic-gradient(
+    from var(--orbit-angle),
+    var(--orbit-frame-1) 0deg,
+    var(--orbit-frame-2) 65deg,
+    var(--orbit-frame-3) 130deg,
+    var(--orbit-frame-4) 195deg,
+    var(--orbit-frame-6) 260deg,
+    var(--orbit-frame-fade) 315deg,
+    var(--orbit-frame-1) 360deg
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 20;
+  animation: orbitSpin 5s linear infinite;
+}
+
+.orbit-composer {
+  position: relative;
+  box-shadow: 0 0 22px -6px var(--orbit-comp-shadow1), 0 0 18px -8px var(--orbit-comp-shadow2);
+}
+
+.orbit-composer::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1.5px;
+  border-radius: inherit;
+  background: conic-gradient(
+    from var(--orbit-angle),
+    var(--orbit-frame-1) 0deg,
+    var(--orbit-frame-3) 75deg,
+    var(--orbit-frame-4) 145deg,
+    var(--orbit-frame-5) 210deg,
+    var(--orbit-frame-6) 275deg,
+    var(--orbit-frame-fade) 325deg,
+    var(--orbit-frame-1) 360deg
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 2;
+  animation: orbitSpin 5.5s linear infinite;
+}
+
+html.light .orbit-card::before {
+  opacity: 0.78;
+}
+
+html.light .orbit-website-aura {
+  opacity: 0.42;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orbit-website-frame,
+  .orbit-website-aura,
+  .orbit-card::before,
+  .orbit-card-vivid::before,
+  .orbit-composer::before {
+    animation: none;
+  }
+}
+

@@ -15,6 +15,10 @@ import {
   Moon,
 } from 'lucide-react';
 import { AppTheme } from '../utils/theme';
+import {
+  ORBIT_THEME_PRESETS,
+  OrbitThemePresetId,
+} from '../utils/orbitTheme';
 
 interface AppSettingsScreenProps {
   onBack: () => void;
@@ -31,6 +35,8 @@ interface AppSettingsScreenProps {
   onToggleSimulatedStorageWarning?: (val: boolean) => void;
   theme?: AppTheme;
   onToggleTheme?: (newTheme: AppTheme) => void;
+  orbitPreset?: OrbitThemePresetId;
+  onChangeOrbitPreset?: (presetId: OrbitThemePresetId) => void;
 }
 
 export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
@@ -48,6 +54,8 @@ export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
   onToggleSimulatedStorageWarning,
   theme = 'dark',
   onToggleTheme,
+  orbitPreset = '1',
+  onChangeOrbitPreset,
 }) => {
   const [modalType, setModalType] = useState<'password' | 'delete' | null>(null);
 
@@ -142,6 +150,86 @@ export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
             <Sun className="w-3.5 h-3.5" />
             <span>Light Theme</span>
           </button>
+        </div>
+      </div>
+
+      {/* 1B. Website Rotating Perimeter Glow Color Selector (5 Professional Presets) */}
+      <div className="orbit-card mb-4 bg-[#111e33] border border-[#1f3250] rounded-2xl p-4 shadow-lg shadow-blue-950/20">
+        <div className="flex items-center justify-between mb-3 relative z-10">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-sky-500/15 border border-sky-400/30 text-sky-400 flex items-center justify-center">
+              <Sparkles className="w-5 h-5" />
+            </div>
+            <div>
+              <h4 className="text-[14px] font-bold text-white">
+                বর্ডার গ্লো কালার (Orbit Border)
+              </h4>
+              <p className="text-[11px] text-slate-400">
+                ৫টি প্রফেশনাল কালার — যেকোনোটিতে ট্যাপ করে সেট করুন
+              </p>
+            </div>
+          </div>
+          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 text-sky-300 border border-sky-500/30">
+            #{orbitPreset} সক্রিয়
+          </span>
+        </div>
+
+        <div className="space-y-2 relative z-10">
+          {ORBIT_THEME_PRESETS.map((preset) => {
+            const isSelected = orbitPreset === preset.id;
+            return (
+              <button
+                key={preset.id}
+                type="button"
+                aria-pressed={isSelected}
+                aria-label={`Orbit Color ${preset.numberLabel}: ${preset.name}`}
+                onClick={() => onChangeOrbitPreset?.(preset.id)}
+                className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-xl border text-left transition-all cursor-pointer active:scale-[0.99] ${
+                  isSelected
+                    ? 'bg-[#172845] border-sky-400/70 shadow-md ring-1 ring-sky-400/30'
+                    : 'bg-[#0b1322]/90 border-[#1a2942] hover:bg-[#132038] hover:border-[#2a4066]'
+                }`}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  {/* Live Rotating Conic Preview Swatch */}
+                  <div
+                    className="w-9 h-9 rounded-xl p-[2px] shrink-0 shadow-md"
+                    style={{ background: preset.previewGradient }}
+                  >
+                    <div className="w-full h-full rounded-[10px] bg-[#0b111c] flex items-center justify-center text-xs font-extrabold text-white">
+                      {preset.numberLabel}
+                    </div>
+                  </div>
+
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-xs font-bold text-white truncate">
+                        {preset.numberLabel}. {preset.bnName} ({preset.name})
+                      </span>
+                      {preset.badge && (
+                        <span className="text-[9px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-amber-400/20 text-amber-300 border border-amber-400/40">
+                          {preset.badge}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[10.5px] text-slate-400 truncate mt-0.5">
+                      {preset.subtitle}
+                    </p>
+                  </div>
+                </div>
+
+                <div
+                  className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 transition-all ${
+                    isSelected
+                      ? 'bg-sky-500 text-white shadow-sm'
+                      : 'border border-slate-600 bg-transparent'
+                  }`}
+                >
+                  {isSelected && <Check className="w-3 h-3" />}
+                </div>
+              </button>
+            );
+          })}
         </div>
       </div>
 

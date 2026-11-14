@@ -184,22 +184,106 @@ export function sanitizeFileForPersistence(
   return sanitized;
 }
 
+const DELETED_IDS_PREFIX = 'bashar_cloud_deleted_ids_v1';
+
 /**
- * Merges incoming cloud files with existing hydrated local files so live blob URLs
- * or locally cached previews/contents are preserved rather than overwritten by empty/stale fields.
+ * Recursively removes `undefined` keys from plain objects and arrays so Firestore `setDoc` never rejects payloads.
+ */
+export function stripUndefinedDeep<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value
+      .filter((item) => item !== undefined)
+      .map((item) => stripUndefinedDeep(item)) as unknown as T;
+  }
+  if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    const clean: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      if (val !== undefined) {
+        clean[key] = stripUndefinedDeep(val);
+      }
+    }
+    return clean as T;
+  }
+  return value;
+}
+
+export function loadDeletedFileIds(userId?: string): Set<string> {
+  if (typeof localStorage === 'undefined') return new Set();
+  try {
+    const key = userId && userId !== 'guest_user' ? `${DELETED_IDS_PREFIX}_${userId}` : DELETED_IDS_PREFIX;
+    const raw = localStorage.getItem(key);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed.filter((x) => typeof x === 'string')) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+export function addDeletedFileIds(userId: string | undefined, ids: string[]): void {
+  if (typeof localStorage === 'undefined' || !ids || ids.length === 0) return;
+  try {
+    const key = userId && userId !== 'guest_user' ? `${DELETED_IDS_PREFIX}_${userId}` : DELETED_IDS_PREFIX;
+    const existing = loadDeletedFileIds(userId);
+    ids.forEach((id) => {
+      if (id) existing.add(id);
+    });
+    const list = Array.from(existing).slice(-500);
+    localStorage.setItem(key, JSON.stringify(list));
+  } catch {}
+}
+
+export function removeDeletedFileIds(userId: string | undefined, ids: string[]): void {
+  if (typeof localStorage === 'undefined' || !ids || ids.length === 0) return;
+  try {
+    const key = userId && userId !== 'guest_user' ? `${DELETED_IDS_PREFIX}_${userId}` : DELETED_IDS_PREFIX;
+    const existing = loadDeletedFileIds(userId);
+    let changed = false;
+    ids.forEach((id) => {
+      if (existing.delete(id)) changed = true;
+    });
+    if (changed) {
+      localStorage.setItem(key, JSON.stringify(Array.from(existing)));
+    }
+  } catch {}
+}
+
+export function clearDeletedFileIds(userId?: string): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    const key = userId && userId !== 'guest_user' ? `${DELETED_IDS_PREFIX}_${userId}` : DELETED_IDS_PREFIX;
+    localStorage.removeItem(key);
+  } catch {}
+}
+
+/**
+ * Merges incoming cloud files with existing hydrated local files cleanly:
+ * - Preserves live blob URLs, locally cached previews, contents, archive entries, and richer version lists
+ * - Retains local-only files not yet echoed back by a Firestore snapshot (lifetime guarantee unless explicitly deleted)
+ * - Excludes any ID present in `deletedIds` so explicitly deleted files stay deleted
  */
 export function mergeCloudAndLocalFiles(
   cloudFiles: CloudFile[],
-  localFiles: CloudFile[]
+  localFiles: CloudFile[],
+  deletedIds?: Set<string>
 ): CloudFile[] {
   const localById = new Map<string, CloudFile>();
   for (const lf of localFiles) {
+    if (deletedIds?.has(lf.id)) continue;
     localById.set(lf.id, lf);
   }
 
-  return cloudFiles.map((cf) => {
+  const seenIds = new Set<string>();
+  const mergedCloud: CloudFile[] = [];
+
+  for (const cf of cloudFiles) {
+    if (deletedIds?.has(cf.id)) continue;
+    seenIds.add(cf.id);
     const local = localById.get(cf.id);
-    if (!local) return cf;
+    if (!local) {
+      mergedCloud.push(cf);
+      continue;
+    }
 
     const resolvedUrl =
       cf.url && cf.url.trim()
@@ -226,19 +310,30 @@ export function mergeCloudAndLocalFiles(
         : local.archiveEntries;
 
     const resolvedVersions =
-      cf.versions && cf.versions.length > 0
-        ? cf.versions
+      (cf.versions?.length || 0) >= (local.versions?.length || 0)
+        ? cf.versions && cf.versions.length > 0
+          ? cf.versions
+          : local.versions
         : local.versions;
 
-    return {
+    mergedCloud.push({
       ...cf,
       ...(resolvedUrl ? { url: resolvedUrl } : {}),
       ...(resolvedThumbnail ? { thumbnail: resolvedThumbnail } : {}),
       ...(resolvedContent !== undefined ? { content: resolvedContent } : {}),
       ...(resolvedArchiveEntries ? { archiveEntries: resolvedArchiveEntries } : {}),
       ...(resolvedVersions ? { versions: resolvedVersions } : {}),
-    };
-  });
+    });
+  }
+
+  const localOnly: CloudFile[] = [];
+  for (const lf of localFiles) {
+    if (deletedIds?.has(lf.id) || seenIds.has(lf.id)) continue;
+    seenIds.add(lf.id);
+    localOnly.push(lf);
+  }
+
+  return [...localOnly, ...mergedCloud];
 }
 
 /**

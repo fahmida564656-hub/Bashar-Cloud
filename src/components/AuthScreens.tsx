@@ -277,7 +277,7 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
       {/* Main Authentication Container */}
       <div className="w-full mt-4">
         {/* Brand New Modern Sign In / Sign Up Bar ("নতুন করে সাইন আপ বার হবে") */}
-        <div className="relative bg-[#0d1626] border border-[#1f324f] rounded-2xl p-1.5 mb-4 shadow-lg flex items-center">
+        <div className="orbit-card bg-[#0d1626] rounded-2xl p-1.5 mb-4 shadow-lg flex items-center">
           <button
             type="button"
             onClick={() => {

@@ -10,6 +10,7 @@ import {
   mergeCloudAndLocalFiles,
   computeStorageBreakdown,
   formatTotalBytesUsed,
+  stripUndefinedDeep,
 } from './fileVault';
 import { CloudFile } from '../types';
 
@@ -72,7 +73,7 @@ test('sanitizeFileForPersistence strips blob URLs while keeping persistable data
   assert.equal(sanitizedWithData.thumbnail, 'data:image/jpeg;base64,AAAA');
 });
 
-test('mergeCloudAndLocalFiles preserves hydrated local URLs and contents when cloud snapshot omits them', () => {
+test('mergeCloudAndLocalFiles preserves hydrated local URLs and retains local-only uploads unless deleted', () => {
   const cloud: CloudFile[] = [
     {
       id: 'f-1',
@@ -83,8 +84,27 @@ test('mergeCloudAndLocalFiles preserves hydrated local URLs and contents when cl
       date: 'Mar 10, 2026',
       isFavorite: true,
     },
+    {
+      id: 'f-deleted',
+      name: 'old.txt',
+      type: 'document',
+      sizeBytes: 50,
+      formattedSize: '50 B',
+      date: 'Mar 10, 2026',
+      isFavorite: false,
+    },
   ];
   const local: CloudFile[] = [
+    {
+      id: 'f-new-local',
+      name: 'fresh_upload.jpg',
+      type: 'image',
+      sizeBytes: 120_000,
+      formattedSize: '117 KB',
+      date: 'Today',
+      isFavorite: false,
+      url: 'blob:http://localhost:3000/fresh',
+    },
     {
       id: 'f-1',
       name: 'video.mp4',
@@ -97,10 +117,25 @@ test('mergeCloudAndLocalFiles preserves hydrated local URLs and contents when cl
     },
   ];
 
-  const merged = mergeCloudAndLocalFiles(cloud, local);
-  assert.equal(merged.length, 1);
-  assert.equal(merged[0].isFavorite, true);
-  assert.equal(merged[0].url, 'blob:http://localhost:3000/hydrated-from-idb');
+  const merged = mergeCloudAndLocalFiles(cloud, local, new Set(['f-deleted']));
+  assert.equal(merged.length, 2);
+  assert.equal(merged[0].id, 'f-new-local');
+  assert.equal(merged[1].id, 'f-1');
+  assert.equal(merged[1].isFavorite, true);
+  assert.equal(merged[1].url, 'blob:http://localhost:3000/hydrated-from-idb');
+});
+
+test('stripUndefinedDeep removes nested undefined properties for safe Firestore writes', () => {
+  const input = {
+    name: 'doc.zip',
+    entries: [{ name: 'a.txt', size: '10 B', sizeBytes: undefined }],
+    nested: { a: 1, b: undefined },
+  };
+  const cleaned = stripUndefinedDeep(input) as Record<string, unknown>;
+  assert.equal('b' in (cleaned.nested as Record<string, unknown>), false);
+  const firstEntry = (cleaned.entries as Array<Record<string, unknown>>)[0];
+  assert.equal('sizeBytes' in firstEntry, false);
+  assert.equal(firstEntry.name, 'a.txt');
 });
 
 test('computeStorageBreakdown and formatTotalBytesUsed count all files including archives accurately', () => {

@@ -784,10 +784,10 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                   key={index}
                   type="button"
                   onClick={() => handleSubmitPrompt(card.prompt, card.mode)}
-                  className={`w-full p-3 rounded-2xl border transition-all text-left flex items-center gap-3 cursor-pointer active:scale-[0.99] ${
+                  className={`orbit-card w-full p-3 rounded-2xl transition-all text-left flex items-center gap-3 cursor-pointer active:scale-[0.99] ${
                     isLight
-                      ? 'bg-slate-50 hover:bg-blue-50/70 border-slate-200 hover:border-blue-300'
-                      : 'bg-[#111b2d] hover:bg-[#16233a] border-[#1f304c] hover:border-blue-500/40'
+                      ? 'bg-slate-50 hover:bg-blue-50/70'
+                      : 'bg-[#111b2d] hover:bg-[#16233a]'
                   }`}
                 >
                   <div
@@ -1023,8 +1023,8 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
         )}
 
         <div
-          className={`flex items-end gap-1 rounded-2xl border p-1 transition-colors focus-within:border-blue-500 ${
-            isLight ? 'bg-slate-50 border-slate-300' : 'bg-[#111b2d] border-[#223554]'
+          className={`orbit-composer flex items-end gap-1 rounded-2xl p-1.5 transition-colors ${
+            isLight ? 'bg-slate-50' : 'bg-[#111b2d]'
           }`}
         >
           <button

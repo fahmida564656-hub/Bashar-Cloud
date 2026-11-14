@@ -25,6 +25,11 @@ import {
 import { CloudFile, StorageUsage, FileType, UserSubscription } from '../types';
 import { getStorageAlertLevel, getStorageAlertStyles } from '../utils/storageAlert';
 import { formatTotalBytesUsed } from '../utils/fileVault';
+import {
+  ORBIT_THEME_PRESETS,
+  OrbitThemePresetId,
+  getOrbitThemePresetById,
+} from '../utils/orbitTheme';
 
 interface HomeScreenProps {
   storage: StorageUsage;
@@ -43,6 +48,8 @@ interface HomeScreenProps {
   onUploadMultipleFiles?: (files: File[]) => void;
   onOpenFilePreview?: (file: CloudFile) => void;
   onViewAllFiles?: () => void;
+  orbitPreset?: OrbitThemePresetId;
+  onChangeOrbitPreset?: (presetId: OrbitThemePresetId) => void;
 }
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({
@@ -61,6 +68,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   onUploadMultipleFiles,
   onOpenFilePreview,
   onViewAllFiles,
+  orbitPreset = '1',
+  onChangeOrbitPreset,
 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const multiFileInputRef = useRef<HTMLInputElement>(null);
@@ -257,7 +266,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       {/* Total Storage Card with Visual Progress Bar Alert (Threshold: >= 90% of 1000GB) */}
       <div
         onClick={onOpenAnalysis}
-        className={`cursor-pointer relative overflow-hidden rounded-3xl p-3.5 mb-2.5 shadow-xl border transition-all ${alertStyles.cardBorder}`}
+        className={`orbit-card cursor-pointer relative overflow-hidden rounded-3xl p-3.5 mb-2.5 shadow-xl transition-all ${alertStyles.cardBorder}`}
         title="Tap to view Storage Analysis"
       >
         {/* Soft background glow */}
@@ -390,7 +399,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
       {/* Vault Content Area: Shows Recent Files when populated, or Clean Empty Vault State */}
       {recentFiles.length > 0 ? (
-        <div className="bg-[#121c2c] border border-[#1f3049] rounded-3xl p-4 mb-3 flex flex-col">
+        <div className="orbit-card bg-[#121c2c] rounded-3xl p-4 mb-3 flex flex-col">
           <div className="flex items-center justify-between mb-3">
             <div>
               <h2 className="text-sm font-bold text-white">সাম্প্রতিক ফাইল (Recent Files)</h2>
@@ -460,7 +469,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           </div>
         </div>
       ) : (
-        <div className="flex flex-col items-center justify-center text-center p-3 bg-[#121c2c] border border-[#1f3049] rounded-3xl mb-2.5 shadow-inner">
+        <div className="orbit-card flex flex-col items-center justify-center text-center p-3 bg-[#121c2c] rounded-3xl mb-2.5 shadow-inner">
           <div className="w-9 h-9 rounded-2xl bg-gradient-to-tr from-[#162744] to-[#1e345e] border border-[#264375] flex items-center justify-center text-blue-400 mb-1.5 shadow-lg">
             <ShieldCheck className="w-4.5 h-4.5" />
           </div>
@@ -506,7 +515,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       <div className="grid grid-cols-4 gap-2 mb-2">
         <div
           onClick={() => onSelectCategory('image')}
-          className="flex flex-col items-center justify-center p-2 rounded-2xl bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] cursor-pointer transition-all active:scale-95"
+          className="orbit-card flex flex-col items-center justify-center p-2 rounded-2xl bg-[#121c2c] hover:bg-[#162338] cursor-pointer transition-all active:scale-95"
         >
           <div className="w-9 h-9 rounded-xl bg-blue-500/10 text-blue-400 flex items-center justify-center mb-1">
             <ImageIcon className="w-4.5 h-4.5" />
@@ -517,7 +526,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
         <div
           onClick={() => onSelectCategory('video')}
-          className="flex flex-col items-center justify-center p-2 rounded-2xl bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] cursor-pointer transition-all active:scale-95"
+          className="orbit-card flex flex-col items-center justify-center p-2 rounded-2xl bg-[#121c2c] hover:bg-[#162338] cursor-pointer transition-all active:scale-95"
         >
           <div className="w-9 h-9 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center mb-1">
             <Video className="w-4.5 h-4.5" />
@@ -528,7 +537,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
         <div
           onClick={() => onSelectCategory('audio')}
-          className="flex flex-col items-center justify-center p-2 rounded-2xl bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] cursor-pointer transition-all active:scale-95"
+          className="orbit-card flex flex-col items-center justify-center p-2 rounded-2xl bg-[#121c2c] hover:bg-[#162338] cursor-pointer transition-all active:scale-95"
         >
           <div className="w-9 h-9 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center mb-1">
             <Music className="w-4.5 h-4.5" />
@@ -539,7 +548,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
         <div
           onClick={() => onSelectCategory('document')}
-          className="flex flex-col items-center justify-center p-2 rounded-2xl bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] cursor-pointer transition-all active:scale-95"
+          className="orbit-card flex flex-col items-center justify-center p-2 rounded-2xl bg-[#121c2c] hover:bg-[#162338] cursor-pointer transition-all active:scale-95"
         >
           <div className="w-9 h-9 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center mb-1">
             <FileText className="w-4.5 h-4.5" />
@@ -549,11 +558,56 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         </div>
       </div>
 
+      {/* 5-Preset Quick Border Glow Switcher directly on Home Screen */}
+      {onChangeOrbitPreset && (
+        <div className="orbit-card bg-[#121c2c] rounded-2xl px-3 py-2 mb-2 flex items-center justify-between gap-2">
+          <div className="min-w-0 relative z-10">
+            <div className="flex items-center gap-1.5">
+              <Sparkles className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+              <span className="text-[11px] font-bold text-white truncate">
+                বর্ডার কালার #{orbitPreset}
+              </span>
+            </div>
+            <p className="text-[9.5px] text-slate-400 truncate">
+              {getOrbitThemePresetById(orbitPreset).bnName}
+            </p>
+          </div>
+
+          <div
+            className="flex items-center gap-1.5 shrink-0 relative z-10"
+            role="group"
+            aria-label="Orbit Border Color Presets"
+          >
+            {ORBIT_THEME_PRESETS.map((preset) => {
+              const active = orbitPreset === preset.id;
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  aria-pressed={active}
+                  aria-label={`Set Border Color ${preset.numberLabel}: ${preset.name}`}
+                  title={`${preset.numberLabel}. ${preset.name}${preset.badge ? ` (${preset.badge})` : ''}`}
+                  onClick={() => onChangeOrbitPreset(preset.id)}
+                  className={`w-7 h-7 rounded-xl p-[2px] transition-all cursor-pointer active:scale-90 ${
+                    active ? 'scale-110 ring-2 ring-white/80 shadow-md' : 'opacity-75 hover:opacity-100'
+                  }`}
+                  style={{ background: preset.previewGradient }}
+                >
+                  <span className="w-full h-full rounded-[8px] bg-[#0b111c] flex items-center justify-center text-[10px] font-extrabold text-white">
+                    {preset.numberLabel}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Recycle Bin Button */}
       <button
         type="button"
         onClick={onOpenRecycleBin}
-        className="w-full bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] rounded-2xl py-2.5 pl-3 pr-16 flex items-center justify-between text-xs text-slate-300 transition-colors cursor-pointer"
+        className="orbit-card w-full bg-[#121c2c] hover:bg-[#162338] rounded-2xl py-2.5 pl-3 pr-16 flex items-center justify-between text-xs text-slate-300 transition-colors cursor-pointer"
       >
         <div className="flex items-center gap-2.5">
           <Trash2 className="w-4 h-4 text-rose-400" />
