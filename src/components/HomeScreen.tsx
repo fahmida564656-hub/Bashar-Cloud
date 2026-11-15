@@ -9,8 +9,6 @@ import {
   Music,
   Trash2,
   Upload,
-  PieChart as PieChartIcon,
-  Plus,
   Sparkles,
   ShieldCheck,
   Lock,
@@ -18,18 +16,11 @@ import {
   AlertTriangle,
   FilePlus,
   Archive,
-  Folder,
-  ChevronRight,
-  Star,
 } from 'lucide-react';
 import { CloudFile, StorageUsage, FileType, UserSubscription } from '../types';
 import { getStorageAlertLevel, getStorageAlertStyles } from '../utils/storageAlert';
 import { formatTotalBytesUsed } from '../utils/fileVault';
-import {
-  ORBIT_THEME_PRESETS,
-  OrbitThemePresetId,
-  getOrbitThemePresetById,
-} from '../utils/orbitTheme';
+import { toBengaliDigits } from '../utils/subscription';
 
 interface HomeScreenProps {
   storage: StorageUsage;
@@ -48,8 +39,7 @@ interface HomeScreenProps {
   onUploadMultipleFiles?: (files: File[]) => void;
   onOpenFilePreview?: (file: CloudFile) => void;
   onViewAllFiles?: () => void;
-  orbitPreset?: OrbitThemePresetId;
-  onChangeOrbitPreset?: (presetId: OrbitThemePresetId) => void;
+  unreadNotificationsCount?: number;
 }
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({
@@ -66,10 +56,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   onOpenPayment,
   onOpenCreateFile,
   onUploadMultipleFiles,
-  onOpenFilePreview,
-  onViewAllFiles,
-  orbitPreset = '1',
-  onChangeOrbitPreset,
+  unreadNotificationsCount = 0,
 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const multiFileInputRef = useRef<HTMLInputElement>(null);
@@ -97,9 +84,15 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const alertStyles = getStorageAlertStyles(alertLevel);
   const isStorageWarning = alertLevel !== 'normal';
 
-  const recentFiles = files.slice(0, 4);
+  const isApproved = subscription?.isLifetimeApproved;
+  const isExpired = Boolean(subscription?.isExpired && !isApproved);
 
   const handleMultiFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isExpired) {
+      e.target.value = '';
+      onOpenPayment?.();
+      return;
+    }
     if (e.target.files && e.target.files.length > 0 && onUploadMultipleFiles) {
       const filesArray = Array.from(e.target.files);
       onUploadMultipleFiles(filesArray);
@@ -107,8 +100,13 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     }
   };
 
-  const isApproved = subscription?.isLifetimeApproved;
-  const isExpired = subscription?.isExpired && !isApproved;
+  const handleProtectedUploadClick = (ref: React.RefObject<HTMLInputElement | null>) => {
+    if (isExpired) {
+      onOpenPayment?.();
+      return;
+    }
+    ref.current?.click();
+  };
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -123,6 +121,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
+    if (isExpired) {
+      onOpenPayment?.();
+      return;
+    }
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0 && onUploadMultipleFiles) {
       onUploadMultipleFiles(Array.from(e.dataTransfer.files));
     }
@@ -139,14 +141,22 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       {isDragging && (
         <div className="absolute inset-0 z-50 bg-blue-950/90 backdrop-blur-md border-2 border-dashed border-blue-400 rounded-3xl m-2 flex flex-col items-center justify-center p-6 text-center animate-in fade-in">
           <div className="w-16 h-16 rounded-2xl bg-blue-600/30 border border-blue-400 flex items-center justify-center text-blue-300 mb-3 animate-bounce">
-            <Upload className="w-8 h-8" />
+            {isExpired ? <Lock className="w-8 h-8 text-rose-400" /> : <Upload className="w-8 h-8" />}
           </div>
-          <h3 className="text-lg font-bold text-white mb-1">ফাইলগুলো এখানে ছেড়ে দিন (Drop Files Here)</h3>
-          <p className="text-xs text-blue-200">ছবি, ভিডিও, অডিও, ডকুমেন্ট বা জিপ ফাইল ড্রাইভ আপলোড হবে</p>
+          <h3 className="text-lg font-bold text-white mb-1">
+            {isExpired
+              ? '৩০ দিনের ট্রায়াল শেষ — অ্যাকাউন্ট লক'
+              : 'ফাইলগুলো এখানে ছেড়ে দিন (Drop Files Here)'}
+          </h3>
+          <p className="text-xs text-blue-200">
+            {isExpired
+              ? 'ফাইল আপলোড করতে ১০০ টাকা পেমেন্ট করে আনলক করুন'
+              : 'ছবি, ভিডিও, অডিও, ডকুমেন্ট বা জিপ ফাইল ড্রাইভে আপলোড হবে'}
+          </p>
         </div>
       )}
 
-      {/* Hidden Multi-file input for uploading multiple files at once */}
+      {/* Hidden Multi-file input */}
       <input
         type="file"
         ref={multiFileInputRef}
@@ -155,7 +165,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         className="hidden"
       />
 
-      {/* Hidden ZIP file input specifically for archives */}
+      {/* Hidden ZIP file input */}
       <input
         type="file"
         ref={zipFileInputRef}
@@ -166,162 +176,186 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       />
 
       {/* Header */}
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-3">
+      <div className="flex items-center justify-between mb-3.5">
+        <div className="flex items-center gap-3 min-w-0">
           <img
             src={logoUrl || '/assets/aistudio/0a4ee58c-1d1d-4faa-8126-cfb8779227ba_f85ac4d0.png'}
             alt={websiteName}
-            className="w-10 h-10 rounded-2xl object-cover shadow-lg border border-blue-500/30"
+            className="w-10 h-10 rounded-2xl object-cover shadow-lg border border-blue-500/30 shrink-0"
           />
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-white leading-tight">
+          <div className="min-w-0">
+            <h1 className="text-xl font-bold tracking-tight text-white leading-tight truncate">
               {websiteName}
             </h1>
-            <p className="text-[12px] text-slate-400">
+            <p className="text-[12px] text-slate-400 truncate">
               Manage all your files in one place
             </p>
           </div>
         </div>
 
         {/* Right Search & Notification Icons */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
             onClick={onOpenSearch}
-            className="w-10 h-10 rounded-full bg-[#131f32] border border-[#20324e] flex items-center justify-center text-slate-300 hover:text-white transition-colors"
+            className="w-11 h-11 rounded-full bg-[#131f32] border border-[#20324e] flex items-center justify-center text-slate-300 hover:text-white transition-colors cursor-pointer"
             title="Search files"
+            aria-label="Search files"
           >
             <Search className="w-5 h-5" />
           </button>
           <button
             type="button"
             onClick={onOpenNotifications}
-            className="relative w-10 h-10 rounded-full bg-[#131f32] border border-[#20324e] flex items-center justify-center text-slate-300 hover:text-white transition-colors"
+            className="relative w-11 h-11 rounded-full bg-[#131f32] border border-[#20324e] flex items-center justify-center text-slate-300 hover:text-white transition-colors cursor-pointer"
             title="Notifications"
+            aria-label={
+              unreadNotificationsCount > 0
+                ? `Notifications (${unreadNotificationsCount} unread)`
+                : 'Notifications'
+            }
           >
             <Bell className="w-5 h-5" />
-            <span className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-blue-500 ring-2 ring-[#131f32]" />
+            {unreadNotificationsCount > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-500 text-white ai-solid-text-white text-[10px] font-extrabold flex items-center justify-center border-2 border-[#0b111c] tabular-nums shadow-sm">
+                {unreadNotificationsCount > 9 ? '9+' : unreadNotificationsCount}
+              </span>
+            )}
           </button>
         </div>
       </div>
 
-      {/* Subscription Status Card */}
+      {/* Subscription / Daily Countdown / Lock Status Card */}
       {subscription && (
-        <div className="mb-3">
+        <div className="mb-3.5">
           {isApproved ? (
-            <div className="bg-gradient-to-r from-emerald-950/80 to-[#102923] border border-emerald-500/40 rounded-2xl p-2.5 px-3 flex items-center justify-between shadow-md">
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
-                <div>
-                  <span className="text-xs font-bold text-white">Lifetime VIP Active</span>
-                  <p className="text-[10px] text-emerald-300/80">সারাজীবনের জন্য অনুমোদিত ক্লাউড স্টোরেজ</p>
+            <div className="bg-gradient-to-r from-emerald-950/80 to-[#102923] border border-emerald-500/40 rounded-2xl p-3 flex items-center justify-between shadow-md">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <ShieldCheck className="w-4.5 h-4.5 text-emerald-400 shrink-0" />
+                <div className="min-w-0">
+                  <span className="text-xs font-bold text-white block truncate">Lifetime VIP Active</span>
+                  <p className="text-[10.5px] text-emerald-300/80 truncate">সারাজীবনের জন্য অনুমোদিত ক্লাউড স্টোরেজ</p>
                 </div>
               </div>
-              <span className="text-[10px] bg-emerald-500/20 text-emerald-300 font-bold px-2 py-0.5 rounded-full border border-emerald-500/30">
+              <span className="text-[10px] bg-emerald-500/20 text-emerald-300 font-bold px-2.5 py-1 rounded-full border border-emerald-500/30 shrink-0">
                 VIP Member
               </span>
             </div>
           ) : isExpired ? (
-            <div
+            <button
+              type="button"
               onClick={onOpenPayment}
-              className="bg-gradient-to-r from-rose-950/80 to-[#2c131a] border border-rose-500/40 rounded-2xl p-2.5 px-3 flex items-center justify-between shadow-md cursor-pointer hover:border-rose-400 transition-all"
+              className="w-full min-h-[52px] text-left bg-gradient-to-r from-rose-950/85 to-[#2c131a] border border-rose-500/50 rounded-2xl p-3 flex items-center justify-between gap-2.5 shadow-lg cursor-pointer hover:border-rose-400 transition-all"
             >
-              <div className="flex items-center gap-2">
-                <Lock className="w-4 h-4 text-rose-400 shrink-0" />
-                <div>
-                  <span className="text-xs font-bold text-rose-200">১ মাসের ফ্রি ট্রায়াল শেষ</span>
-                  <p className="text-[10px] text-slate-300">১০০ টাকা সেন্ড মানি করে আনলক করুন</p>
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-rose-500/20 border border-rose-400/35 flex items-center justify-center text-rose-400 shrink-0">
+                  <Lock className="w-4.5 h-4.5" />
+                </div>
+                <div className="min-w-0">
+                  <span className="text-xs font-bold text-rose-200 block">
+                    ৩০ দিনের ফ্রি ট্রায়াল শেষ • অ্যাকাউন্ট লক
+                  </span>
+                  <p className="text-[10.5px] text-slate-300 leading-snug mt-0.5">
+                    আপলোড, ডাউনলোড, দেখা ও নাম পরিবর্তন বন্ধ — ১০০ টাকা পেমেন্ট করে আনলক করুন
+                  </p>
                 </div>
               </div>
-              <button
-                type="button"
-                className="bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-bold px-2.5 py-1 rounded-xl shadow-md flex items-center gap-1 shrink-0 cursor-pointer"
-              >
+              <span className="bg-rose-600 hover:bg-rose-500 text-white ai-solid-text-white text-[11px] font-bold px-3 py-2 rounded-xl shadow-md flex items-center gap-1 shrink-0">
                 <Sparkles className="w-3 h-3 text-amber-300" />
                 <span>আনলক</span>
-              </button>
-            </div>
+              </span>
+            </button>
           ) : (
-            <div
+            <button
+              type="button"
               onClick={onOpenPayment}
-              className="bg-[#12233e] border border-blue-500/30 rounded-2xl p-2.5 px-3 flex items-center justify-between shadow-md cursor-pointer hover:border-blue-400 transition-all"
+              className="w-full min-h-[50px] text-left bg-[#12233e] border border-blue-500/35 rounded-2xl p-3 flex items-center justify-between gap-2 shadow-md cursor-pointer hover:border-blue-400 transition-all"
             >
-              <div className="flex items-center gap-2">
-                <Clock className="w-4 h-4 text-sky-400 shrink-0" />
-                <div>
-                  <span className="text-xs font-bold text-white">
-                    ফ্রি ট্রায়াল: আর {subscription.daysRemaining} দিন বাকি
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Clock className="w-4.5 h-4.5 text-sky-400 shrink-0" />
+                <div className="min-w-0">
+                  <span className="text-xs font-bold text-white block truncate">
+                    ফ্রি ট্রায়াল: আর {toBengaliDigits(subscription.daysRemaining)} দিন বাকি
                   </span>
-                  <p className="text-[10px] text-slate-400">সারাজীবনের জন্য ১০০ টাকা পেমেন্ট করতে ট্যাপ করুন</p>
+                  <p className="text-[10.5px] text-slate-400 truncate">
+                    ৩০ দিন পর লক হবে • সারাজীবনের জন্য ১০০ টাকা পেমেন্ট করুন
+                  </p>
                 </div>
               </div>
-              <span className="text-[10px] bg-blue-600/30 text-sky-300 font-bold px-2 py-0.5 rounded-full border border-blue-500/30 shrink-0">
+              <span className="text-[10.5px] bg-blue-600/30 text-sky-300 font-bold px-2.5 py-1 rounded-full border border-blue-500/30 shrink-0">
                 ৳১০০ সারাজীবন
               </span>
-            </div>
+            </button>
           )}
         </div>
       )}
 
-      {/* Total Storage Card with Visual Progress Bar Alert (Threshold: >= 90% of 1000GB) */}
+      {/* Total Storage Card */}
       <div
         onClick={onOpenAnalysis}
-        className={`orbit-card cursor-pointer relative overflow-hidden rounded-3xl p-3.5 mb-2.5 shadow-xl transition-all ${alertStyles.cardBorder}`}
+        className={`orbit-card cursor-pointer relative overflow-hidden rounded-3xl p-4 mb-3.5 shadow-xl transition-all ${alertStyles.cardBorder}`}
         title="Tap to view Storage Analysis"
       >
-        {/* Soft background glow */}
-        <div className={`absolute -top-12 -right-12 w-44 h-44 rounded-full blur-3xl pointer-events-none ${
-          isStorageWarning ? 'bg-amber-500/30' : 'bg-sky-400/20'
-        }`} />
+        <div
+          className={`absolute -top-12 -right-12 w-44 h-44 rounded-full blur-3xl pointer-events-none ${
+            isStorageWarning ? 'bg-amber-500/30' : 'bg-sky-400/20'
+          }`}
+        />
 
-        {/* Top storage title */}
         <div className="flex items-center justify-between mb-2.5 relative z-10">
           <div className="flex items-center gap-3">
-            <div className={`w-10 h-10 rounded-2xl border backdrop-blur-md flex items-center justify-center ${
-              isStorageWarning ? 'bg-amber-500/20 border-amber-400/40 text-amber-300' : 'bg-white/10 border-white/20 text-white'
-            }`}>
+            <div
+              className={`w-10 h-10 rounded-2xl border backdrop-blur-md flex items-center justify-center ${
+                isStorageWarning
+                  ? 'bg-amber-500/20 border-amber-400/40 text-amber-300'
+                  : 'bg-white/10 border-white/20 text-white'
+              }`}
+            >
               <HardDrive className="w-5 h-5" />
             </div>
             <div>
-              <p className={`text-[11px] font-medium uppercase tracking-wider ${
-                isStorageWarning ? 'text-amber-300' : 'text-sky-200'
-              }`}>
+              <p
+                className={`text-[11px] font-medium uppercase tracking-wider ${
+                  isStorageWarning ? 'text-amber-300' : 'text-sky-200'
+                }`}
+              >
                 Total Storage
               </p>
-              <h3 className="text-xl font-bold text-white leading-tight">{totalLimitGB} GB</h3>
+              <h3 className="text-xl font-bold text-white leading-tight tabular-nums">{totalLimitGB} GB</h3>
             </div>
           </div>
 
-          {/* Used percentage badge with visual warning indicator */}
-          <div className={`flex items-center gap-1.5 backdrop-blur-md border px-3 py-1 rounded-full text-xs font-bold shadow-sm ${alertStyles.badgeClass}`}>
-            {isStorageWarning && (
-              <AlertTriangle className="w-3.5 h-3.5 text-amber-300" />
-            )}
+          <div
+            className={`flex items-center gap-1.5 backdrop-blur-md border px-3 py-1 rounded-full text-xs font-bold shadow-sm tabular-nums ${alertStyles.badgeClass}`}
+          >
+            {isStorageWarning && <AlertTriangle className="w-3.5 h-3.5 text-amber-300" />}
             <span>{percentUsed}% Used</span>
           </div>
         </div>
 
-        {/* Space Stats */}
         <div className="flex items-baseline justify-between mb-2 relative z-10">
           <div>
-            <span className={`text-2xl font-black tracking-tight ${
-              isStorageWarning ? 'text-amber-200' : 'text-white'
-            }`}>
+            <span
+              className={`text-2xl font-black tracking-tight tabular-nums ${
+                isStorageWarning ? 'text-amber-200' : 'text-white'
+              }`}
+            >
               {usedSpaceText}
             </span>
             <p className="text-xs text-slate-300/90 font-medium mt-0.5">Used space</p>
           </div>
           <div className="text-right">
-            <span className={`text-base font-bold ${
-              isStorageWarning ? 'text-amber-300' : 'text-sky-100'
-            }`}>
+            <span
+              className={`text-base font-bold tabular-nums ${
+                isStorageWarning ? 'text-amber-300' : 'text-sky-100'
+              }`}
+            >
               {availableSpaceText}
             </span>
             <p className="text-xs text-slate-300/90 font-medium mt-0.5">Available</p>
           </div>
         </div>
 
-        {/* Visual Progress Bar (Color changes to warning gradient at >= 90%) */}
         <div className="w-full h-3 bg-black/40 rounded-full overflow-hidden p-[1.5px] relative z-10 border border-white/10 shadow-inner">
           <div
             className={`h-full rounded-full transition-all duration-700 ${alertStyles.barGradient}`}
@@ -329,7 +363,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           />
         </div>
 
-        {/* 90% Storage Warning Alert Banner */}
         {isStorageWarning && (
           <div
             onClick={(e) => {
@@ -349,271 +382,145 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                     : 'Storage Warning: 90% Reached (স্টোরেজ সতর্কবার্তা)'}
                 </h4>
                 <p className="text-[10px] text-amber-200/90 truncate">
-                  You have used {percentUsed}% of your 1000 GB limit. Free up space soon.
+                  You have used {percentUsed}% of your {totalLimitGB} GB limit.
                 </p>
               </div>
             </div>
 
-            <button
-              type="button"
-              className="px-2.5 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-black font-extrabold text-[10px] shrink-0 shadow-md transition-all cursor-pointer"
-            >
+            <span className="px-2.5 py-1.5 rounded-xl bg-amber-400 text-black font-extrabold text-[10px] shrink-0 shadow-md">
               Clean Up
-            </button>
+            </span>
           </div>
         )}
       </div>
 
-      {/* Storage Analysis Quick Link & Multi-Upload Shortcut */}
-      <div className="grid grid-cols-3 gap-2 mb-2.5">
+      {/* Quick Action Shortcut Bar (Locked when trial expired) */}
+      <div className="grid grid-cols-3 gap-2 mb-3.5">
         <button
           type="button"
-          onClick={onOpenCreateFile}
-          className="flex items-center justify-center gap-1.5 text-[11px] font-semibold bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white py-2 px-2 rounded-xl shadow-md transition-all active:scale-95 cursor-pointer border border-blue-400/40"
+          onClick={() => {
+            if (isExpired) {
+              onOpenPayment?.();
+              return;
+            }
+            onOpenCreateFile?.();
+          }}
+          className={`min-h-[44px] flex items-center justify-center gap-1.5 text-[11px] font-semibold py-2.5 px-2 rounded-xl shadow-md transition-all active:scale-95 cursor-pointer border ${
+            isExpired
+              ? 'bg-[#1a1824] border-rose-500/35 text-rose-300 opacity-85'
+              : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white ai-solid-text-white border-blue-400/40'
+          }`}
           title="নতুন ফাইল তৈরি করুন ও ফাইলের নাম দিন"
         >
-          <FilePlus className="w-3.5 h-3.5 shrink-0" />
+          {isExpired ? <Lock className="w-3.5 h-3.5 shrink-0" /> : <FilePlus className="w-3.5 h-3.5 shrink-0" />}
           <span className="truncate">নতুন ফাইল তৈরি</span>
         </button>
 
         <button
           type="button"
-          onClick={() => zipFileInputRef.current?.click()}
-          className="flex items-center justify-center gap-1.5 text-[11px] font-semibold bg-[#2a1c0d] hover:bg-[#382613] text-amber-300 py-2 px-2 rounded-xl border border-amber-500/40 transition-colors cursor-pointer shadow-md"
+          onClick={() => handleProtectedUploadClick(zipFileInputRef)}
+          className={`min-h-[44px] flex items-center justify-center gap-1.5 text-[11px] font-semibold py-2.5 px-2 rounded-xl border transition-colors cursor-pointer shadow-md ${
+            isExpired
+              ? 'bg-[#1a1824] border-rose-500/35 text-rose-300 opacity-85'
+              : 'bg-[#2a1c0d] hover:bg-[#382613] text-amber-300 border-amber-500/40'
+          }`}
           title="জিপ ফাইল আপলোড করুন"
         >
-          <Archive className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+          {isExpired ? (
+            <Lock className="w-3.5 h-3.5 shrink-0" />
+          ) : (
+            <Archive className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+          )}
           <span className="truncate">জিপ আপলোড</span>
         </button>
 
         <button
           type="button"
-          onClick={() => multiFileInputRef.current?.click()}
-          className="flex items-center justify-center gap-1.5 text-[11px] font-semibold bg-[#142033] hover:bg-[#1a2c47] text-sky-400 py-2 px-2 rounded-xl border border-[#20324e] transition-colors cursor-pointer"
+          onClick={() => handleProtectedUploadClick(multiFileInputRef)}
+          className={`min-h-[44px] flex items-center justify-center gap-1.5 text-[11px] font-semibold py-2.5 px-2 rounded-xl border transition-colors cursor-pointer shadow-md ${
+            isExpired
+              ? 'bg-[#1a1824] border-rose-500/35 text-rose-300 opacity-85'
+              : 'bg-[#142033] hover:bg-[#1a2c47] text-sky-400 border-[#20324e]'
+          }`}
           title="ফাইল ও ছবি আপলোড করুন"
         >
-          <Upload className="w-3.5 h-3.5 shrink-0 text-sky-400" />
+          {isExpired ? (
+            <Lock className="w-3.5 h-3.5 shrink-0" />
+          ) : (
+            <Upload className="w-3.5 h-3.5 shrink-0 text-sky-400" />
+          )}
           <span className="truncate">ফাইল আপলোড</span>
         </button>
       </div>
 
-      {/* Vault Content Area: Shows Recent Files when populated, or Clean Empty Vault State */}
-      {recentFiles.length > 0 ? (
-        <div className="orbit-card bg-[#121c2c] rounded-3xl p-4 mb-3 flex flex-col">
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <h2 className="text-sm font-bold text-white">সাম্প্রতিক ফাইল (Recent Files)</h2>
-              <p className="text-[11px] text-slate-400">সুরক্ষিত ক্লাউড ভল্টে {files.length}টি আইটেম সংরক্ষিত</p>
-            </div>
-            {onViewAllFiles && (
-              <button
-                type="button"
-                onClick={onViewAllFiles}
-                className="text-xs font-semibold text-sky-400 hover:text-sky-300 flex items-center gap-0.5 cursor-pointer"
-              >
-                <span>সব দেখুন</span>
-                <ChevronRight className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-
-          <div className="space-y-2 flex-1">
-            {recentFiles.map((file) => {
-              const previewSrc = file.thumbnail || file.url;
-              return (
-                <button
-                  key={file.id}
-                  type="button"
-                  onClick={() => (onOpenFilePreview ? onOpenFilePreview(file) : onViewAllFiles?.())}
-                  className="w-full text-left bg-[#152236] hover:bg-[#192942] border border-[#213552] rounded-2xl p-2.5 flex items-center justify-between gap-3 transition-colors cursor-pointer"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    {file.type === 'image' && previewSrc ? (
-                      <img
-                        src={previewSrc}
-                        alt={file.name}
-                        className="w-10 h-10 rounded-xl object-cover shrink-0 border border-[#243b5e]"
-                      />
-                    ) : (
-                      <div className="w-10 h-10 rounded-xl bg-[#1a2b46] border border-[#253c61] flex items-center justify-center shrink-0">
-                        {file.type === 'folder' ? (
-                          <Folder className="w-5 h-5 text-sky-400" />
-                        ) : file.type === 'video' ? (
-                          <Video className="w-5 h-5 text-purple-400" />
-                        ) : file.type === 'audio' ? (
-                          <Music className="w-5 h-5 text-amber-400" />
-                        ) : file.type === 'archive' ? (
-                          <Archive className="w-5 h-5 text-amber-400" />
-                        ) : file.type === 'image' ? (
-                          <ImageIcon className="w-5 h-5 text-blue-400" />
-                        ) : (
-                          <FileText className="w-5 h-5 text-emerald-400" />
-                        )}
-                      </div>
-                    )}
-                    <div className="min-w-0">
-                      <div className="text-xs font-semibold text-white truncate">{file.name}</div>
-                      <div className="text-[10px] text-slate-400 mt-0.5">
-                        {file.formattedSize} • {file.date}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {file.isFavorite && <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />}
-                    <ChevronRight className="w-4 h-4 text-slate-500" />
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      ) : (
-        <div className="orbit-card flex flex-col items-center justify-center text-center p-3 bg-[#121c2c] rounded-3xl mb-2.5 shadow-inner">
-          <div className="w-9 h-9 rounded-2xl bg-gradient-to-tr from-[#162744] to-[#1e345e] border border-[#264375] flex items-center justify-center text-blue-400 mb-1.5 shadow-lg">
-            <ShieldCheck className="w-4.5 h-4.5" />
-          </div>
-          <h2 className="text-sm font-bold text-white mb-0.5">
-            Welcome to {websiteName}
-          </h2>
-          <p className="text-[11px] text-slate-400 max-w-[290px] leading-snug mb-2">
-            নিরাপদ ও স্থায়ী ক্লাউড স্টোরেজ। সহজেই নতুন ফাইল তৈরি করুন, ফাইলের নাম দিন, অথবা আপনার যেকোনো ফাইল ও জিপ ফাইল (ZIP) আপলোড করুন।
-          </p>
-
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            <button
-              type="button"
-              onClick={onOpenCreateFile}
-              className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold text-xs px-3.5 py-2 rounded-xl shadow-lg shadow-blue-900/40 transition-all flex items-center gap-1.5 active:scale-95 cursor-pointer"
-            >
-              <FilePlus className="w-4 h-4" />
-              <span>নতুন ফাইল তৈরি করুন</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => zipFileInputRef.current?.click()}
-              className="bg-[#2a1c0d] hover:bg-[#3b2713] border border-amber-500/50 text-amber-300 font-semibold text-xs px-3.5 py-2 rounded-xl shadow-lg transition-all flex items-center gap-1.5 active:scale-95 cursor-pointer"
-            >
-              <Archive className="w-4 h-4 text-amber-400" />
-              <span>জিপ আপলোড (.ZIP)</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => multiFileInputRef.current?.click()}
-              className="bg-[#16263f] hover:bg-[#1d3254] border border-blue-500/30 text-sky-300 font-semibold text-xs px-3.5 py-2 rounded-xl transition-all flex items-center gap-1.5 active:scale-95 cursor-pointer"
-            >
-              <Upload className="w-4 h-4" />
-              <span>ফাইল আপলোড</span>
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Category Grid */}
-      <div className="grid grid-cols-4 gap-2 mb-2">
-        <div
+      <div className="grid grid-cols-4 gap-2 mb-3.5">
+        <button
+          type="button"
           onClick={() => onSelectCategory('image')}
-          className="orbit-card flex flex-col items-center justify-center p-2 rounded-2xl bg-[#121c2c] hover:bg-[#162338] cursor-pointer transition-all active:scale-95"
+          className="orbit-card min-h-[82px] flex flex-col items-center justify-center p-2.5 rounded-2xl bg-[#121c2c] hover:bg-[#162338] cursor-pointer transition-all active:scale-95"
         >
           <div className="w-9 h-9 rounded-xl bg-blue-500/10 text-blue-400 flex items-center justify-center mb-1">
             <ImageIcon className="w-4.5 h-4.5" />
           </div>
           <span className="text-[11px] font-medium text-slate-300">Images</span>
-          <span className="text-[9px] text-slate-500">{storage.imagesCount}</span>
-        </div>
+          <span className="text-[10px] text-slate-500 tabular-nums">{storage.imagesCount}</span>
+        </button>
 
-        <div
+        <button
+          type="button"
           onClick={() => onSelectCategory('video')}
-          className="orbit-card flex flex-col items-center justify-center p-2 rounded-2xl bg-[#121c2c] hover:bg-[#162338] cursor-pointer transition-all active:scale-95"
+          className="orbit-card min-h-[82px] flex flex-col items-center justify-center p-2.5 rounded-2xl bg-[#121c2c] hover:bg-[#162338] cursor-pointer transition-all active:scale-95"
         >
           <div className="w-9 h-9 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center mb-1">
             <Video className="w-4.5 h-4.5" />
           </div>
           <span className="text-[11px] font-medium text-slate-300">Videos</span>
-          <span className="text-[9px] text-slate-500">{storage.videosCount}</span>
-        </div>
+          <span className="text-[10px] text-slate-500 tabular-nums">{storage.videosCount}</span>
+        </button>
 
-        <div
+        <button
+          type="button"
           onClick={() => onSelectCategory('audio')}
-          className="orbit-card flex flex-col items-center justify-center p-2 rounded-2xl bg-[#121c2c] hover:bg-[#162338] cursor-pointer transition-all active:scale-95"
+          className="orbit-card min-h-[82px] flex flex-col items-center justify-center p-2.5 rounded-2xl bg-[#121c2c] hover:bg-[#162338] cursor-pointer transition-all active:scale-95"
         >
           <div className="w-9 h-9 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center mb-1">
             <Music className="w-4.5 h-4.5" />
           </div>
           <span className="text-[11px] font-medium text-slate-300">Audios</span>
-          <span className="text-[9px] text-slate-500">{storage.audiosCount}</span>
-        </div>
+          <span className="text-[10px] text-slate-500 tabular-nums">{storage.audiosCount}</span>
+        </button>
 
-        <div
+        <button
+          type="button"
           onClick={() => onSelectCategory('document')}
-          className="orbit-card flex flex-col items-center justify-center p-2 rounded-2xl bg-[#121c2c] hover:bg-[#162338] cursor-pointer transition-all active:scale-95"
+          className="orbit-card min-h-[82px] flex flex-col items-center justify-center p-2.5 rounded-2xl bg-[#121c2c] hover:bg-[#162338] cursor-pointer transition-all active:scale-95"
         >
           <div className="w-9 h-9 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center mb-1">
             <FileText className="w-4.5 h-4.5" />
           </div>
           <span className="text-[11px] font-medium text-slate-300">Docs</span>
-          <span className="text-[9px] text-slate-500">{storage.docsCount}</span>
-        </div>
+          <span className="text-[10px] text-slate-500 tabular-nums">{storage.docsCount}</span>
+        </button>
       </div>
-
-      {/* 5-Preset Quick Border Glow Switcher directly on Home Screen */}
-      {onChangeOrbitPreset && (
-        <div className="orbit-card bg-[#121c2c] rounded-2xl px-3 py-2 mb-2 flex items-center justify-between gap-2">
-          <div className="min-w-0 relative z-10">
-            <div className="flex items-center gap-1.5">
-              <Sparkles className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-              <span className="text-[11px] font-bold text-white truncate">
-                বর্ডার কালার #{orbitPreset}
-              </span>
-            </div>
-            <p className="text-[9.5px] text-slate-400 truncate">
-              {getOrbitThemePresetById(orbitPreset).bnName}
-            </p>
-          </div>
-
-          <div
-            className="flex items-center gap-1.5 shrink-0 relative z-10"
-            role="group"
-            aria-label="Orbit Border Color Presets"
-          >
-            {ORBIT_THEME_PRESETS.map((preset) => {
-              const active = orbitPreset === preset.id;
-              return (
-                <button
-                  key={preset.id}
-                  type="button"
-                  aria-pressed={active}
-                  aria-label={`Set Border Color ${preset.numberLabel}: ${preset.name}`}
-                  title={`${preset.numberLabel}. ${preset.name}${preset.badge ? ` (${preset.badge})` : ''}`}
-                  onClick={() => onChangeOrbitPreset(preset.id)}
-                  className={`w-7 h-7 rounded-xl p-[2px] transition-all cursor-pointer active:scale-90 ${
-                    active ? 'scale-110 ring-2 ring-white/80 shadow-md' : 'opacity-75 hover:opacity-100'
-                  }`}
-                  style={{ background: preset.previewGradient }}
-                >
-                  <span className="w-full h-full rounded-[8px] bg-[#0b111c] flex items-center justify-center text-[10px] font-extrabold text-white">
-                    {preset.numberLabel}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
 
       {/* Recycle Bin Button */}
       <button
         type="button"
         onClick={onOpenRecycleBin}
-        className="orbit-card w-full bg-[#121c2c] hover:bg-[#162338] rounded-2xl py-2.5 pl-3 pr-16 flex items-center justify-between text-xs text-slate-300 transition-colors cursor-pointer"
+        className="orbit-card w-full bg-[#121c2c] hover:bg-[#162338] rounded-2xl py-3 pl-3.5 pr-16 flex items-center justify-between text-xs text-slate-300 transition-colors cursor-pointer"
       >
         <div className="flex items-center gap-2.5">
-          <Trash2 className="w-4 h-4 text-rose-400" />
+          {isExpired ? (
+            <Lock className="w-4 h-4 text-rose-400" />
+          ) : (
+            <Trash2 className="w-4 h-4 text-rose-400" />
+          )}
           <span>Recycle Bin</span>
         </div>
-        <span className="text-slate-500 text-[11px]">View deleted items</span>
+        <span className="text-slate-500 text-[11px]">
+          {isExpired ? 'লক করা আছে (৳১০০ আনলক)' : 'View deleted items'}
+        </span>
       </button>
     </div>
   );

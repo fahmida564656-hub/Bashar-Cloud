@@ -55,12 +55,18 @@ export const BottomNavBar: React.FC<BottomNavBarProps> = ({ currentTab, onTabCha
             aria-label={tab.ariaLabel}
             aria-current={isActive ? 'page' : undefined}
             onClick={() => onTabChange(tab.id)}
-            className={`min-h-[46px] flex flex-col items-center justify-center gap-1 py-1 px-1 rounded-xl transition-all cursor-pointer ${
+            className={`relative min-h-[48px] flex flex-col items-center justify-center gap-1 py-1.5 px-1 rounded-xl transition-all cursor-pointer ${
               isActive
                 ? 'text-[#487dfb] font-semibold bg-blue-500/10'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
             }`}
           >
+            {isActive && (
+              <span
+                aria-hidden="true"
+                className="absolute top-0.5 left-1/2 -translate-x-1/2 w-5 h-0.5 rounded-full bg-[#487dfb]"
+              />
+            )}
             <div className={`transition-transform duration-200 ${isActive ? 'scale-105' : ''}`}>
               {tab.icon}
             </div>

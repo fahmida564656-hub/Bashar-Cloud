@@ -24,20 +24,42 @@ import {
   Clock,
   Smartphone,
   AlertTriangle,
+  Megaphone,
+  Gift,
+  Send,
+  ExternalLink,
+  X,
 } from 'lucide-react';
-import { SiteSettings, RegisteredUser, PaymentRequest, PaymentStatus } from '../types';
+import {
+  SiteSettings,
+  RegisteredUser,
+  PaymentRequest,
+  PaymentStatus,
+  AdminAnnouncement,
+  AnnouncementCategory,
+} from '../types';
 import { compressImageToSafeDataUrl } from '../utils/fileVault';
+import {
+  ANNOUNCEMENT_CATEGORY_META,
+  buildAnnouncement,
+  isSafeExternalUrl,
+  normalizeAnnouncementCategory,
+  sortAnnouncementsNewestFirst,
+} from '../utils/announcements';
 
 interface AdminPanelScreenProps {
   settings: SiteSettings;
   users: RegisteredUser[];
   paymentRequests: PaymentRequest[];
+  announcements: AdminAnnouncement[];
   onSaveSettings: (updated: SiteSettings) => void;
   onDeleteUser: (userId: string) => void;
   onDeleteAllUsers?: () => void;
   onClearUserFiles?: (userId: string) => void;
   onApprovePayment: (paymentId: string) => void;
   onRejectPayment: (paymentId: string) => void;
+  onPublishAnnouncement: (ad: AdminAnnouncement) => void;
+  onDeleteAnnouncement: (adId: string) => void;
   onBack: () => void;
 }
 
@@ -45,12 +67,15 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
   settings,
   users,
   paymentRequests,
+  announcements,
   onSaveSettings,
   onDeleteUser,
   onDeleteAllUsers,
   onClearUserFiles,
   onApprovePayment,
   onRejectPayment,
+  onPublishAnnouncement,
+  onDeleteAnnouncement,
   onBack,
 }) => {
   // Session authentication state
@@ -59,8 +84,8 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
   const [showEnteredPassword, setShowEnteredPassword] = useState<boolean>(false);
   const [authError, setAuthError] = useState<string>('');
 
-  // Active admin tab: 'branding' | 'payments' | 'users'
-  const [activeTab, setActiveTab] = useState<'payments' | 'branding' | 'users'>('payments');
+  // Active admin tab: 'payments' | 'ads' | 'branding' | 'users'
+  const [activeTab, setActiveTab] = useState<'payments' | 'ads' | 'branding' | 'users'>('payments');
 
   // Branding & Settings form state
   const [websiteName, setWebsiteName] = useState<string>(settings.websiteName || 'Bashar Cloud');
@@ -72,6 +97,17 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
   const [newAdminPassword, setNewAdminPassword] = useState<string>(settings.adminPassword || 'Fahmida3421');
   const [showAdminPassword, setShowAdminPassword] = useState<boolean>(false);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState<string>('');
+
+  // Advertisements / Announcements form & archive state
+  const [adTitle, setAdTitle] = useState<string>('');
+  const [adMessage, setAdMessage] = useState<string>('');
+  const [adCategory, setAdCategory] = useState<AnnouncementCategory>('offer');
+  const [adImageUrl, setAdImageUrl] = useState<string>('');
+  const [adActionLabel, setAdActionLabel] = useState<string>('');
+  const [adActionUrl, setAdActionUrl] = useState<string>('');
+  const [adFormError, setAdFormError] = useState<string>('');
+  const [adSearchQuery, setAdSearchQuery] = useState<string>('');
+  const [confirmDeleteAdId, setConfirmDeleteAdId] = useState<string | null>(null);
 
   // Search & Filter states
   const [userSearchQuery, setUserSearchQuery] = useState<string>('');
@@ -166,6 +202,66 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
       (u.phone && u.phone.toLowerCase().includes(q))
     );
   });
+
+  const sortedAnnouncements = React.useMemo(
+    () => sortAnnouncementsNewestFirst(announcements || []),
+    [announcements]
+  );
+
+  const filteredAnnouncements = sortedAnnouncements.filter((ad) => {
+    const q = adSearchQuery.toLowerCase().trim();
+    if (!q) return true;
+    const catLabel = ANNOUNCEMENT_CATEGORY_META[normalizeAnnouncementCategory(ad.category)].bnLabel;
+    return (
+      ad.title.toLowerCase().includes(q) ||
+      ad.message.toLowerCase().includes(q) ||
+      catLabel.toLowerCase().includes(q)
+    );
+  });
+
+  const handleAdBannerUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      const compressed = await compressImageToSafeDataUrl(file, {
+        maxDim: 720,
+        maxChars: 200_000,
+        fallbackToRaw: false,
+      });
+      if (compressed) {
+        setAdImageUrl(compressed);
+        setAdFormError('');
+      } else {
+        setAdFormError('ছবিটি অনেক বড় অথবা অকার্যকর। অনুগ্রহ করে ছোট JPG/PNG ছবি দিন।');
+      }
+      e.target.value = '';
+    }
+  };
+
+  const handlePublishAdSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setAdFormError('');
+    try {
+      const created = buildAnnouncement({
+        title: adTitle,
+        message: adMessage,
+        category: adCategory,
+        imageUrl: adImageUrl || undefined,
+        actionLabel: adActionLabel,
+        actionUrl: adActionUrl,
+      });
+      onPublishAnnouncement(created);
+      setAdTitle('');
+      setAdMessage('');
+      setAdCategory('offer');
+      setAdImageUrl('');
+      setAdActionLabel('');
+      setAdActionUrl('');
+      setSaveSuccessMsg('বিজ্ঞাপনটি সফলভাবে প্রকাশিত ও নোটিফিকেশনে পাঠানো হয়েছে!');
+      setTimeout(() => setSaveSuccessMsg(''), 4000);
+    } catch (err) {
+      setAdFormError(err instanceof Error ? err.message : 'বিজ্ঞাপন প্রকাশ করা যায়নি।');
+    }
+  };
 
   // 1. Password Protection Gate
   if (!isAuthenticated) {
@@ -276,21 +372,21 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
         </button>
       </div>
 
-      {/* Navigation Tabs (Payments, Branding, Users) */}
-      <div className="grid grid-cols-3 gap-1.5 bg-[#101b2d] p-1 rounded-2xl border border-[#1e2f4a]">
+      {/* Navigation Tabs (Payments, Ads, Branding, Users) */}
+      <div className="grid grid-cols-4 gap-1 bg-[#101b2d] p-1 rounded-2xl border border-[#1e2f4a]">
         <button
           type="button"
           onClick={() => setActiveTab('payments')}
-          className={`py-2 px-1 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all relative ${
+          className={`min-h-[44px] py-1.5 px-1 rounded-xl text-[11px] font-bold flex flex-col sm:flex-row items-center justify-center gap-1 transition-all relative cursor-pointer ${
             activeTab === 'payments'
-              ? 'bg-blue-600 text-white shadow-md'
+              ? 'bg-blue-600 text-white ai-solid-text-white shadow-md'
               : 'text-slate-400 hover:text-white'
           }`}
         >
-          <CreditCard className="w-3.5 h-3.5" />
-          <span>পেমেন্টস</span>
+          <CreditCard className="w-3.5 h-3.5 shrink-0" />
+          <span className="truncate">পেমেন্টস</span>
           {pendingPaymentsCount > 0 && (
-            <span className="bg-amber-400 text-black text-[10px] font-extrabold px-1.5 py-0.2 rounded-full">
+            <span className="bg-amber-400 text-black text-[9px] font-extrabold px-1.5 rounded-full tabular-nums">
               {pendingPaymentsCount}
             </span>
           )}
@@ -298,28 +394,52 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
 
         <button
           type="button"
-          onClick={() => setActiveTab('branding')}
-          className={`py-2 px-1 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
-            activeTab === 'branding'
-              ? 'bg-blue-600 text-white shadow-md'
+          onClick={() => setActiveTab('ads')}
+          className={`min-h-[44px] py-1.5 px-1 rounded-xl text-[11px] font-bold flex flex-col sm:flex-row items-center justify-center gap-1 transition-all relative cursor-pointer ${
+            activeTab === 'ads'
+              ? 'bg-blue-600 text-white ai-solid-text-white shadow-md'
               : 'text-slate-400 hover:text-white'
           }`}
         >
-          <Globe className="w-3.5 h-3.5" />
-          <span>ব্র্যান্ডিং</span>
+          <Megaphone className="w-3.5 h-3.5 shrink-0" />
+          <span className="truncate">বিজ্ঞাপন</span>
+          {sortedAnnouncements.length > 0 && (
+            <span
+              className={`text-[9px] font-extrabold px-1.5 rounded-full tabular-nums ${
+                activeTab === 'ads'
+                  ? 'bg-white/25 text-white ai-solid-text-white'
+                  : 'bg-sky-500/20 text-sky-300'
+              }`}
+            >
+              {sortedAnnouncements.length}
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('branding')}
+          className={`min-h-[44px] py-1.5 px-1 rounded-xl text-[11px] font-bold flex flex-col sm:flex-row items-center justify-center gap-1 transition-all cursor-pointer ${
+            activeTab === 'branding'
+              ? 'bg-blue-600 text-white ai-solid-text-white shadow-md'
+              : 'text-slate-400 hover:text-white'
+          }`}
+        >
+          <Globe className="w-3.5 h-3.5 shrink-0" />
+          <span className="truncate">ব্র্যান্ডিং</span>
         </button>
 
         <button
           type="button"
           onClick={() => setActiveTab('users')}
-          className={`py-2 px-1 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+          className={`min-h-[44px] py-1.5 px-1 rounded-xl text-[11px] font-bold flex flex-col sm:flex-row items-center justify-center gap-1 transition-all cursor-pointer ${
             activeTab === 'users'
-              ? 'bg-blue-600 text-white shadow-md'
+              ? 'bg-blue-600 text-white ai-solid-text-white shadow-md'
               : 'text-slate-400 hover:text-white'
           }`}
         >
-          <Users className="w-3.5 h-3.5" />
-          <span>ইউজার ({users.length})</span>
+          <Users className="w-3.5 h-3.5 shrink-0" />
+          <span className="truncate tabular-nums">ইউজার ({uniqueUsers.length})</span>
         </button>
       </div>
 
@@ -327,6 +447,312 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
         <div className="bg-emerald-500/15 border border-emerald-500/40 rounded-xl p-3 text-xs text-emerald-300 flex items-center gap-2 animate-in fade-in">
           <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
           <span>{saveSuccessMsg}</span>
+        </div>
+      )}
+
+      {/* TAB 2: ADMIN ADVERTISEMENTS / NOTIFICATIONS */}
+      {activeTab === 'ads' && (
+        <div className="space-y-4 animate-in fade-in">
+          {/* Card 1: Create & Publish New Ad */}
+          <div className="bg-[#121c2d] border border-[#1f3049] rounded-2xl p-4 shadow-xl space-y-3.5">
+            <div className="flex items-center justify-between pb-2.5 border-b border-[#1b2b42]">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white ai-solid-text-white flex items-center justify-center shadow-md shrink-0">
+                  <Megaphone className="w-4.5 h-4.5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">নতুন বিজ্ঞাপন প্রকাশ করুন</h3>
+                  <p className="text-[11px] text-slate-400">
+                    প্রকাশ করলেই সকল ব্যবহারকারীর নোটিফিকেশনে পৌঁছে যাবে
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <form onSubmit={handlePublishAdSubmit} className="space-y-3 text-xs">
+              {/* Category Selector */}
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1.5">
+                  বিজ্ঞাপনের ধরন (Category)
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {(['offer', 'important', 'update', 'general'] as AnnouncementCategory[]).map((catKey) => {
+                    const meta = ANNOUNCEMENT_CATEGORY_META[catKey];
+                    const selected = adCategory === catKey;
+                    return (
+                      <button
+                        key={catKey}
+                        type="button"
+                        onClick={() => setAdCategory(catKey)}
+                        className={`min-h-[40px] px-2.5 py-2 rounded-xl border text-left font-bold flex items-center gap-2 transition-all cursor-pointer ${
+                          selected
+                            ? 'bg-blue-600/20 border-blue-500 text-white shadow-sm'
+                            : 'bg-[#162338] border-[#253a5c] text-slate-300 hover:border-blue-400/50'
+                        }`}
+                      >
+                        {catKey === 'offer' && <Gift className="w-3.5 h-3.5 text-amber-400 shrink-0" />}
+                        {catKey === 'important' && <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />}
+                        {catKey === 'update' && <Sparkles className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
+                        {catKey === 'general' && <Megaphone className="w-3.5 h-3.5 text-sky-400 shrink-0" />}
+                        <span className="text-[11px] truncate">{meta.bnLabel}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Ad Title */}
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1">
+                  বিজ্ঞাপনের শিরোনাম (Title) <span className="text-rose-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={adTitle}
+                  onChange={(e) => {
+                    setAdTitle(e.target.value);
+                    if (adFormError) setAdFormError('');
+                  }}
+                  placeholder="যেমন: ঈদ স্পেশাল ক্লাউড মেম্বারশিপ অফার!"
+                  required
+                  className="w-full bg-[#162338] border border-[#273d61] focus:border-blue-500 rounded-xl px-3 py-2.5 text-white font-medium focus:outline-none"
+                />
+              </div>
+
+              {/* Ad Description */}
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1">
+                  বিস্তারিত বার্তা (Message) <span className="text-rose-400">*</span>
+                </label>
+                <textarea
+                  rows={3}
+                  value={adMessage}
+                  onChange={(e) => {
+                    setAdMessage(e.target.value);
+                    if (adFormError) setAdFormError('');
+                  }}
+                  placeholder="অফার বা ঘোষণার বিস্তারিত এখানে লিখুন..."
+                  required
+                  className="w-full bg-[#162338] border border-[#273d61] focus:border-blue-500 rounded-xl px-3 py-2 text-white leading-relaxed focus:outline-none resize-none"
+                />
+              </div>
+
+              {/* Optional Banner Image */}
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1">
+                  ব্যানার ছবি (ঐচ্ছিক Banner Image)
+                </label>
+                {adImageUrl ? (
+                  <div className="relative rounded-xl overflow-hidden border border-[#2b446e] bg-[#0e1726]">
+                    <img
+                      src={adImageUrl}
+                      alt="Ad Banner Preview"
+                      className="w-full h-36 object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setAdImageUrl('')}
+                      aria-label="Remove banner image"
+                      className="absolute top-2 right-2 w-8 h-8 rounded-full bg-black/75 hover:bg-rose-600 text-white ai-solid-text-white flex items-center justify-center shadow-lg cursor-pointer transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <label className="bg-[#162338] border border-dashed border-[#2b446e] hover:border-blue-500 rounded-xl p-3 flex items-center justify-center gap-2.5 cursor-pointer transition-colors">
+                    <ImageIcon className="w-4.5 h-4.5 text-sky-400 shrink-0" />
+                    <span className="text-xs font-semibold text-slate-200">
+                      বিজ্ঞাপনের ছবি সংযুক্ত করুন (JPG / PNG / WebP)
+                    </span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleAdBannerUpload}
+                      className="hidden"
+                    />
+                  </label>
+                )}
+              </div>
+
+              {/* Optional Action Button & Link */}
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1">
+                    বাটন লেখা (ঐচ্ছিক)
+                  </label>
+                  <input
+                    type="text"
+                    value={adActionLabel}
+                    onChange={(e) => setAdActionLabel(e.target.value)}
+                    placeholder="বিস্তারিত দেখুন"
+                    className="w-full bg-[#162338] border border-[#273d61] focus:border-blue-500 rounded-xl px-3 py-2 text-white focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1">
+                    লিংক URL (ঐচ্ছিক)
+                  </label>
+                  <input
+                    type="url"
+                    value={adActionUrl}
+                    onChange={(e) => {
+                      setAdActionUrl(e.target.value);
+                      if (adFormError) setAdFormError('');
+                    }}
+                    placeholder="https://example.com"
+                    className="w-full bg-[#162338] border border-[#273d61] focus:border-blue-500 rounded-xl px-3 py-2 text-white font-mono text-[11px] focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {adFormError && (
+                <div className="bg-rose-500/15 border border-rose-500/40 rounded-xl px-3 py-2 text-rose-300 text-xs font-medium flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>{adFormError}</span>
+                </div>
+              )}
+
+              <button
+                type="submit"
+                className="w-full min-h-[44px] bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white ai-solid-text-white font-bold py-2.5 px-4 rounded-xl shadow-lg shadow-blue-900/30 transition-all flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Send className="w-4 h-4" />
+                <span>বিজ্ঞাপন প্রকাশ ও নোটিফিকেশনে পাঠান</span>
+              </button>
+            </form>
+          </div>
+
+          {/* Card 2: Persistent Saved Ads Archive */}
+          <div className="bg-[#121c2d] border border-[#1f3049] rounded-2xl p-4 shadow-xl space-y-3">
+            <div className="flex items-center justify-between pb-2 border-b border-[#1b2b42]">
+              <div className="flex items-center gap-2">
+                <Bell className="w-4.5 h-4.5 text-sky-400 shrink-0" />
+                <div>
+                  <h3 className="text-sm font-bold text-white">জমা থাকা সকল বিজ্ঞাপন</h3>
+                  <p className="text-[11px] text-slate-400">
+                    প্রকাশিত বিজ্ঞাপনসমূহ স্থায়ীভাবে সংরক্ষিত থাকে — চাইলে ডিলিট করতে পারবেন
+                  </p>
+                </div>
+              </div>
+              <span className="text-[11px] font-bold bg-blue-500/20 text-sky-300 border border-blue-500/30 px-2.5 py-0.5 rounded-full shrink-0 tabular-nums">
+                মোট {sortedAnnouncements.length}টি
+              </span>
+            </div>
+
+            {sortedAnnouncements.length > 2 && (
+              <div className="relative flex items-center bg-[#142134] border border-[#223654] rounded-xl px-3 py-2 text-xs">
+                <Search className="w-3.5 h-3.5 text-slate-400 mr-2 shrink-0" />
+                <input
+                  type="text"
+                  value={adSearchQuery}
+                  onChange={(e) => setAdSearchQuery(e.target.value)}
+                  placeholder="জমা থাকা বিজ্ঞাপন খুঁজুন..."
+                  className="w-full bg-transparent text-white placeholder-slate-500 focus:outline-none"
+                />
+              </div>
+            )}
+
+            {filteredAnnouncements.length === 0 ? (
+              <div className="text-center py-8 text-xs text-slate-400 bg-[#142134]/35 rounded-xl border border-[#20324e]/50 px-4 space-y-1">
+                <p className="font-semibold text-slate-300">
+                  {adSearchQuery.trim()
+                    ? 'খোঁজার সাথে কোনো বিজ্ঞাপন মেলেনি।'
+                    : 'এখনো কোনো বিজ্ঞাপন জমা নেই।'}
+                </p>
+                <p className="text-[11px] text-slate-400">
+                  উপরের ফর্ম থেকে বিজ্ঞাপন দিলে এখানে স্থায়ীভাবে জমা থাকবে এবং ইউজারদের নোটিফিকেশনে যাবে।
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {filteredAnnouncements.map((ad) => {
+                  const cat = normalizeAnnouncementCategory(ad.category);
+                  const meta = ANNOUNCEMENT_CATEGORY_META[cat];
+                  const hasSafeUrl = isSafeExternalUrl(ad.actionUrl);
+
+                  return (
+                    <div
+                      key={ad.id}
+                      className="bg-[#152338] border border-[#233859] rounded-2xl overflow-hidden shadow-md text-xs"
+                    >
+                      <div className={`h-1 w-full bg-gradient-to-r ${meta.accentBar}`} />
+
+                      {ad.imageUrl && (
+                        <img
+                          src={ad.imageUrl}
+                          alt={ad.title}
+                          className="w-full h-32 object-cover border-b border-[#1f324f]"
+                        />
+                      )}
+
+                      <div className="p-3.5 space-y-2">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0 space-y-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span
+                                className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${meta.badgeDark}`}
+                              >
+                                {meta.bnLabel}
+                              </span>
+                              <span className="text-[10px] text-slate-400 flex items-center gap-1 tabular-nums">
+                                <Clock className="w-3 h-3" />
+                                <span>{ad.createdAt}</span>
+                              </span>
+                            </div>
+                            <h4 className="text-sm font-bold text-white leading-snug">{ad.title}</h4>
+                          </div>
+
+                          {confirmDeleteAdId === ad.id ? (
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onDeleteAnnouncement(ad.id);
+                                  setConfirmDeleteAdId(null);
+                                }}
+                                className="min-h-[34px] px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white ai-solid-text-white text-[11px] font-bold cursor-pointer"
+                              >
+                                নিশ্চিত
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteAdId(null)}
+                                className="min-h-[34px] px-2 py-1 rounded-lg bg-[#1d2e49] text-slate-300 text-[11px] font-semibold cursor-pointer"
+                              >
+                                বাতিল
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteAdId(ad.id)}
+                              className="min-h-[34px] px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-[11px] font-bold flex items-center gap-1 shrink-0 cursor-pointer transition-colors"
+                              title="বিজ্ঞাপনটি ডিলিট করুন"
+                            >
+                              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                              <span>ডিলিট</span>
+                            </button>
+                          )}
+                        </div>
+
+                        <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-line">
+                          {ad.message}
+                        </p>
+
+                        {hasSafeUrl && (
+                          <div className="pt-1 flex items-center gap-1.5 text-[11px] text-sky-300 truncate">
+                            <ExternalLink className="w-3 h-3 shrink-0" />
+                            <span className="font-semibold">{ad.actionLabel || 'বিস্তারিত দেখুন'}:</span>
+                            <span className="truncate font-mono text-slate-400">{ad.actionUrl}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -622,7 +1048,7 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
               </div>
             </div>
             <span className="text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2.5 py-0.5 rounded-full">
-              {users.length} Users
+              {uniqueUsers.length} Users
             </span>
           </div>
 
@@ -633,7 +1059,7 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
               <span>কোনো ডিফল্ট নকল ফাইল বা অ্যাকাউন্ট নেই। অ্যাডমিন যেকোনো অ্যাকাউন্ট বা ফাইল সম্পূর্ণ মুছতে পারবেন।</span>
             </div>
 
-            {users.length > 0 && onDeleteAllUsers && (
+            {uniqueUsers.length > 0 && onDeleteAllUsers && (
               confirmDeleteAllUsers ? (
                 <div className="flex items-center gap-1.5 shrink-0">
                   <button

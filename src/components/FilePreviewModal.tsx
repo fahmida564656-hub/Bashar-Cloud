@@ -17,12 +17,16 @@ import {
   FolderInput,
   AlertTriangle,
   Archive,
+  Lock,
+  Sparkles,
 } from 'lucide-react';
 import { CloudFile } from '../types';
 
 interface FilePreviewModalProps {
   file: CloudFile | null;
   isOpen: boolean;
+  isLocked?: boolean;
+  onOpenPayment?: () => void;
   onClose: () => void;
   onToggleFavorite?: (id: string) => void;
   onDeleteFile?: (id: string) => void;
@@ -36,6 +40,8 @@ interface FilePreviewModalProps {
 export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
   file,
   isOpen,
+  isLocked = false,
+  onOpenPayment,
   onClose,
   onToggleFavorite,
   onDeleteFile,
@@ -74,8 +80,18 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
     setTimeout(() => setActionFeedback(null), 2500);
   };
 
+  const guardLocked = (): boolean => {
+    if (isLocked) {
+      onClose();
+      onOpenPayment?.();
+      return false;
+    }
+    return true;
+  };
+
   const handleSaveRename = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!guardLocked()) return;
     if (newName.trim() && onRenameFile) {
       onRenameFile(file.id, newName.trim());
       setIsRenaming(false);
@@ -84,6 +100,7 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
   };
 
   const handleCopy = () => {
+    if (!guardLocked()) return;
     if (onCopyFile) {
       onCopyFile(file);
       showFeedback('File copied successfully!');
@@ -91,6 +108,7 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
   };
 
   const handleSelectDestination = (folderId: string | null) => {
+    if (!guardLocked()) return;
     if (onMoveFile) {
       onMoveFile(file.id, folderId);
       setIsMovePickerOpen(false);
@@ -168,7 +186,10 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                   {onRenameFile && (
                     <button
                       type="button"
-                      onClick={() => setIsRenaming(true)}
+                      onClick={() => {
+                        if (!guardLocked()) return;
+                        setIsRenaming(true);
+                      }}
                       className="p-1 text-slate-400 hover:text-sky-300 transition-colors shrink-0"
                       title="Rename"
                     >
@@ -193,7 +214,30 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
         {/* Visual Preview Area */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           <div className="w-full bg-[#09101d] border border-[#1b2b42] rounded-2xl overflow-hidden min-h-[200px] max-h-[280px] flex items-center justify-center relative group">
-            {file.type === 'image' ? (
+            {isLocked ? (
+              <div className="w-full py-10 px-6 flex flex-col items-center justify-center text-center bg-gradient-to-b from-rose-950/50 to-[#0e1220]">
+                <div className="w-16 h-16 rounded-2xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400 mb-3 shadow-lg">
+                  <Lock className="w-8 h-8" />
+                </div>
+                <h4 className="text-sm font-bold text-white mb-1">৩০ দিনের ফ্রি ট্রায়াল শেষ হয়েছে</h4>
+                <p className="text-xs text-slate-300 mb-3 max-w-[260px]">
+                  ফাইল দেখতে, ডাউনলোড করতে বা নাম পরিবর্তন করতে ১০০ টাকা পেমেন্ট করে আনলক করুন।
+                </p>
+                {onOpenPayment && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onOpenPayment();
+                    }}
+                    className="bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold px-4 py-2 rounded-xl shadow-md flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                    <span>৳১০০ পেমেন্ট করে আনলক করুন</span>
+                  </button>
+                )}
+              </div>
+            ) : file.type === 'image' ? (
               (file.url || file.thumbnail) ? (
                 <img
                   src={file.url || file.thumbnail}
@@ -297,7 +341,10 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
             {/* Rename Button */}
             <button
               type="button"
-              onClick={() => setIsRenaming(true)}
+              onClick={() => {
+                if (!guardLocked()) return;
+                setIsRenaming(true);
+              }}
               className="py-2.5 px-3 rounded-xl bg-[#142134] hover:bg-[#1a2c47] border border-[#20324e] text-xs font-medium text-slate-200 flex items-center justify-center gap-1.5 transition-colors"
             >
               <Edit2 className="w-3.5 h-3.5 text-sky-400" />
@@ -317,7 +364,10 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
             {/* Move Button */}
             <button
               type="button"
-              onClick={() => setIsMovePickerOpen(true)}
+              onClick={() => {
+                if (!guardLocked()) return;
+                setIsMovePickerOpen(true);
+              }}
               className="py-2.5 px-3 rounded-xl bg-[#142134] hover:bg-[#1a2c47] border border-[#20324e] text-xs font-medium text-slate-200 flex items-center justify-center gap-1.5 transition-colors"
             >
               <FolderInput className="w-3.5 h-3.5 text-emerald-400" />
@@ -441,7 +491,10 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
           {onToggleFavorite && (
             <button
               type="button"
-              onClick={() => onToggleFavorite(file.id)}
+              onClick={() => {
+                if (!guardLocked()) return;
+                onToggleFavorite(file.id);
+              }}
               className={`flex-1 py-2.5 px-3 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
                 file.isFavorite
                   ? 'bg-amber-500/15 border-amber-500/40 text-amber-300 hover:bg-amber-500/25'
@@ -456,6 +509,7 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
           <button
             type="button"
             onClick={() => {
+              if (!guardLocked()) return;
               const downloadUrl = file.url || file.thumbnail;
               if (downloadUrl) {
                 const a = document.createElement('a');
@@ -487,6 +541,7 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
             <button
               type="button"
               onClick={() => {
+                if (!guardLocked()) return;
                 onDeleteFile(file.id);
                 onClose();
               }}
@@ -501,7 +556,10 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
           {onDeletePermanently && (
             <button
               type="button"
-              onClick={() => setShowPermanentDeleteConfirm(true)}
+              onClick={() => {
+                if (!guardLocked()) return;
+                setShowPermanentDeleteConfirm(true);
+              }}
               className="py-2.5 px-3 rounded-xl bg-rose-950/60 hover:bg-rose-900 border border-rose-500/40 text-rose-300 text-xs font-semibold flex items-center justify-center gap-1 transition-colors"
               title="Delete Permanently Forever"
             >

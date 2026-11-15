@@ -25,10 +25,13 @@ import {
   Calculator,
   FileText,
   ArrowUpRight,
+  Image as ImageIcon,
+  Upload,
 } from 'lucide-react';
 import { AiAttachment, AiChatThread, AiMessage, AiMode, CloudFile } from '../types';
 import { AppTheme } from '../utils/theme';
 import { filterAiThreads } from '../utils/aiChats';
+import { compressImageToSafeDataUrl } from '../utils/fileVault';
 import { MarkdownMessage } from './MarkdownMessage';
 
 interface BasharAiScreenProps {
@@ -85,16 +88,16 @@ const STARTER_PROMPTS: Array<{
   },
   {
     title: 'অফিসিয়াল লেখালেখি ও ইমেইল',
-    subtitle: 'চিঠি, সিভি, ব্যবসা বা ডকুমেন্ট ড্রাফট',
-    prompt: 'একটি প্রতিষ্ঠানের ক্লায়েন্টের জন্য প্রফেশনাল প্রজেক্ট প্রপোজাল ইমেইল লিখে দাও (বাংলা ও ইংরেজিতে)।',
+    subtitle: 'চিঠি, সিভি, প্রপোজাল বা তুলনামূলক টেবিল',
+    prompt: 'একটি প্রতিষ্ঠানের ক্লায়েন্টের জন্য প্রফেশনাল প্রজেক্ট প্রপোজাল ইমেইল ও কাজের ধাপের একটি টেবিল লিখে দাও।',
     mode: 'general',
     accentClass: 'bg-amber-500/12 border-amber-500/25 text-amber-400',
     icon: <BookOpen className="w-4 h-4 text-amber-400" />,
   },
   {
-    title: 'ক্লাউড ফাইল ও ডাটা গাইড',
-    subtitle: 'নথি সংক্ষিপ্তকরণ, পরিকল্পনা ও আইডিয়া',
-    prompt: 'আমার ক্লাউড ফাইল ও গুরুত্বপূর্ণ ডকুমেন্ট কীভাবে নিরাপদে ক্যাটাগরি করে সাজিয়ে রাখব?',
+    title: 'ক্লাউড ড্রাইভ ও ফাইল গাইড',
+    subtitle: 'আপনার ড্রাইভের ফাইল স্ট্যাটাস ও সাজানোর পরামর্শ',
+    prompt: 'আমার ক্লাউড ড্রাইভের বর্তমান অবস্থা দেখে ফাইল ও ফোল্ডারগুলো কীভাবে প্রফেশনালভাবে সাজাবো?',
     mode: 'fast',
     accentClass: 'bg-purple-500/12 border-purple-500/25 text-purple-400',
     icon: <FileText className="w-4 h-4 text-purple-400" />,
@@ -164,17 +167,22 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const deviceFileInputRef = useRef<HTMLInputElement>(null);
 
   const activeThread =
     threads.find((t) => t.id === activeThreadId) || threads[0] || null;
   const activeMode: AiMode = activeThread?.mode || 'general';
+  const activeModeMeta = MODE_OPTIONS.find((m) => m.id === activeMode) || MODE_OPTIONS[0];
   const filteredThreads = filterAiThreads(threads, searchQuery);
   const pinnedThreads = filteredThreads.filter((t) => t.pinned);
   const recentThreads = filteredThreads.filter((t) => !t.pinned);
   const allPinnedCount = threads.filter((t) => t.pinned).length;
 
   const attachableFiles = cloudFiles.filter(
-    (f) => f.type === 'document' || (typeof f.content === 'string' && f.content.trim().length > 0)
+    (f) =>
+      f.type === 'document' ||
+      (f.type === 'image' && typeof (f.url || f.thumbnail) === 'string') ||
+      (typeof f.content === 'string' && f.content.trim().length > 0)
   );
 
   // Auto-scroll smoothly when active thread or streamed tokens change
@@ -227,7 +235,13 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
 
   const handleSubmitPrompt = async (overridePrompt?: string, overrideMode?: AiMode) => {
     const promptToSend = (overridePrompt !== undefined ? overridePrompt : inputText).trim();
-    if (!promptToSend || isStreaming) return;
+    if ((!promptToSend && !selectedAttachment) || isStreaming) return;
+
+    const finalPrompt =
+      promptToSend ||
+      (selectedAttachment?.imageDataUrl
+        ? 'এই ছবিটি বিস্তারিত বিশ্লেষণ করো।'
+        : `"${selectedAttachment?.name}" ফাইলটির সারসংক্ষেপ ও মূল বিষয়গুলো বুঝিয়ে দাও।`);
 
     let targetThread = activeThread;
     if (!targetThread) {
@@ -247,7 +261,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
     setIsAttachPickerOpen(false);
     onClearError();
 
-    await onSendMessage(targetThread.id, promptToSend, modeToUse, attachmentToSend);
+    await onSendMessage(targetThread.id, finalPrompt, modeToUse, attachmentToSend);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -286,6 +300,19 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
   };
 
   const handlePickCloudFile = (file: CloudFile) => {
+    const imgSrc = file.url || file.thumbnail;
+    if (file.type === 'image' && imgSrc && imgSrc.startsWith('data:image/')) {
+      setSelectedAttachment({
+        id: file.id,
+        name: file.name,
+        snippet: '',
+        imageDataUrl: imgSrc,
+        mimeType: 'image/jpeg',
+      });
+      setIsAttachPickerOpen(false);
+      return;
+    }
+
     const snippet =
       file.content?.trim() ||
       `File Name: ${file.name}\nType: ${file.type}\nSize: ${file.formattedSize}\nDate: ${file.date}`;
@@ -295,6 +322,43 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
       snippet: snippet.slice(0, 8000),
     });
     setIsAttachPickerOpen(false);
+  };
+
+  const handleDeviceFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    if (file.type.startsWith('image/')) {
+      const compact = await compressImageToSafeDataUrl(file, {
+        maxDim: 1280,
+        maxChars: 1_500_000,
+        fallbackToRaw: true,
+      });
+      if (compact && compact.startsWith('data:image/')) {
+        setSelectedAttachment({
+          id: `device-${Date.now()}`,
+          name: file.name,
+          snippet: '',
+          imageDataUrl: compact,
+          mimeType: file.type,
+        });
+        setIsAttachPickerOpen(false);
+      }
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      setSelectedAttachment({
+        id: `device-${Date.now()}`,
+        name: file.name,
+        snippet: text.slice(0, 10000),
+      });
+      setIsAttachPickerOpen(false);
+    } catch {
+      // Ignore unreadable binary
+    }
   };
 
   const renderThreadRow = (thread: AiChatThread) => {
@@ -386,7 +450,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                 onClick={() => onTogglePinThread(thread.id)}
                 aria-label={thread.pinned ? `Unpin "${thread.title}"` : `Pin "${thread.title}"`}
                 title={thread.pinned ? 'আনপিন করুন (Unpin)' : 'পিন করুন (Pin)'}
-                className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
+                className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
                   thread.pinned
                     ? 'text-blue-400 hover:bg-blue-500/15'
                     : 'text-slate-400 hover:text-blue-400 hover:bg-blue-500/10'
@@ -399,7 +463,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                 onClick={() => handleStartRename(thread)}
                 aria-label={`Rename "${thread.title}"`}
                 title="নাম পরিবর্তন করুন (Rename)"
-                className="w-7 h-7 rounded-lg text-slate-400 hover:text-amber-400 hover:bg-amber-500/10 flex items-center justify-center transition-colors cursor-pointer"
+                className="w-8 h-8 rounded-lg text-slate-400 hover:text-amber-400 hover:bg-amber-500/10 flex items-center justify-center transition-colors cursor-pointer"
               >
                 <Pencil className="w-3.5 h-3.5" />
               </button>
@@ -408,7 +472,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                 onClick={() => onDeleteThread(thread.id)}
                 aria-label={`Delete "${thread.title}"`}
                 title="চ্যাট ডিলিট করুন (Delete)"
-                className="w-7 h-7 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 flex items-center justify-center transition-colors cursor-pointer"
+                className="w-8 h-8 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 flex items-center justify-center transition-colors cursor-pointer"
               >
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
@@ -427,7 +491,16 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
         isLight ? 'bg-white text-slate-900' : 'bg-[#0b111c] text-white'
       }`}
     >
-      {/* In-Frame Slide-Over Chats & Pinned Drawer (stays strictly inside mobile phone container) */}
+      {/* Hidden device file input for AI image/text attachment */}
+      <input
+        ref={deviceFileInputRef}
+        type="file"
+        accept="image/*,.txt,.md,.json,.csv,.js,.ts,.tsx,.py,.html,.css"
+        onChange={handleDeviceFileSelected}
+        className="hidden"
+      />
+
+      {/* In-Frame Slide-Over Chats & Pinned Drawer */}
       {isDrawerOpen && (
         <div className="absolute inset-0 z-40 flex">
           <div
@@ -461,7 +534,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                   type="button"
                   onClick={() => setIsDrawerOpen(false)}
                   aria-label="Close chat history"
-                  className={`w-9 h-9 rounded-xl flex items-center justify-center cursor-pointer ${
+                  className={`w-10 h-10 rounded-xl flex items-center justify-center cursor-pointer ${
                     isLight
                       ? 'text-slate-500 hover:bg-slate-200 hover:text-slate-900'
                       : 'text-slate-400 hover:bg-[#142138] hover:text-white'
@@ -477,7 +550,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                   onCreateThread();
                   setIsDrawerOpen(false);
                 }}
-                className="w-full min-h-[40px] bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white ai-solid-text-white font-semibold text-xs px-3 py-2 rounded-xl shadow-md flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                className="w-full min-h-[44px] bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white ai-solid-text-white font-semibold text-xs px-3 py-2 rounded-xl shadow-md flex items-center justify-center gap-1.5 transition-all cursor-pointer"
               >
                 <Plus className="w-4 h-4" />
                 <span className="whitespace-nowrap">নতুন চ্যাট (New Chat)</span>
@@ -492,7 +565,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="চ্যাট খুঁজুন..."
                   aria-label="Search conversations"
-                  className={`w-full pl-8 pr-3 py-2 text-xs rounded-xl border outline-none transition-colors ${
+                  className={`w-full pl-8 pr-3 py-2.5 text-xs rounded-xl border outline-none transition-colors ${
                     isLight
                       ? 'bg-white border-slate-200 text-slate-900 placeholder:text-slate-400 focus:border-blue-500'
                       : 'bg-[#101a2b] border-[#1d2e4a] text-white placeholder:text-slate-500 focus:border-blue-500'
@@ -541,7 +614,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
         </div>
       )}
 
-      {/* Compact Professional Mobile App Header */}
+      {/* Compact Executive Mobile App Header */}
       <header
         className={`shrink-0 px-3 py-2.5 border-b flex items-center justify-between gap-2 ${
           isLight
@@ -555,7 +628,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
             onClick={() => setIsDrawerOpen(true)}
             aria-label="Open chat history"
             title="চ্যাট ইতিহাস ও পিন করা চ্যাট"
-            className={`relative w-9 h-9 rounded-xl border flex items-center justify-center shrink-0 cursor-pointer transition-colors ${
+            className={`relative w-10 h-10 rounded-xl border flex items-center justify-center shrink-0 cursor-pointer transition-colors ${
               isLight
                 ? 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
                 : 'bg-[#121e33] border-[#1f3150] text-slate-200 hover:bg-[#192945]'
@@ -588,13 +661,13 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                 }}
                 autoFocus
                 aria-label="Edit conversation title"
-                className="flex-1 min-w-0 text-xs font-semibold px-2.5 py-1.5 rounded-xl border border-blue-500 outline-none"
+                className="flex-1 min-w-0 text-xs font-semibold px-2.5 py-2 rounded-xl border border-blue-500 outline-none"
               />
               <button
                 type="button"
                 onClick={handleCommitHeaderRename}
                 aria-label="Save title"
-                className="w-8 h-8 rounded-xl bg-blue-600 text-white ai-solid-text-white flex items-center justify-center shrink-0 cursor-pointer"
+                className="w-9 h-9 rounded-xl bg-blue-600 text-white ai-solid-text-white flex items-center justify-center shrink-0 cursor-pointer"
               >
                 <Check className="w-3.5 h-3.5" />
               </button>
@@ -602,7 +675,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                 type="button"
                 onClick={() => setIsHeaderEditing(false)}
                 aria-label="Cancel title edit"
-                className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 cursor-pointer ${
+                className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 cursor-pointer ${
                   isLight ? 'bg-slate-100 text-slate-700' : 'bg-[#17243b] text-slate-300'
                 }`}
               >
@@ -610,8 +683,8 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
               </button>
             </div>
           ) : (
-            <div className="flex items-center gap-1.5 min-w-0 flex-1">
-              <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-600 to-cyan-500 text-white ai-solid-text-white flex items-center justify-center shrink-0 shadow-sm">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-cyan-500 text-white ai-solid-text-white flex items-center justify-center shrink-0 shadow-sm">
                 <Sparkles className="w-4 h-4" />
               </div>
               <div className="min-w-0 flex-1">
@@ -625,22 +698,17 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                       onClick={handleStartHeaderRename}
                       aria-label="Rename active conversation"
                       title="চ্যাটের নাম পরিবর্তন করুন"
-                      className="w-6 h-6 rounded-md text-slate-400 hover:text-blue-400 hover:bg-blue-500/10 flex items-center justify-center shrink-0 cursor-pointer"
+                      className="w-7 h-7 rounded-md text-slate-400 hover:text-blue-400 hover:bg-blue-500/10 flex items-center justify-center shrink-0 cursor-pointer"
                     >
                       <Pencil className="w-3 h-3" />
                     </button>
                   )}
                 </div>
-                <div className="flex items-center gap-1.5 text-[10px] text-slate-400 leading-tight">
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full ${
-                      isStreaming ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400'
-                    }`}
-                  />
-                  <span className="truncate">
-                    {isStreaming ? 'উত্তর লিখছে...' : 'Bashar Cloud AI • Ready'}
-                  </span>
-                </div>
+                <p className="text-[10.5px] text-slate-400 leading-tight truncate">
+                  {isStreaming
+                    ? 'Bashar Cloud AI উত্তর লিখছে...'
+                    : `Bashar Cloud AI • ${activeModeMeta.label}`}
+                </p>
               </div>
             </div>
           )}
@@ -654,7 +722,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
               onClick={() => onTogglePinThread(activeThread.id)}
               aria-label={activeThread.pinned ? 'Unpin active conversation' : 'Pin active conversation'}
               title={activeThread.pinned ? 'আনপিন করুন' : 'পিন করে রাখুন'}
-              className={`w-9 h-9 rounded-xl border flex items-center justify-center transition-colors cursor-pointer ${
+              className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors cursor-pointer ${
                 activeThread.pinned
                   ? 'bg-blue-600/15 border-blue-500/50 text-blue-400'
                   : isLight
@@ -675,7 +743,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
             onClick={() => onCreateThread()}
             aria-label="Start new chat"
             title="নতুন চ্যাট"
-            className="h-9 px-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white ai-solid-text-white flex items-center justify-center gap-1 text-[11px] font-semibold shadow-sm transition-colors whitespace-nowrap cursor-pointer"
+            className="h-10 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white ai-solid-text-white flex items-center justify-center gap-1 text-xs font-semibold shadow-sm transition-colors whitespace-nowrap cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5" />
             <span>New</span>
@@ -687,7 +755,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
       <div
         role="group"
         aria-label="AI Mode selector"
-        className={`shrink-0 px-3 py-1.5 border-b grid grid-cols-3 gap-1.5 ${
+        className={`shrink-0 px-3 py-2 border-b grid grid-cols-3 gap-1.5 ${
           isLight ? 'bg-slate-50/90 border-slate-200' : 'bg-[#0a111e] border-[#16233a]'
         }`}
       >
@@ -699,7 +767,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
               type="button"
               onClick={() => activeThread && onChangeMode(activeThread.id, opt.id)}
               title={opt.description}
-              className={`py-1.5 px-2 rounded-xl text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-all whitespace-nowrap cursor-pointer ${
+              className={`min-h-[38px] py-1.5 px-2 rounded-xl text-[11.5px] font-semibold flex items-center justify-center gap-1.5 transition-all whitespace-nowrap cursor-pointer ${
                 selected
                   ? 'bg-blue-600 text-white ai-solid-text-white shadow-sm'
                   : isLight
@@ -714,13 +782,13 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
         })}
       </div>
 
-      {/* Scrollable Message Thread (Mobile-Proportioned Clean Layout) */}
+      {/* Scrollable Message Thread */}
       <div className="flex-1 min-h-0 overflow-y-auto px-3.5 py-3.5">
         {activeMessages.length === 0 ? (
-          <div className="flex flex-col items-center text-center pt-2 pb-2">
-            {/* Hero Identity Card */}
+          <div className="flex flex-col items-center text-center pt-1 pb-2">
+            {/* Executive Hero Card */}
             <div
-              className={`w-full rounded-3xl border p-4 mb-3.5 relative overflow-hidden ${
+              className={`w-full rounded-3xl border p-4.5 mb-3.5 relative overflow-hidden ${
                 isLight
                   ? 'bg-gradient-to-b from-blue-50/90 to-white border-blue-200/80'
                   : 'bg-gradient-to-b from-[#13213a] to-[#0f1727] border-[#213556]'
@@ -733,16 +801,22 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                 Bashar Cloud AI
               </h2>
               <p
-                className={`text-[11.5px] leading-relaxed max-w-[320px] mx-auto ${
+                className={`text-[12px] leading-relaxed max-w-[320px] mx-auto ${
                   isLight ? 'text-slate-600' : 'text-slate-300'
                 }`}
               >
-                {userName ? `হ্যালো ${userName}! ` : ''}যেকোনো প্রশ্ন করুন—কোডিং, গণিত, লেখালেখি,
-                গবেষণা বা ক্লাউড ফাইল নিয়ে নির্ভুল ও পেশাদার সমাধান পান।
+                {userName ? `হ্যালো ${userName}! ` : ''}কোডিং, গণিত, লেখালেখি, ছবি বিশ্লেষণ বা আপনার ক্লাউড ফাইল নিয়ে যেকোনো প্রশ্ন করুন।
+              </p>
+              <p
+                className={`text-[10.5px] mt-2 font-medium ${
+                  isLight ? 'text-blue-700' : 'text-sky-300/90'
+                }`}
+              >
+                মোড: {activeModeMeta.label} — {activeModeMeta.description}
               </p>
             </div>
 
-            {/* Quick Access Strip for Pinned Chats (if user pinned any) */}
+            {/* Quick Access Strip for Pinned Chats */}
             {pinnedThreads.length > 0 && (
               <div className="w-full mb-3.5 text-left">
                 <div className="flex items-center justify-between mb-1.5 px-1">
@@ -752,7 +826,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                   <button
                     type="button"
                     onClick={() => setIsDrawerOpen(true)}
-                    className="text-[10.5px] font-semibold text-slate-400 hover:text-blue-400 cursor-pointer"
+                    className="text-[11px] font-semibold text-slate-400 hover:text-blue-400 cursor-pointer"
                   >
                     সব দেখুন →
                   </button>
@@ -763,7 +837,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                       key={pt.id}
                       type="button"
                       onClick={() => onSelectThread(pt.id)}
-                      className={`shrink-0 max-w-[175px] px-2.5 py-1.5 rounded-xl border text-[11px] font-medium flex items-center gap-1.5 transition-colors cursor-pointer ${
+                      className={`shrink-0 max-w-[175px] px-3 py-2 rounded-xl border text-[11px] font-medium flex items-center gap-1.5 transition-colors cursor-pointer ${
                         isLight
                           ? 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100'
                           : 'bg-[#122038] border-blue-500/35 text-blue-300 hover:bg-[#172947]'
@@ -784,14 +858,14 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                   key={index}
                   type="button"
                   onClick={() => handleSubmitPrompt(card.prompt, card.mode)}
-                  className={`orbit-card w-full p-3 rounded-2xl transition-all text-left flex items-center gap-3 cursor-pointer active:scale-[0.99] ${
+                  className={`orbit-card w-full min-h-[56px] p-3 rounded-2xl transition-all text-left flex items-center gap-3 cursor-pointer active:scale-[0.99] ${
                     isLight
                       ? 'bg-slate-50 hover:bg-blue-50/70'
                       : 'bg-[#111b2d] hover:bg-[#16233a]'
                   }`}
                 >
                   <div
-                    className={`w-9 h-9 rounded-xl border flex items-center justify-center shrink-0 ${card.accentClass}`}
+                    className={`w-10 h-10 rounded-xl border flex items-center justify-center shrink-0 ${card.accentClass}`}
                   >
                     {card.icon}
                   </div>
@@ -819,15 +893,29 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                 streamingThreadId === activeThread?.id &&
                 !isUser &&
                 idx === activeMessages.length - 1;
+              const isLastAssistantMsg = !isUser && idx === activeMessages.length - 1;
 
               if (isUser) {
                 return (
                   <div key={msg.id} className="flex justify-end">
                     <div className="max-w-[85%] rounded-2xl rounded-br-xs bg-gradient-to-br from-blue-600 to-indigo-600 text-white ai-solid-text-white px-3.5 py-2.5 shadow-md">
                       {msg.attachment && (
-                        <div className="mb-1.5 px-2 py-0.5 rounded-lg bg-black/20 text-[10.5px] font-medium flex items-center gap-1.5 w-fit max-w-full">
-                          <Paperclip className="w-3 h-3 shrink-0" />
-                          <span className="truncate">{msg.attachment.name}</span>
+                        <div className="mb-2">
+                          {msg.attachment.imageDataUrl && (
+                            <img
+                              src={msg.attachment.imageDataUrl}
+                              alt={msg.attachment.name}
+                              className="max-h-40 rounded-xl mb-1.5 border border-white/20 object-cover"
+                            />
+                          )}
+                          <div className="px-2 py-0.5 rounded-lg bg-black/25 text-[10.5px] font-medium flex items-center gap-1.5 w-fit max-w-full">
+                            {msg.attachment.imageDataUrl ? (
+                              <ImageIcon className="w-3 h-3 shrink-0" />
+                            ) : (
+                              <Paperclip className="w-3 h-3 shrink-0" />
+                            )}
+                            <span className="truncate">{msg.attachment.name}</span>
+                          </div>
                         </div>
                       )}
                       <p className="text-[13px] leading-relaxed whitespace-pre-wrap break-words">
@@ -850,14 +938,20 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                   <div
                     className={`flex-1 min-w-0 rounded-2xl rounded-tl-xs border px-3.5 py-2.5 ${
                       msg.isError
-                        ? 'bg-rose-950/30 border-rose-500/40 text-rose-200'
+                        ? isLight
+                          ? 'bg-rose-50 border-rose-200 text-rose-900'
+                          : 'bg-rose-950/30 border-rose-500/40 text-rose-200'
                         : isLight
                         ? 'bg-slate-50 border-slate-200 text-slate-900'
                         : 'bg-[#111b2d] border-[#1f304c] text-slate-100'
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2 mb-1">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">
+                      <span
+                        className={`text-[10px] font-bold uppercase tracking-wider ${
+                          isLight ? 'text-blue-600' : 'text-blue-400'
+                        }`}
+                      >
                         Bashar Cloud AI
                       </span>
                       {isCurrentlyStreaming && (
@@ -870,23 +964,30 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                     {msg.text ? (
                       <MarkdownMessage text={msg.text} isLight={isLight} />
                     ) : (
-                      <p className="text-xs text-slate-400">উত্তর তৈরি হচ্ছে...</p>
+                      <div className="flex items-center gap-2 py-1 text-xs text-slate-400">
+                        <span className="inline-flex gap-1" aria-hidden="true">
+                          <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-bounce [animation-delay:-0.2s]" />
+                          <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-bounce [animation-delay:-0.1s]" />
+                          <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-bounce" />
+                        </span>
+                        <span>চিন্তা করছে ও উত্তর তৈরি করছে...</span>
+                      </div>
                     )}
 
                     {!isCurrentlyStreaming && msg.text && !msg.isError && (
-                      <div className="mt-2.5 pt-2 border-t border-slate-700/25 flex flex-wrap items-center gap-1.5">
+                      <div className="mt-2.5 pt-2 border-t border-slate-700/20 flex flex-wrap items-center gap-1.5">
                         <button
                           type="button"
                           onClick={() => handleCopyMessage(msg)}
-                          className={`text-[10.5px] font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1 transition-colors cursor-pointer ${
+                          className={`min-h-[32px] text-[11px] font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1 transition-colors cursor-pointer ${
                             isLight
-                              ? 'bg-white border border-slate-200 text-slate-600 hover:text-slate-900'
+                              ? 'bg-white border border-slate-200 text-slate-700 hover:text-slate-900'
                               : 'bg-[#17243b] text-slate-300 hover:text-white'
                           }`}
                         >
                           {copiedMessageId === msg.id ? (
                             <>
-                              <Check className="w-3 h-3 text-emerald-400" />
+                              <Check className="w-3 h-3 text-emerald-500" />
                               <span>Copied</span>
                             </>
                           ) : (
@@ -901,15 +1002,15 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                           <button
                             type="button"
                             onClick={() => handleSaveCloudAnswer(msg)}
-                            className={`text-[10.5px] font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1 transition-colors cursor-pointer ${
+                            className={`min-h-[32px] text-[11px] font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1 transition-colors cursor-pointer ${
                               isLight
-                                ? 'bg-white border border-slate-200 text-slate-600 hover:text-blue-600'
+                                ? 'bg-white border border-slate-200 text-slate-700 hover:text-blue-600'
                                 : 'bg-[#17243b] text-slate-300 hover:text-sky-400'
                             }`}
                           >
                             {savedCloudMsgId === msg.id ? (
                               <>
-                                <Check className="w-3 h-3 text-emerald-400" />
+                                <Check className="w-3 h-3 text-emerald-500" />
                                 <span>Saved</span>
                               </>
                             ) : (
@@ -918,6 +1019,21 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                                 <span>Save to Cloud</span>
                               </>
                             )}
+                          </button>
+                        )}
+
+                        {isLastAssistantMsg && (
+                          <button
+                            type="button"
+                            onClick={handleRetryLast}
+                            className={`min-h-[32px] text-[11px] font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1 transition-colors cursor-pointer ${
+                              isLight
+                                ? 'bg-white border border-slate-200 text-slate-700 hover:text-blue-600'
+                                : 'bg-[#17243b] text-slate-300 hover:text-sky-400'
+                            }`}
+                          >
+                            <RefreshCw className="w-3 h-3" />
+                            <span>Regenerate</span>
                           </button>
                         )}
                       </div>
@@ -933,7 +1049,11 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
         {errorMsg && (
           <div
             role="alert"
-            className="mt-3 rounded-2xl border border-rose-500/40 bg-rose-950/40 px-3.5 py-2.5 flex items-center justify-between gap-2.5 text-xs text-rose-200"
+            className={`mt-3 rounded-2xl border px-3.5 py-2.5 flex items-center justify-between gap-2.5 text-xs ${
+              isLight
+                ? 'border-rose-300 bg-rose-50 text-rose-900'
+                : 'border-rose-500/40 bg-rose-950/40 text-rose-200'
+            }`}
           >
             <div className="flex items-start gap-2 min-w-0">
               <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
@@ -942,7 +1062,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
             <button
               type="button"
               onClick={handleRetryLast}
-              className="px-2.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white ai-solid-text-white text-[11px] font-semibold flex items-center gap-1 shrink-0 cursor-pointer"
+              className="min-h-[34px] px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white ai-solid-text-white text-[11px] font-semibold flex items-center gap-1 shrink-0 cursor-pointer"
             >
               <RefreshCw className="w-3 h-3" />
               <span>Retry</span>
@@ -953,7 +1073,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* In-Frame Cloud File Picker Popover */}
+      {/* In-Frame Cloud + Device Attachment Picker */}
       {isAttachPickerOpen && (
         <div
           className={`shrink-0 mx-3 mb-2 rounded-2xl border p-3 shadow-xl ${
@@ -963,16 +1083,26 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
           }`}
         >
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-bold">ক্লাউড ফাইল যুক্ত করুন</span>
+            <span className="text-xs font-bold">ফাইল বা ছবি যুক্ত করুন</span>
             <button
               type="button"
               onClick={() => setIsAttachPickerOpen(false)}
               aria-label="Close file picker"
-              className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-white cursor-pointer"
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-blue-400 cursor-pointer"
             >
               <X className="w-4 h-4" />
             </button>
           </div>
+
+          <button
+            type="button"
+            onClick={() => deviceFileInputRef.current?.click()}
+            className="w-full min-h-[40px] mb-2 px-3 py-2 rounded-xl bg-blue-600/15 hover:bg-blue-600/25 border border-blue-500/35 text-blue-500 dark:text-sky-300 text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition-colors"
+          >
+            <Upload className="w-3.5 h-3.5" />
+            <span>ডিভাইস থেকে ছবি বা ফাইল দিন (Upload Image/File)</span>
+          </button>
+
           {attachableFiles.length > 0 ? (
             <div className="max-h-32 overflow-y-auto space-y-1">
               {attachableFiles.slice(0, 12).map((f) => (
@@ -980,20 +1110,27 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                   key={f.id}
                   type="button"
                   onClick={() => handlePickCloudFile(f)}
-                  className={`w-full text-left px-2.5 py-1.5 rounded-xl text-xs flex items-center justify-between gap-2 cursor-pointer ${
+                  className={`w-full text-left px-2.5 py-2 rounded-xl text-xs flex items-center justify-between gap-2 cursor-pointer ${
                     isLight
                       ? 'hover:bg-blue-50 text-slate-800'
                       : 'hover:bg-[#192844] text-slate-200'
                   }`}
                 >
-                  <span className="truncate font-medium">{f.name}</span>
+                  <span className="flex items-center gap-1.5 min-w-0">
+                    {f.type === 'image' ? (
+                      <ImageIcon className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                    ) : (
+                      <FileText className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    )}
+                    <span className="truncate font-medium">{f.name}</span>
+                  </span>
                   <span className="text-[10px] text-slate-400 shrink-0">{f.formattedSize}</span>
                 </button>
               ))}
             </div>
           ) : (
-            <p className="text-[11px] text-slate-400 py-1.5">
-              কোনো টেক্সট বা ডকুমেন্ট ফাইল এখনো নেই। আগে Files বা Home থেকে একটি ফাইল তৈরি বা আপলোড করুন।
+            <p className="text-[11px] text-slate-400 py-1">
+              ক্লাউড ড্রাইভে কোনো ফাইল নেই — চাইলে উপরের বাটন দিয়ে ডিভাইস থেকে ছবি বা ফাইল যুক্ত করতে পারেন।
             </p>
           )}
         </div>
@@ -1007,14 +1144,22 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
       >
         {selectedAttachment && (
           <div className="mb-1.5 flex items-center gap-2">
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-600/15 border border-blue-500/30 text-blue-400 text-[11px] font-medium">
-              <Paperclip className="w-3 h-3" />
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-600/15 border border-blue-500/30 text-blue-500 dark:text-blue-400 text-[11px] font-medium">
+              {selectedAttachment.imageDataUrl ? (
+                <img
+                  src={selectedAttachment.imageDataUrl}
+                  alt={selectedAttachment.name}
+                  className="w-4 h-4 rounded object-cover"
+                />
+              ) : (
+                <Paperclip className="w-3 h-3" />
+              )}
               <span className="truncate max-w-[200px]">{selectedAttachment.name}</span>
               <button
                 type="button"
                 onClick={() => setSelectedAttachment(null)}
                 aria-label="Remove attached file"
-                className="ml-0.5 hover:text-white cursor-pointer"
+                className="ml-0.5 hover:text-rose-400 cursor-pointer"
               >
                 <X className="w-3 h-3" />
               </button>
@@ -1024,21 +1169,21 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
 
         <div
           className={`orbit-composer flex items-end gap-1 rounded-2xl p-1.5 transition-colors ${
-            isLight ? 'bg-slate-50' : 'bg-[#111b2d]'
+            isLight ? 'bg-slate-50 border border-slate-200' : 'bg-[#111b2d]'
           }`}
         >
           <button
             type="button"
             onClick={() => setIsAttachPickerOpen((v) => !v)}
-            aria-label="Attach cloud file"
-            title="ক্লাউড ফাইল যুক্ত করুন"
-            className={`min-w-[40px] min-h-[40px] rounded-xl flex items-center justify-center shrink-0 transition-colors cursor-pointer ${
+            aria-label="Attach cloud file or image"
+            title="ছবি বা ফাইল যুক্ত করুন"
+            className={`min-w-[44px] min-h-[44px] rounded-xl flex items-center justify-center shrink-0 transition-colors cursor-pointer ${
               isAttachPickerOpen
                 ? 'bg-blue-600/20 text-blue-400'
                 : 'text-slate-400 hover:text-blue-400'
             }`}
           >
-            <Paperclip className="w-4 h-4" />
+            <Paperclip className="w-4.5 h-4.5" />
           </button>
 
           <textarea
@@ -1051,7 +1196,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
             rows={1}
             placeholder="যেকোনো প্রশ্ন লিখুন... (Enter = পাঠান)"
             aria-label="Ask Bashar Cloud AI"
-            className={`flex-1 min-w-0 resize-none bg-transparent border-0! outline-none py-2 px-1 text-[13px] leading-snug max-h-[132px] ${
+            className={`flex-1 min-w-0 resize-none bg-transparent border-0! outline-none py-2.5 px-1 text-[13.5px] leading-snug max-h-[132px] ${
               isLight
                 ? 'text-slate-900 placeholder:text-slate-400'
                 : 'text-white placeholder:text-slate-400'
@@ -1064,7 +1209,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
               onClick={onStopStreaming}
               aria-label="Stop generating"
               title="থামান (Stop)"
-              className="min-w-[40px] min-h-[40px] rounded-xl bg-rose-600 hover:bg-rose-500 text-white ai-solid-text-white flex items-center justify-center shrink-0 transition-colors cursor-pointer"
+              className="min-w-[44px] min-h-[44px] rounded-xl bg-rose-600 hover:bg-rose-500 text-white ai-solid-text-white flex items-center justify-center shrink-0 transition-colors cursor-pointer"
             >
               <Square className="w-4 h-4 fill-current" />
             </button>
@@ -1072,11 +1217,11 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
             <button
               type="button"
               onClick={() => handleSubmitPrompt()}
-              disabled={!inputText.trim()}
+              disabled={!inputText.trim() && !selectedAttachment}
               aria-label="Send message"
               title="পাঠান (Send)"
-              className={`min-w-[40px] min-h-[40px] rounded-xl flex items-center justify-center shrink-0 transition-all cursor-pointer ${
-                inputText.trim()
+              className={`min-w-[44px] min-h-[44px] rounded-xl flex items-center justify-center shrink-0 transition-all cursor-pointer ${
+                inputText.trim() || selectedAttachment
                   ? 'bg-blue-600 hover:bg-blue-500 text-white ai-solid-text-white shadow-md'
                   : isLight
                   ? 'bg-slate-200 text-slate-400 cursor-not-allowed'

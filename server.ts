@@ -1,12 +1,26 @@
 import 'dotenv/config';
+import dotenv from 'dotenv';
 import express, { type Request, type Response } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI, ThinkingLevel, type GenerateContentResponse } from '@google/genai';
+import {
+  resolveGeminiApiKey,
+  normalizeAiHistory,
+  buildUserParts,
+  buildSystemInstruction,
+  type AiAttachmentInput,
+  type AiCloudSummaryInput,
+} from './src/utils/aiServerHelpers';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const envLocalPath = path.resolve(__dirname, '.env.local');
+if (fs.existsSync(envLocalPath)) {
+  dotenv.config({ path: envLocalPath, override: false });
+}
 
 type AiMode = 'general' | 'deep' | 'fast';
 
@@ -20,10 +34,9 @@ interface IncomingChatPayload {
   history?: IncomingHistoryItem[];
   mode?: AiMode;
   userName?: string;
-  attachment?: {
-    name: string;
-    snippet: string;
-  } | null;
+  stream?: boolean;
+  attachment?: AiAttachmentInput | null;
+  cloudSummary?: AiCloudSummaryInput | null;
 }
 
 function getModelAndThinking(mode: AiMode | undefined): {
@@ -48,25 +61,11 @@ function getModelAndThinking(mode: AiMode | undefined): {
   };
 }
 
-function buildSystemInstruction(userName?: string): string {
-  const userLine = userName ? `The current user's name is "${userName}".` : '';
-  return [
-    'You are Bashar Cloud AI, an intelligent, accurate, and professional AI assistant built into Bashar Cloud.',
-    userLine,
-    'Answer every question clearly, thoroughly, and practically across all domains: coding & debugging, math & science, study & exam preparation, writing & translation, business & productivity, everyday life, and cloud document analysis.',
-    'Language matching: Respond in natural, fluent Bengali when the user writes in Bengali (or requests Bengali), in English when they write in English, or seamlessly mix technical English terms inside Bengali when appropriate.',
-    'Formatting: Structure longer explanations cleanly using Markdown headings, concise bullet points, numbered steps, and fenced code blocks with language tags (for example ```ts or ```python) so responses read clearly like a modern web assistant.',
-    'Accuracy: Be honest if something is uncertain or missing from provided context. Do not invent facts or claim external side effects that did not happen.',
-  ]
-    .filter(Boolean)
-    .join('\n');
-}
-
-function formatGeminiError(err: unknown): { status: number; message: string } {
+function formatGeminiError(err: unknown, hasApiKey: boolean): { status: number; message: string } {
   const raw = err instanceof Error ? err.message : String(err || 'Unknown AI error');
   const lower = raw.toLowerCase();
 
-  if (!process.env.GEMINI_API_KEY) {
+  if (!hasApiKey) {
     return {
       status: 500,
       message:
@@ -74,7 +73,7 @@ function formatGeminiError(err: unknown): { status: number; message: string } {
     };
   }
 
-  if (lower.includes('api_key_invalid') || lower.includes('permission_denied') || lower.includes('403') || lower.includes('401')) {
+  if (lower.includes('api_key_invalid') || lower.includes('api key not valid') || lower.includes('permission_denied') || lower.includes('403') || lower.includes('401')) {
     return {
       status: 403,
       message:
@@ -86,14 +85,14 @@ function formatGeminiError(err: unknown): { status: number; message: string } {
     return {
       status: 429,
       message:
-        'API ব্যবহারের সীমা (Quota/Rate limit) সাময়িকভাবে পূর্ণ হয়েছে। অনুগ্রহ করে কিছুক্ষণ পর আবার চেষ্টা করুন অথবা Settings > Secrets থেকে বিলিং-সক্রিয় API Key ব্যবহার করুন।',
+        'API ব্যবহারের সীমা (Quota/Rate limit) সাময়িকভাবে পূর্ণ হয়েছে। অনুগ্রহ করে কিছুক্ষণ পর আবার চেষ্টা করুন অথবা Fast মোড ব্যবহার করুন।',
     };
   }
 
   if (lower.includes('not_found') || lower.includes('404')) {
     return {
       status: 404,
-      message: 'নির্বাচিত AI মডেলটি পাওয়া যায়নি। অনুগ্রহ করে General (Gemini 4 Hydrogen) বা Fast মোডে চেষ্টা করুন।',
+      message: 'নির্বাচিত AI মডেলটি পাওয়া যায়নি। অনুগ্রহ করে General বা Fast মোডে চেষ্টা করুন।',
     };
   }
 
@@ -111,17 +110,31 @@ function formatGeminiError(err: unknown): { status: number; message: string } {
   };
 }
 
+function isAuthOrQuotaError(err: unknown): boolean {
+  const raw = (err instanceof Error ? err.message : String(err || '')).toLowerCase();
+  return (
+    raw.includes('api_key_invalid') ||
+    raw.includes('api key not valid') ||
+    raw.includes('permission_denied') ||
+    raw.includes('401') ||
+    raw.includes('403') ||
+    raw.includes('resource_exhausted') ||
+    raw.includes('quota')
+  );
+}
+
 async function startServer() {
   const app = express();
   const port = Number(process.env.PORT) || 3000;
 
-  app.use(express.json({ limit: '4mb' }));
+  app.use(express.json({ limit: '6mb' }));
 
   app.get('/api/health', (_req: Request, res: Response) => {
+    const apiKey = resolveGeminiApiKey(process.env);
     res.json({
       ok: true,
       service: 'bashar-cloud-ai',
-      hasApiKey: Boolean(process.env.GEMINI_API_KEY),
+      hasApiKey: Boolean(apiKey),
     });
   });
 
@@ -134,35 +147,94 @@ async function startServer() {
       return;
     }
 
-    if (!process.env.GEMINI_API_KEY) {
-      const errInfo = formatGeminiError(new Error('Missing GEMINI_API_KEY'));
+    const apiKey = resolveGeminiApiKey(process.env);
+    if (!apiKey) {
+      const errInfo = formatGeminiError(new Error('Missing GEMINI_API_KEY'), false);
       res.status(errInfo.status).json({ error: errInfo.message });
       return;
     }
 
     const { model, thinkingLevel } = getModelAndThinking(body.mode);
-    const systemInstruction = buildSystemInstruction(body.userName);
+    const systemInstruction = buildSystemInstruction(body.userName, body.cloudSummary);
+    const historyItems = normalizeAiHistory(body.history, 24);
+    const wantsStream = body.stream !== false;
+    const userParts = buildUserParts(rawMessage, body.attachment);
 
-    const historyItems = Array.isArray(body.history)
-      ? body.history
-          .filter(
-            (item) =>
-              item &&
-              (item.role === 'user' || item.role === 'model') &&
-              typeof item.text === 'string' &&
-              item.text.trim().length > 0
-          )
-          .slice(-24)
-          .map((item) => ({
-            role: item.role,
-            parts: [{ text: item.text }],
-          }))
-      : [];
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
 
-    const userPrompt =
-      body.attachment && body.attachment.snippet
-        ? `[Attached Cloud File: ${body.attachment.name}]\n\`\`\`\n${body.attachment.snippet.slice(0, 12000)}\n\`\`\`\n\nUser Question:\n${rawMessage}`
-        : rawMessage;
+    const attempts: Array<{ targetModel: string; targetThinking?: ThinkingLevel }> = [
+      { targetModel: model, targetThinking: thinkingLevel },
+      { targetModel: model, targetThinking: undefined },
+    ];
+    if (model !== 'gemini-3.1-flash-lite') {
+      attempts.push({ targetModel: 'gemini-3.1-flash-lite', targetThinking: ThinkingLevel.MINIMAL });
+      attempts.push({ targetModel: 'gemini-3.1-flash-lite', targetThinking: undefined });
+    }
+
+    const runChatOnce = async (targetModel: string, targetThinking?: ThinkingLevel) => {
+      const chat = ai.chats.create({
+        model: targetModel,
+        history: historyItems,
+        config: targetThinking
+          ? {
+              systemInstruction,
+              thinkingConfig: { thinkingLevel: targetThinking },
+            }
+          : { systemInstruction },
+      });
+      const result = await chat.sendMessage({ message: userParts });
+      return result.text || '';
+    };
+
+    const runGenerateFallback = async (targetModel: string) => {
+      const contents = [
+        ...historyItems,
+        { role: 'user' as const, parts: userParts },
+      ];
+      const result = await ai.models.generateContent({
+        model: targetModel,
+        contents,
+        config: { systemInstruction },
+      });
+      return result.text || '';
+    };
+
+    // Non-streaming JSON mode (proxy-proof fallback)
+    if (!wantsStream) {
+      let lastError: unknown = null;
+      for (const attempt of attempts) {
+        try {
+          const reply = await runChatOnce(attempt.targetModel, attempt.targetThinking);
+          if (reply.trim()) {
+            res.json({ reply, model: attempt.targetModel });
+            return;
+          }
+        } catch (err) {
+          lastError = err;
+          if (isAuthOrQuotaError(err)) break;
+        }
+      }
+      try {
+        const directReply = await runGenerateFallback('gemini-3.1-flash-lite');
+        if (directReply.trim()) {
+          res.json({ reply: directReply, model: 'gemini-3.1-flash-lite' });
+          return;
+        }
+      } catch (err) {
+        lastError = lastError || err;
+      }
+
+      const formatted = formatGeminiError(lastError || new Error('Empty AI reply'), true);
+      res.status(formatted.status).json({ error: formatted.message });
+      return;
+    }
 
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -183,46 +255,48 @@ async function startServer() {
     };
 
     try {
-      const ai = new GoogleGenAI({
-        apiKey: process.env.GEMINI_API_KEY,
-        httpOptions: {
-          headers: {
-            'User-Agent': 'aistudio-build',
-          },
-        },
-      });
-
-      const startStream = async (targetModel: string, targetThinking: ThinkingLevel) => {
+      const startStream = async (targetModel: string, targetThinking?: ThinkingLevel) => {
         const chat = ai.chats.create({
           model: targetModel,
           history: historyItems,
-          config: {
-            systemInstruction,
-            thinkingConfig: { thinkingLevel: targetThinking },
-          },
+          config: targetThinking
+            ? {
+                systemInstruction,
+                thinkingConfig: { thinkingLevel: targetThinking },
+              }
+            : { systemInstruction },
         });
-        return chat.sendMessageStream({ message: userPrompt });
+        return chat.sendMessageStream({ message: userParts });
       };
 
       let activeModel: string = model;
-      let stream;
-      try {
-        stream = await startStream(model, thinkingLevel);
-      } catch (primaryErr) {
-        const msg = primaryErr instanceof Error ? primaryErr.message.toLowerCase() : String(primaryErr).toLowerCase();
-        const shouldFallback =
-          msg.includes('not_found') ||
-          msg.includes('404') ||
-          msg.includes('unavailable') ||
-          msg.includes('503') ||
-          msg.includes('high demand') ||
-          msg.includes('overloaded');
-        if (shouldFallback && model !== 'gemini-3.1-flash-lite') {
-          activeModel = 'gemini-3.1-flash-lite';
-          stream = await startStream(activeModel, ThinkingLevel.MINIMAL);
-        } else {
-          throw primaryErr;
+      let stream: AsyncIterable<GenerateContentResponse> | null = null;
+      let lastStreamErr: unknown = null;
+
+      for (const attempt of attempts) {
+        try {
+          activeModel = attempt.targetModel;
+          stream = await startStream(attempt.targetModel, attempt.targetThinking);
+          break;
+        } catch (err) {
+          lastStreamErr = err;
+          if (isAuthOrQuotaError(err)) {
+            throw err;
+          }
         }
+      }
+
+      if (!stream) {
+        // Last-resort non-streamed generateContent returned over SSE
+        const fallbackReply = await runGenerateFallback('gemini-3.1-flash-lite');
+        if (!fallbackReply.trim()) {
+          throw lastStreamErr || new Error('Empty AI response');
+        }
+        sendEvent({ type: 'meta', model: 'gemini-3.1-flash-lite' });
+        sendEvent({ type: 'chunk', text: fallbackReply, model: 'gemini-3.1-flash-lite' });
+        sendEvent({ type: 'done', model: 'gemini-3.1-flash-lite' });
+        if (!res.writableEnded) res.end();
+        return;
       }
 
       sendEvent({ type: 'meta', model: activeModel });
@@ -241,17 +315,23 @@ async function startServer() {
 
       if (!closed) {
         if (!accumulated.trim()) {
-          sendEvent({
-            type: 'error',
-            error: 'AI কোনো উত্তর প্রদান করেনি। অনুগ্রহ করে প্রশ্নটি একটু স্পষ্ট করে আবার চেষ্টা করুন।',
-          });
+          const backupText = await runGenerateFallback(activeModel).catch(() => '');
+          if (backupText.trim()) {
+            sendEvent({ type: 'chunk', text: backupText, model: activeModel });
+            sendEvent({ type: 'done', model: activeModel });
+          } else {
+            sendEvent({
+              type: 'error',
+              error: 'AI কোনো উত্তর প্রদান করেনি। অনুগ্রহ করে প্রশ্নটি একটু স্পষ্ট করে আবার চেষ্টা করুন।',
+            });
+          }
         } else {
           sendEvent({ type: 'done', model: activeModel });
         }
         res.end();
       }
     } catch (err) {
-      const formatted = formatGeminiError(err);
+      const formatted = formatGeminiError(err, true);
       console.error('Bashar Cloud AI error:', err);
       sendEvent({ type: 'error', error: formatted.message });
       if (!res.writableEnded) {
@@ -265,7 +345,8 @@ async function startServer() {
   });
 
   const distDir = path.resolve(__dirname, 'dist');
-  let useViteDev = process.env.NODE_ENV !== 'production';
+  const hasBuiltDist = fs.existsSync(path.join(distDir, 'index.html'));
+  let useViteDev = !(process.env.NODE_ENV === 'production' && hasBuiltDist);
 
   if (useViteDev) {
     try {
@@ -281,7 +362,7 @@ async function startServer() {
   }
 
   if (!useViteDev) {
-    if (fs.existsSync(distDir)) {
+    if (hasBuiltDist) {
       app.use(express.static(distDir));
       app.get('*', (_req: Request, res: Response) => {
         res.sendFile(path.join(distDir, 'index.html'));

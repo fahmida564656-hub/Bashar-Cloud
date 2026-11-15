@@ -49,7 +49,11 @@ import { storageProviderMock } from './services/storageProviderMock';
 import { testFirestoreConnection, auth } from './firebase/config';
 import { firestoreService } from './firebase/firestoreService';
 import { onAuthStateChanged } from 'firebase/auth';
-import { calculateSubscription } from './utils/subscription';
+import {
+  calculateSubscription,
+  loadTrialStartTimestamp,
+  saveTrialStartTimestamp,
+} from './utils/subscription';
 import { appendFileVersion, createInitialVersion } from './utils/fileVersioning';
 import {
   buildCloudFileFromBrowserFile,
@@ -81,6 +85,15 @@ import {
   saveAiThreadsToStorage,
   clearAiThreadsFromStorage,
 } from './utils/aiChats';
+import { parseSseChunks } from './utils/aiServerHelpers';
+import {
+  getUnreadAnnouncementCount,
+  loadAnnouncementsFromStorage,
+  loadLastReadNotificationTs,
+  saveAnnouncementsToStorage,
+  saveLastReadNotificationTs,
+  sortAnnouncementsNewestFirst,
+} from './utils/announcements';
 import {
   MainTab,
   ScreenMode,
@@ -97,6 +110,7 @@ import {
   AiMode,
   AiAttachment,
   AiMessage,
+  AdminAnnouncement,
 } from './types';
 
 export default function App() {
@@ -126,7 +140,10 @@ export default function App() {
   const [registeredUsers, setRegisteredUsers] = useState<RegisteredUser[]>(() => {
     try {
       const saved = localStorage.getItem('bashar_cloud_registered_users');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
     } catch {}
     return [];
   });
@@ -135,14 +152,24 @@ export default function App() {
   const [paymentRequests, setPaymentRequests] = useState<PaymentRequest[]>(() => {
     try {
       const saved = localStorage.getItem('bashar_cloud_payment_requests');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
     } catch {}
     return [];
   });
 
-  // Simulation states for tester to test expired trial and 90% storage warning
-  const [simulatedExpired, setSimulatedExpired] = useState<boolean>(false);
-  const [simulatedStorageWarning, setSimulatedStorageWarning] = useState<boolean>(false);
+  // Admin Advertisements / Notifications (Persisted in localStorage + Firestore)
+  const [announcements, setAnnouncements] = useState<AdminAnnouncement[]>(() =>
+    loadAnnouncementsFromStorage()
+  );
+  const [lastReadNotificationTs, setLastReadNotificationTs] = useState<number>(() =>
+    loadLastReadNotificationTs()
+  );
+
+  // Live clock tick so daily 30-day trial countdown updates automatically
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
 
   // Modern Light / Dark Theme state with persistent localStorage
   const [theme, setTheme] = useState<AppTheme>(getSavedTheme);
@@ -187,11 +214,17 @@ export default function App() {
     const base = savedState.storage || initialStorageUsage;
     return { ...base, totalGB: siteSettings.totalStorageGB || 1000 };
   });
-  const [files, setFiles] = useState<CloudFile[]>(savedState.files || initialFiles);
-  const [recycleBin, setRecycleBin] = useState<CloudFile[]>(savedState.recycleBin || initialRecycleBin);
+  const [files, setFiles] = useState<CloudFile[]>(
+    Array.isArray(savedState.files) ? savedState.files : initialFiles
+  );
+  const [recycleBin, setRecycleBin] = useState<CloudFile[]>(
+    Array.isArray(savedState.recycleBin) ? savedState.recycleBin : initialRecycleBin
+  );
 
   const filesRef = useRef<CloudFile[]>(files);
   const recycleBinRef = useRef<CloudFile[]>(recycleBin);
+  const sessionAuthenticatedRef = useRef<boolean>(false);
+  const userAbortedAiRef = useRef<boolean>(false);
   filesRef.current = files;
   recycleBinRef.current = recycleBin;
 
@@ -236,6 +269,8 @@ export default function App() {
   const [aiErrorMsg, setAiErrorMsg] = useState<string | null>(null);
   const aiThreadsRef = useRef<AiChatThread[]>(aiThreads);
   aiThreadsRef.current = aiThreads;
+  const isAiStreamingRef = useRef<boolean>(false);
+  isAiStreamingRef.current = isAiStreaming;
   const aiAbortRef = useRef<AbortController | null>(null);
 
   // Helper to clean phone numbers
@@ -385,9 +420,10 @@ export default function App() {
     let active = true;
 
     const unsubChats = firestoreService.subscribeToAiChats(canonicalUserId, (cloudThreads) => {
-      if (!active) return;
+      if (!active || isAiStreamingRef.current) return;
       if (cloudThreads.length > 0) {
         const merged = mergeAiThreads(cloudThreads, aiThreadsRef.current);
+        aiThreadsRef.current = merged;
         setAiThreads(merged);
         saveAiThreadsToStorage(canonicalUserId, merged);
         setActiveAiThreadId((prev) =>
@@ -402,31 +438,89 @@ export default function App() {
     };
   }, [canonicalUserId]);
 
-  // Subscription calculation (30 days free trial, then locked unless 100 TK lifetime is approved)
+  useEffect(() => {
+    const updateNow = () => setNowTick(Date.now());
+    const intervalId = window.setInterval(updateNow, 60_000);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') updateNow();
+    };
+    window.addEventListener('focus', updateNow);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', updateNow);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, []);
+
+  const effectiveRegisteredTimestamp =
+    currentUserRecord?.registeredTimestamp ??
+    user.registeredTimestamp ??
+    (canonicalUserId && canonicalUserId !== 'guest_user'
+      ? loadTrialStartTimestamp(canonicalUserId)
+      : undefined);
+
+  // Ensure every signed-in user (including legacy accounts) has a permanent trial start timestamp
+  useEffect(() => {
+    if (!canonicalUserId || canonicalUserId === 'guest_user') return;
+    if (screen === 'welcome-email' || screen === 'welcome-phone') return;
+
+    if (effectiveRegisteredTimestamp && effectiveRegisteredTimestamp > 0) {
+      saveTrialStartTimestamp(canonicalUserId, effectiveRegisteredTimestamp);
+      if (!user.registeredTimestamp) {
+        setUser((prev) => ({ ...prev, registeredTimestamp: effectiveRegisteredTimestamp }));
+      }
+      return;
+    }
+
+    const initializedTs = saveTrialStartTimestamp(canonicalUserId, Date.now());
+    setUser((prev) => {
+      const updatedUser = { ...prev, registeredTimestamp: initializedTs };
+      storageProviderMock.saveMetadataState(
+        filesRef.current,
+        updatedUser,
+        storage,
+        recycleBinRef.current,
+        canonicalUserId
+      );
+      return updatedUser;
+    });
+
+    if (currentUserRecord && !currentUserRecord.registeredTimestamp) {
+      const updatedRecord = { ...currentUserRecord, registeredTimestamp: initializedTs };
+      setRegisteredUsers((prev) =>
+        prev.map((u) => (u.id === currentUserRecord.id ? updatedRecord : u))
+      );
+      firestoreService.saveRegisteredUser(updatedRecord).catch(() => {});
+    }
+  }, [canonicalUserId, screen, effectiveRegisteredTimestamp, currentUserRecord?.id]);
+
+  // Subscription calculation (30 days free trial, then strictly locked unless 100 TK lifetime is approved)
   const subscription = calculateSubscription(
-    currentUserRecord?.registeredTimestamp,
+    effectiveRegisteredTimestamp,
     currentUserRecord?.isLifetimeApproved,
     currentUserRecord?.paymentStatus,
-    simulatedExpired
+    nowTick
   );
 
   const isAccountLocked = subscription.isExpired && !subscription.isLifetimeApproved;
 
-  // Active storage with 90% limit simulation support
-  const activeStorage: StorageUsage = simulatedStorageWarning
-    ? {
-        ...storage,
-        usedGB: 920,
-        imagesGB: 450,
-        imagesCount: Math.max(storage.imagesCount, 42),
-        videosGB: 380,
-        videosCount: Math.max(storage.videosCount, 18),
-        audiosMB: 90000,
-        audiosCount: Math.max(storage.audiosCount, 12),
-        docsMB: 2000,
-        docsCount: Math.max(storage.docsCount, 5),
-      }
-    : storage;
+  // Immediately close open file/upload/rename modals if 30-day trial expires
+  useEffect(() => {
+    if (isAccountLocked) {
+      setPreviewFile(null);
+      setSelectedAudioFile(null);
+      setSelectedZipFile(null);
+      setIsZipModalOpen(false);
+      setIsRecycleBinOpen(false);
+      setIsCreateFileOpen(false);
+      setIsNewFolderOpen(false);
+      setFileToRename(null);
+      setIsUploadFlowOpen(false);
+      setPendingUploadFiles([]);
+      setIsFabOpen(false);
+    }
+  }, [isAccountLocked]);
 
   // Synchronize document title with dynamic website name
   useEffect(() => {
@@ -504,13 +598,38 @@ export default function App() {
       return res;
     };
 
-    firestoreService.getRegisteredUsers().then((cloudUsers) => {
-      if (cloudUsers !== undefined && cloudUsers !== null) {
-        const unique = dedupeUserList(cloudUsers);
+    firestoreService.getRegisteredUsersWithMeta().then((metaResult) => {
+      if (metaResult) {
+        const unique = dedupeUserList(metaResult.users);
         setRegisteredUsers(unique);
         try {
           localStorage.setItem('bashar_cloud_registered_users', JSON.stringify(unique));
         } catch {}
+
+        // If server confirms registered_users was wiped/empty (or current cached account was deleted)
+        // and user did not just sign up/in during this session, clear stale local session cleanly
+        if (!metaResult.fromCache && !sessionAuthenticatedRef.current && hasExistingUser) {
+          const cachedEmail = (savedState.user?.email || '').trim().toLowerCase();
+          const cachedPhone = cleanPhone(savedState.user?.phone);
+          const stillExistsOnServer = unique.some(
+            (u) =>
+              (cachedEmail && u.email.toLowerCase() === cachedEmail) ||
+              (cachedPhone && cleanPhone(u.phone) === cachedPhone)
+          );
+          if (!stillExistsOnServer) {
+            storageProviderMock.saveMetadataState([], initialUserProfile, initialStorageUsage, []);
+            clearAiThreadsFromStorage(canonicalUserId);
+            setUser(initialUserProfile);
+            setFiles([]);
+            setRecycleBin([]);
+            setStorage(initialStorageUsage);
+            const resetChat = createAiThread();
+            setAiThreads([resetChat]);
+            setActiveAiThreadId(resetChat.id);
+            setScreen('welcome-email');
+            clearAllFileBlobs().catch(() => {});
+          }
+        }
       }
     });
 
@@ -566,6 +685,25 @@ export default function App() {
       }
     });
 
+    // 4. Synchronize Admin Advertisements / Announcements across all devices & users
+    firestoreService.getAnnouncements().then((cloudAds) => {
+      if (cloudAds !== null) {
+        const sorted = sortAnnouncementsNewestFirst(cloudAds);
+        setAnnouncements(sorted);
+        saveAnnouncementsToStorage(sorted);
+      }
+    });
+
+    const unsubscribeAnnouncements = firestoreService.subscribeToAnnouncements(
+      (cloudAds, meta) => {
+        if (!meta?.fromCache || cloudAds.length > 0) {
+          const sorted = sortAnnouncementsNewestFirst(cloudAds);
+          setAnnouncements(sorted);
+          saveAnnouncementsToStorage(sorted);
+        }
+      }
+    );
+
     const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
       if (firebaseUser && !user.email) {
         setUser((prev) => ({
@@ -580,6 +718,7 @@ export default function App() {
       unsubscribeUsers();
       unsubscribeSettings();
       unsubscribePayments();
+      unsubscribeAnnouncements();
       unsubscribeAuth();
     };
   }, []);
@@ -833,6 +972,7 @@ export default function App() {
 
   // Toggle Favorite
   const handleToggleFavorite = (id: string) => {
+    if (!checkActionAllowed()) return;
     const updated = filesRef.current.map((f) => {
       if (f.id === id) {
         const next = { ...f, isFavorite: !f.isFavorite };
@@ -850,6 +990,7 @@ export default function App() {
 
   // Bulk Favorite
   const handleBulkFavorite = (ids: string[], makeFavorite: boolean) => {
+    if (!checkActionAllowed()) return;
     const idSet = new Set(ids);
     const updated = filesRef.current.map((f) => {
       if (idSet.has(f.id)) {
@@ -1096,6 +1237,7 @@ export default function App() {
 
   // Restore from Recycle Bin
   const handleRestoreFile = (id: string) => {
+    if (!checkActionAllowed()) return;
     const fileToRestore = recycleBinRef.current.find((f) => f.id === id);
     if (!fileToRestore) return;
 
@@ -1112,6 +1254,7 @@ export default function App() {
 
   // Empty Recycle Bin
   const handleEmptyRecycleBin = () => {
+    if (!checkActionAllowed()) return;
     const toErase = [...recycleBinRef.current];
     setRecycleBin([]);
     persistVaultState(filesRef.current, []);
@@ -1170,6 +1313,7 @@ export default function App() {
       phone: updatedProfile.phone !== undefined ? updatedProfile.phone : user.phone,
       email: updatedProfile.email !== undefined ? updatedProfile.email : user.email,
       avatarUrl: updatedProfile.avatarUrl !== undefined ? updatedProfile.avatarUrl : user.avatarUrl,
+      registeredTimestamp: user.registeredTimestamp,
     };
     setUser(merged);
     storageProviderMock.saveMetadataState(files, merged, storage, recycleBin, canonicalUserId);
@@ -1209,6 +1353,9 @@ export default function App() {
       localStorage.setItem('bashar_cloud_registered_users', JSON.stringify(remaining));
     } catch {}
     storageProviderMock.clearUserLocalVault(userId);
+    try {
+      localStorage.removeItem(`bashar_cloud_trial_start_${userId}`);
+    } catch {}
     await firestoreService.deleteRegisteredUserAndData(userId).catch(() => {});
 
     // If currently active user was deleted, log out and reset session to clean slate
@@ -1306,14 +1453,14 @@ export default function App() {
     auth.signOut().catch(() => {});
   };
 
-  // Handle successful sign in / sign up (universal cross-website sync + loss-proof restoration)
+  // Handle successful sign in / sign up (universal cross-website sync + clean isolation on new signup)
   const handleAuthSuccess = async (
     authenticatedUser: UserProfile,
     passwordPlain?: string,
-    cloudRecord?: RegisteredUser
+    cloudRecord?: RegisteredUser,
+    isNewSignup = false
   ) => {
-    setUser(authenticatedUser);
-
+    sessionAuthenticatedRef.current = true;
     const existingIndex = registeredUsers.findIndex(
       (u) =>
         (cloudRecord && u.id === cloudRecord.id) ||
@@ -1322,9 +1469,22 @@ export default function App() {
     );
 
     const prevUser = existingIndex >= 0 ? registeredUsers[existingIndex] : cloudRecord;
+    const resolvedId = prevUser?.id || cloudRecord?.id || `user-${Date.now()}`;
+    const resolvedTimestamp =
+      prevUser?.registeredTimestamp ||
+      cloudRecord?.registeredTimestamp ||
+      loadTrialStartTimestamp(resolvedId) ||
+      Date.now();
+    const persistedTs = saveTrialStartTimestamp(resolvedId, resolvedTimestamp);
+
+    const userWithTimestamp: UserProfile = {
+      ...authenticatedUser,
+      registeredTimestamp: persistedTs,
+    };
+    setUser(userWithTimestamp);
 
     const userRecord: RegisteredUser = {
-      id: prevUser?.id || cloudRecord?.id || `user-${Date.now()}`,
+      id: resolvedId,
       name: authenticatedUser.name || (authenticatedUser.email ? authenticatedUser.email.split('@')[0] : 'User'),
       email: authenticatedUser.email,
       phone: authenticatedUser.phone,
@@ -1334,10 +1494,9 @@ export default function App() {
         prevUser?.registeredAt ||
         cloudRecord?.registeredAt ||
         new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-      registeredTimestamp:
-        prevUser?.registeredTimestamp || cloudRecord?.registeredTimestamp || Date.now(),
-      filesCount: prevUser?.filesCount || (existingIndex >= 0 ? filesRef.current.length : 0),
-      storageUsedMB: prevUser?.storageUsedMB || (existingIndex >= 0 ? Math.round(storage.usedGB * 1024) : 0),
+      registeredTimestamp: persistedTs,
+      filesCount: isNewSignup ? 0 : prevUser?.filesCount || (existingIndex >= 0 ? filesRef.current.length : 0),
+      storageUsedMB: isNewSignup ? 0 : prevUser?.storageUsedMB || (existingIndex >= 0 ? Math.round(storage.usedGB * 1024) : 0),
       isLifetimeApproved: prevUser?.isLifetimeApproved ?? cloudRecord?.isLifetimeApproved ?? false,
       paymentStatus: prevUser?.paymentStatus || cloudRecord?.paymentStatus || 'none',
       lastTrxId: prevUser?.lastTrxId || cloudRecord?.lastTrxId || '',
@@ -1349,10 +1508,34 @@ export default function App() {
     if (existingIndex >= 0) {
       setRegisteredUsers((prev) => prev.map((u, i) => (i === existingIndex ? userRecord : u)));
     } else {
-      setRegisteredUsers((prev) => [userRecord, ...prev]);
+      setRegisteredUsers((prev) =>
+        prev.some((u) => u.id === userRecord.id)
+          ? prev.map((u) => (u.id === userRecord.id ? userRecord : u))
+          : [userRecord, ...prev]
+      );
     }
 
-    // Load scoped local vault & Firestore cloud files + recycle bin
+    if (isNewSignup) {
+      // Strictly clean empty cloud vault for a fresh Sign Up
+      setFiles([]);
+      setRecycleBin([]);
+      const freshStorage = { ...initialStorageUsage, totalGB: siteSettings.totalStorageGB || 1000 };
+      setStorage(freshStorage);
+      storageProviderMock.saveMetadataState(
+        [],
+        userWithTimestamp,
+        freshStorage,
+        [],
+        userRecord.id
+      );
+      setInitialFilesFilter('all');
+      setInitialFilesFolderId(null);
+      setCurrentTab('home');
+      setScreen('main');
+      return;
+    }
+
+    // Load scoped local vault & Firestore cloud files + recycle bin for returning users
     const scopedLocal = storageProviderMock.loadMetadataState(userRecord.id);
     const localFiles = scopedLocal.files || [];
     const localBin = scopedLocal.recycleBin || [];
@@ -1388,7 +1571,7 @@ export default function App() {
       setStorage(nextStorage);
       storageProviderMock.saveMetadataState(
         hydratedFiles,
-        authenticatedUser,
+        userWithTimestamp,
         nextStorage,
         hydratedBin,
         userRecord.id
@@ -1406,7 +1589,7 @@ export default function App() {
       setStorage(nextStorage);
       storageProviderMock.saveMetadataState(
         hydratedLocal,
-        authenticatedUser,
+        userWithTimestamp,
         nextStorage,
         hydratedBin,
         userRecord.id
@@ -1550,6 +1733,7 @@ export default function App() {
   // Bashar Cloud AI Thread Actions & Streaming Chat
   const persistAiThreadList = (nextThreads: AiChatThread[], changedThreadId?: string) => {
     const sorted = sortAiThreads(nextThreads);
+    aiThreadsRef.current = sorted;
     setAiThreads(sorted);
     saveAiThreadsToStorage(canonicalUserId, sorted);
     if (changedThreadId && canonicalUserId && canonicalUserId !== 'guest_user') {
@@ -1583,6 +1767,7 @@ export default function App() {
     if (streamingThreadId === threadId && aiAbortRef.current) {
       aiAbortRef.current.abort();
       aiAbortRef.current = null;
+      isAiStreamingRef.current = false;
       setIsAiStreaming(false);
       setStreamingThreadId(null);
     }
@@ -1593,6 +1778,7 @@ export default function App() {
       remaining = [fresh];
     }
     const sorted = sortAiThreads(remaining);
+    aiThreadsRef.current = sorted;
     setAiThreads(sorted);
     saveAiThreadsToStorage(canonicalUserId, sorted);
     if (activeAiThreadId === threadId) {
@@ -1609,10 +1795,12 @@ export default function App() {
   };
 
   const handleStopAiStreaming = () => {
+    userAbortedAiRef.current = true;
     if (aiAbortRef.current) {
       aiAbortRef.current.abort();
       aiAbortRef.current = null;
     }
+    isAiStreamingRef.current = false;
     setIsAiStreaming(false);
     setStreamingThreadId(null);
   };
@@ -1656,77 +1844,168 @@ export default function App() {
 
     const controller = new AbortController();
     aiAbortRef.current = controller;
+    userAbortedAiRef.current = false;
+    isAiStreamingRef.current = true;
     setIsAiStreaming(true);
     setStreamingThreadId(threadId);
     setAiErrorMsg(null);
 
+    const activeFilesList = filesRef.current;
+    const totalUsedBytes = activeFilesList.reduce((acc, f) => acc + (Number(f.sizeBytes) || 0), 0);
+    const usedText =
+      storage.usedGB >= 1
+        ? `${storage.usedGB} GB`
+        : totalUsedBytes > 0
+        ? formatBytes(totalUsedBytes)
+        : '0 B';
+
+    const requestBody = {
+      message: trimmed,
+      history: priorHistory,
+      mode,
+      userName: user.name,
+      attachment: attachment
+        ? {
+            name: attachment.name,
+            snippet: attachment.snippet,
+            imageDataUrl: attachment.imageDataUrl,
+            mimeType: attachment.mimeType,
+          }
+        : null,
+      cloudSummary: {
+        totalFiles: activeFilesList.length,
+        usedText,
+        totalLimitGB: storage.totalGB || 1000,
+        imagesCount: storage.imagesCount,
+        videosCount: storage.videosCount,
+        audiosCount: storage.audiosCount,
+        docsCount: storage.docsCount,
+        recentNames: activeFilesList.slice(0, 12).map((f) => f.name),
+      },
+    };
+
+    const applyStreamText = (replyText: string, usedModel: string) => {
+      setAiThreads((prev) => {
+        const updated = updateMessageInThread(prev, threadId, assistantMsgId, (m) => ({
+          ...m,
+          text: replyText,
+          modelUsed: usedModel || m.modelUsed,
+          isError: false,
+        }));
+        aiThreadsRef.current = updated;
+        return updated;
+      });
+    };
+
+    let firstChunkWatchdog: number | undefined;
+    let stalledStreamTimedOut = false;
+
     try {
+      const watchdogMs = mode === 'deep' ? 18000 : 12000;
+      firstChunkWatchdog = window.setTimeout(() => {
+        stalledStreamTimedOut = true;
+        controller.abort();
+      }, watchdogMs);
+
       const response = await fetch('/api/ai/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
-        body: JSON.stringify({
-          message: trimmed,
-          history: priorHistory,
-          mode,
-          userName: user.name,
-          attachment: attachment ? { name: attachment.name, snippet: attachment.snippet } : null,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       const contentType = response.headers.get('content-type') || '';
       if (!response.ok && !contentType.includes('text/event-stream')) {
+        if (firstChunkWatchdog) clearTimeout(firstChunkWatchdog);
         const errJson = await response.json().catch(() => ({}));
         throw new Error(errJson.error || `AI সার্ভার ত্রুটি (${response.status})`);
       }
 
-      if (!response.body) {
-        throw new Error('স্ট্রিম রেসপন্স পাওয়া যায়নি।');
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
       let fullReply = '';
       let modelUsed = '';
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      if (contentType.includes('application/json')) {
+        if (firstChunkWatchdog) clearTimeout(firstChunkWatchdog);
+        const jsonData = await response.json().catch(() => ({}));
+        if (jsonData.error) {
+          throw new Error(jsonData.error);
+        }
+        fullReply = typeof jsonData.reply === 'string' ? jsonData.reply : '';
+        modelUsed = typeof jsonData.model === 'string' ? jsonData.model : '';
+        if (fullReply) {
+          applyStreamText(fullReply, modelUsed);
+        }
+      } else if (response.body) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
 
-        buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split('\n\n');
-        buffer = events.pop() || '';
-
-        for (const rawEvent of events) {
-          const dataLines = rawEvent
-            .split('\n')
-            .filter((line) => line.startsWith('data:'))
-            .map((line) => line.slice(5).trim());
-          if (dataLines.length === 0) continue;
-
-          let parsed: { type?: string; text?: string; model?: string; error?: string } | null = null;
-          try {
-            parsed = JSON.parse(dataLines.join('\n'));
-          } catch {
-            continue;
+        const consumeEvents = (
+          parsedEvents: Array<{ type?: string; text?: string; model?: string; error?: string }>
+        ) => {
+          for (const parsed of parsedEvents) {
+            if (parsed.type === 'meta' && parsed.model) {
+              modelUsed = parsed.model;
+            } else if (parsed.type === 'chunk' && parsed.text) {
+              if (firstChunkWatchdog) {
+                clearTimeout(firstChunkWatchdog);
+                firstChunkWatchdog = undefined;
+              }
+              fullReply += parsed.text;
+              modelUsed = parsed.model || modelUsed;
+              applyStreamText(fullReply, modelUsed);
+            } else if (parsed.type === 'error') {
+              if (firstChunkWatchdog) clearTimeout(firstChunkWatchdog);
+              throw new Error(parsed.error || 'AI উত্তর তৈরিতে সমস্যা হয়েছে।');
+            }
           }
+        };
 
-          if (!parsed) continue;
-          if (parsed.type === 'meta' && parsed.model) {
-            modelUsed = parsed.model;
-          } else if (parsed.type === 'chunk' && parsed.text) {
-            fullReply += parsed.text;
-            modelUsed = parsed.model || modelUsed;
-            const updated = updateMessageInThread(aiThreadsRef.current, threadId, assistantMsgId, (m) => ({
-              ...m,
-              text: fullReply,
-              modelUsed: modelUsed || m.modelUsed,
-            }));
-            setAiThreads(updated);
-          } else if (parsed.type === 'error') {
-            throw new Error(parsed.error || 'AI উত্তর তৈরিতে সমস্যা হয়েছে।');
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const { events, remainder } = parseSseChunks(buffer, false);
+            buffer = remainder;
+            consumeEvents(events);
           }
+        } catch (readErr) {
+          if (!stalledStreamTimedOut) {
+            throw readErr;
+          }
+        }
+
+        if (buffer.trim() && !stalledStreamTimedOut) {
+          const { events } = parseSseChunks(buffer, true);
+          consumeEvents(events);
+        }
+      }
+
+      if (firstChunkWatchdog) {
+        clearTimeout(firstChunkWatchdog);
+        firstChunkWatchdog = undefined;
+      }
+
+      // Proxy-proof non-streaming JSON fallback if SSE yielded nothing or timed out waiting for first chunk
+      if (!fullReply.trim() && !userAbortedAiRef.current) {
+        const fallbackController = new AbortController();
+        aiAbortRef.current = fallbackController;
+        const fallbackRes = await fetch('/api/ai/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: fallbackController.signal,
+          body: JSON.stringify({ ...requestBody, stream: false }),
+        });
+        const fallbackJson = await fallbackRes.json().catch(() => ({}));
+        if (!fallbackRes.ok || fallbackJson.error) {
+          throw new Error(fallbackJson.error || `AI সার্ভার ত্রুটি (${fallbackRes.status})`);
+        }
+        if (typeof fallbackJson.reply === 'string' && fallbackJson.reply.trim()) {
+          fullReply = fallbackJson.reply;
+          modelUsed = fallbackJson.model || modelUsed;
+          applyStreamText(fullReply, modelUsed);
         }
       }
 
@@ -1737,7 +2016,11 @@ export default function App() {
       }));
       persistAiThreadList(finalized, threadId);
     } catch (err) {
-      if ((err as Error)?.name === 'AbortError') {
+      if (firstChunkWatchdog) {
+        clearTimeout(firstChunkWatchdog);
+        firstChunkWatchdog = undefined;
+      }
+      if ((err as Error)?.name === 'AbortError' && userAbortedAiRef.current) {
         persistAiThreadList(aiThreadsRef.current, threadId);
       } else {
         const errText = err instanceof Error ? err.message : 'AI সংযোগে সমস্যা হয়েছে।';
@@ -1750,11 +2033,48 @@ export default function App() {
         persistAiThreadList(withError, threadId);
       }
     } finally {
+      if (firstChunkWatchdog) clearTimeout(firstChunkWatchdog);
       aiAbortRef.current = null;
+      isAiStreamingRef.current = false;
       setIsAiStreaming(false);
       setStreamingThreadId(null);
     }
   };
+
+  // Admin Advertisements handlers
+  const handlePublishAnnouncement = (newAd: AdminAnnouncement) => {
+    setAnnouncements((prev) => {
+      const updated = sortAnnouncementsNewestFirst([newAd, ...prev]);
+      saveAnnouncementsToStorage(updated);
+      return updated;
+    });
+    firestoreService.saveAnnouncement(newAd).catch(() => {});
+  };
+
+  const handleDeleteAnnouncement = (adId: string) => {
+    setAnnouncements((prev) => {
+      const updated = prev.filter((a) => a.id !== adId);
+      saveAnnouncementsToStorage(updated);
+      return updated;
+    });
+    firestoreService.deleteAnnouncement(adId).catch(() => {});
+    setSyncToast('বিজ্ঞাপনটি সফলভাবে মুছে ফেলা হয়েছে');
+    setTimeout(() => setSyncToast(null), 2600);
+  };
+
+  const handleMarkNotificationsRead = () => {
+    const latestTs = announcements.reduce(
+      (max, ad) => Math.max(max, Number(ad.createdTimestamp) || 0),
+      Date.now()
+    );
+    setLastReadNotificationTs(latestTs);
+    saveLastReadNotificationTs(latestTs);
+  };
+
+  const unreadNotificationsCount = getUnreadAnnouncementCount(
+    announcements,
+    lastReadNotificationTs
+  );
 
   return (
     <PhoneContainer theme={theme}>
@@ -1778,6 +2098,7 @@ export default function App() {
           settings={siteSettings}
           users={registeredUsers}
           paymentRequests={paymentRequests}
+          announcements={announcements}
           onSaveSettings={(updated) => {
             setSiteSettings(updated);
             try {
@@ -1791,6 +2112,8 @@ export default function App() {
           onClearUserFiles={handleClearUserFiles}
           onApprovePayment={handleApprovePayment}
           onRejectPayment={handleRejectPayment}
+          onPublishAnnouncement={handlePublishAnnouncement}
+          onDeleteAnnouncement={handleDeleteAnnouncement}
           onBack={() => setScreen('main')}
         />
       ) : screen === 'payment' ? (
@@ -1812,6 +2135,8 @@ export default function App() {
         /* 4. Search Screen with Persistent Recent Searches */
         <SearchScreen
           files={files}
+          isLocked={isAccountLocked}
+          onOpenPayment={() => setScreen('payment')}
           onBack={() => setScreen('main')}
           onSelectFile={(f) => {
             if (!checkActionAllowed()) return;
@@ -1820,12 +2145,18 @@ export default function App() {
           }}
         />
       ) : screen === 'notifications' ? (
-        /* 5. Notifications Screen */
-        <NotificationsScreen onBack={() => setScreen('main')} />
+        /* 5. Notifications Screen (Admin Advertisements & Notices) */
+        <NotificationsScreen
+          announcements={announcements}
+          lastReadTimestamp={lastReadNotificationTs}
+          onMarkAllRead={handleMarkNotificationsRead}
+          theme={theme}
+          onBack={() => setScreen('main')}
+        />
       ) : screen === 'storage-analysis' ? (
         /* 6. Storage Analysis Screen */
         <StorageAnalysisScreen
-          storage={activeStorage}
+          storage={storage}
           onBack={() => setScreen('main')}
         />
       ) : screen === 'edit-profile' ? (
@@ -1836,7 +2167,7 @@ export default function App() {
           onSaveProfile={handleSaveProfile}
         />
       ) : screen === 'app-settings' ? (
-        /* 8. App Settings Screen with Expiration & 90% Storage Warning Simulation */
+        /* 8. App Settings Screen */
         <AppSettingsScreen
           onBack={() => setScreen('main')}
           onDeleteAccount={handleDeleteAccount}
@@ -1850,14 +2181,12 @@ export default function App() {
           lastSyncTime={lastSyncTime}
           isSyncing={isSyncing}
           onTriggerSync={() => performSync(false)}
-          simulatedExpired={simulatedExpired}
-          onToggleSimulatedExpired={(exp) => setSimulatedExpired(exp)}
-          simulatedStorageWarning={simulatedStorageWarning}
-          onToggleSimulatedStorageWarning={(warn) => setSimulatedStorageWarning(warn)}
           theme={theme}
           onToggleTheme={handleToggleTheme}
           orbitPreset={orbitPreset}
           onChangeOrbitPreset={(preset) => handleChangeOrbitPreset(preset, true)}
+          subscription={subscription}
+          onOpenPayment={() => setScreen('payment')}
         />
       ) : (
         /* 9. Main Tabs (Home, Bashar Cloud Ai, Files, Favourites, Me) */
@@ -1865,15 +2194,18 @@ export default function App() {
           <div className="flex-1 min-h-0 flex flex-col overflow-y-auto overflow-x-hidden">
             {currentTab === 'home' && (
               <HomeScreen
-                storage={activeStorage}
+                storage={storage}
                 files={files}
                 subscription={subscription}
                 websiteName={siteSettings.websiteName}
                 logoUrl={siteSettings.logoUrl}
                 onOpenSearch={() => setScreen('search')}
                 onOpenNotifications={() => setScreen('notifications')}
+                unreadNotificationsCount={unreadNotificationsCount}
                 onSelectCategory={handleSelectCategory}
-                onOpenRecycleBin={() => setIsRecycleBinOpen(true)}
+                onOpenRecycleBin={() => {
+                  if (checkActionAllowed()) setIsRecycleBinOpen(true);
+                }}
                 onOpenUpload={() => {
                   if (checkActionAllowed()) setIsFabOpen(true);
                 }}
@@ -1903,8 +2235,6 @@ export default function App() {
                   setInitialFilesFolderId(null);
                   setCurrentTab('files');
                 }}
-                orbitPreset={orbitPreset}
-                onChangeOrbitPreset={(preset) => handleChangeOrbitPreset(preset, true)}
               />
             )}
 
@@ -1980,6 +2310,8 @@ export default function App() {
             {currentTab === 'favourites' && (
               <FavouritesScreen
                 files={files}
+                isLocked={isAccountLocked}
+                onOpenPayment={() => setScreen('payment')}
                 onOpenSearch={() => setScreen('search')}
                 onToggleFavorite={handleToggleFavorite}
                 onPlayAudio={(f) => {
@@ -1994,7 +2326,7 @@ export default function App() {
             {currentTab === 'me' && (
               <ProfileScreen
                 user={user}
-                storage={activeStorage}
+                storage={storage}
                 subscription={subscription}
                 websiteName={siteSettings.websiteName}
                 onOpenEditProfile={() => setScreen('edit-profile')}
@@ -2053,6 +2385,11 @@ export default function App() {
       <FilePreviewModal
         file={previewFile}
         isOpen={!!previewFile}
+        isLocked={isAccountLocked}
+        onOpenPayment={() => {
+          setPreviewFile(null);
+          setScreen('payment');
+        }}
         onClose={() => setPreviewFile(null)}
         onToggleFavorite={handleToggleFavorite}
         onDeleteFile={handleDeleteFile}
@@ -2102,6 +2439,12 @@ export default function App() {
       <ZipArchiveModal
         file={selectedZipFile}
         isOpen={isZipModalOpen}
+        isLocked={isAccountLocked}
+        onOpenPayment={() => {
+          setIsZipModalOpen(false);
+          setSelectedZipFile(null);
+          setScreen('payment');
+        }}
         onClose={() => {
           setIsZipModalOpen(false);
           setSelectedZipFile(null);

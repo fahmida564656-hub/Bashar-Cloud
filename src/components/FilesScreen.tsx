@@ -332,6 +332,32 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
     }
   };
 
+  // Handle single download
+  const handleSingleDownload = (file: CloudFile, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setActiveMenuFileId(null);
+    if (!requireUnlocked('ডাউনলোড করতে')) return;
+    if (file.type === 'folder') return;
+
+    let href = file.url || file.thumbnail || '';
+    let shouldRevoke = false;
+    if (!href && typeof file.content === 'string') {
+      const blob = new Blob([file.content], { type: 'text/plain;charset=utf-8' });
+      href = URL.createObjectURL(blob);
+      shouldRevoke = true;
+    }
+    if (!href) return;
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = file.name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    if (shouldRevoke) {
+      setTimeout(() => URL.revokeObjectURL(href), 1500);
+    }
+  };
+
   // Handle single move
   const handleOpenSingleMove = (fileId: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
@@ -381,6 +407,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
   };
 
   const handleExecuteBulkFavorite = (makeFav: boolean) => {
+    if (!requireUnlocked('পরিবর্তন করতে')) return;
     if (selectedIds.size === 0) return;
     const ids = Array.from(selectedIds);
     if (onBulkFavorite) {
@@ -780,22 +807,24 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
 
       {/* Lock banner if expired */}
       {isLocked && (
-        <div className="bg-gradient-to-r from-rose-950/70 to-[#2c1319] border border-rose-500/50 rounded-2xl p-3 mb-3 flex items-center justify-between shadow-lg animate-in slide-in-from-top-2">
-          <div className="flex items-center gap-2.5">
+        <div className="bg-gradient-to-r from-rose-950/75 to-[#2c1319] border border-rose-500/50 rounded-2xl p-3 mb-3 flex items-center justify-between gap-2.5 shadow-lg animate-in slide-in-from-top-2">
+          <div className="flex items-center gap-2.5 min-w-0">
             <Lock className="w-5 h-5 text-rose-400 shrink-0" />
-            <div>
-              <h4 className="text-xs font-bold text-rose-200">১ মাসের ফ্রি ট্রায়াল শেষ হয়েছে</h4>
-              <p className="text-[10px] text-slate-300">ফাইল দেখতে ও আনলক করতে ১০০ টাকা পেমেন্ট সম্পন্ন করুন</p>
+            <div className="min-w-0">
+              <h4 className="text-xs font-bold text-rose-200">৩০ দিনের ফ্রি ট্রায়াল শেষ হয়েছে • লকড</h4>
+              <p className="text-[10px] text-slate-300 leading-snug">
+                আপলোড, ডাউনলোড, দেখা ও নাম পরিবর্তন করতে ১০০ টাকা পেমেন্ট করে আনলক করুন
+              </p>
             </div>
           </div>
           {onOpenPayment && (
             <button
               type="button"
               onClick={onOpenPayment}
-              className="bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-bold px-3 py-1.5 rounded-xl shadow-md shrink-0 flex items-center gap-1 cursor-pointer"
+              className="bg-rose-600 hover:bg-rose-500 text-white ai-solid-text-white text-[11px] font-bold px-3 py-1.5 rounded-xl shadow-md shrink-0 flex items-center gap-1 cursor-pointer"
             >
               <Sparkles className="w-3 h-3 text-amber-300" />
-              <span>আনলক করুন</span>
+              <span>৳১০০ আনলক</span>
             </button>
           )}
         </div>
@@ -903,6 +932,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
+                          if (!requireUnlocked('পরিবর্তন করতে')) return;
                           onToggleFavorite(file.id);
                         }}
                         className="p-1 text-slate-400 hover:text-amber-400 transition-colors cursor-pointer"
@@ -937,6 +967,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   setActiveMenuFileId(null);
+                                  if (!requireUnlocked('ফাইল দেখতে')) return;
                                   setSelectedInfoFile(file);
                                 }}
                                 className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-[#182944] text-slate-200 flex items-center gap-2"
@@ -944,6 +975,17 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                                 <Info className="w-3.5 h-3.5 text-amber-400" />
                                 <span>তথ্য ও ভার্সন ইতিহাস</span>
                               </button>
+
+                              {file.type !== 'folder' && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleSingleDownload(file, e)}
+                                  className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-[#182944] text-slate-200 flex items-center gap-2"
+                                >
+                                  <Download className="w-3.5 h-3.5 text-indigo-400" />
+                                  <span>Download</span>
+                                </button>
+                              )}
 
                               <button
                                 type="button"
@@ -1010,8 +1052,18 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                     </div>
                   </div>
 
-                  {/* Visual Preview / Thumbnail Area */}
-                  {file.type === 'image' ? (
+                  {/* Visual Preview / Thumbnail Area (Locked overlay when expired) */}
+                  {isLocked ? (
+                    <div className="w-full h-24 rounded-xl overflow-hidden bg-[#121624] mb-2 relative flex flex-col items-center justify-center border border-rose-500/35 text-rose-300">
+                      <div className="w-9 h-9 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center mb-1">
+                        <Lock className="w-4.5 h-4.5 text-rose-400" />
+                      </div>
+                      <span className="text-[10px] font-bold text-rose-200">লকড (Locked)</span>
+                      <span className="absolute bottom-1.5 right-1.5 bg-black/70 text-[9px] text-white font-medium px-1.5 py-0.5 rounded">
+                        {file.formattedSize}
+                      </span>
+                    </div>
+                  ) : file.type === 'image' ? (
                     <div className="w-full h-24 rounded-xl overflow-hidden bg-[#09111f] mb-2 relative flex items-center justify-center border border-[#1b2a42] group-hover:border-blue-500/50 transition-colors">
                       {(file.thumbnail || file.url) ? (
                         <img
@@ -1114,7 +1166,11 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                       {isSelected && <Check className="w-3.5 h-3.5" />}
                     </button>
 
-                    {file.type === 'image' && (file.url || file.thumbnail) ? (
+                    {isLocked ? (
+                      <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 bg-rose-500/15 border border-rose-500/35 text-rose-400">
+                        <Lock className="w-4.5 h-4.5" />
+                      </div>
+                    ) : file.type === 'image' && (file.url || file.thumbnail) ? (
                       <div className="w-10 h-10 rounded-xl overflow-hidden shrink-0 border border-[#1b2a42] bg-[#09111f]">
                         <img src={file.url || file.thumbnail} alt={file.name} className="w-full h-full object-cover" />
                       </div>
@@ -1153,6 +1209,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
+                        if (!requireUnlocked('পরিবর্তন করতে')) return;
                         onToggleFavorite(file.id);
                       }}
                       className="p-1 text-slate-400 hover:text-amber-400 transition-colors cursor-pointer"
@@ -1183,6 +1240,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setActiveMenuFileId(null);
+                                if (!requireUnlocked('ফাইল দেখতে')) return;
                                 setSelectedInfoFile(file);
                               }}
                               className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-[#182944] text-slate-200 flex items-center gap-2"
@@ -1190,6 +1248,17 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                               <Info className="w-3.5 h-3.5 text-amber-400" />
                               <span>তথ্য ও ভার্সন ইতিহাস</span>
                             </button>
+
+                            {file.type !== 'folder' && (
+                              <button
+                                type="button"
+                                onClick={(e) => handleSingleDownload(file, e)}
+                                className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-[#182944] text-slate-200 flex items-center gap-2"
+                              >
+                                <Download className="w-3.5 h-3.5 text-indigo-400" />
+                                <span>Download</span>
+                              </button>
+                            )}
 
                             <button
                               type="button"
@@ -1314,6 +1383,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
               <button
                 type="button"
                 onClick={() => {
+                  if (!requireUnlocked('মুভ করতে')) return;
                   setSingleMoveFileId(null);
                   setIsMoveModalOpen(true);
                 }}
@@ -1363,6 +1433,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                 type="button"
                 disabled={!selectionSummary.canRename}
                 onClick={() => {
+                  if (!requireUnlocked('নাম পরিবর্তন করতে')) return;
                   const target = selectionSummary.selectedFiles[0];
                   if (target) handleOpenRename(target);
                 }}
@@ -1389,7 +1460,10 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
 
               <button
                 type="button"
-                onClick={() => setPermanentDeleteTargetIds(Array.from(selectedIds))}
+                onClick={() => {
+                  if (!requireUnlocked('ডিলিট করতে')) return;
+                  setPermanentDeleteTargetIds(Array.from(selectedIds));
+                }}
                 className="flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-xl bg-gradient-to-b from-rose-600 to-red-700 hover:from-rose-500 hover:to-red-600 border border-rose-400/50 text-white ai-solid-text-white shadow-md transition-all active:scale-95 cursor-pointer"
                 title="Permanently Delete Forever"
               >

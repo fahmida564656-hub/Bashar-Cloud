@@ -21,6 +21,11 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
+    // Admin advertisements / notifications synced globally
+    match /announcements/{adId} {
+      allow read, write: if true;
+    }
+
     // User profile document and subcollections
     match /users/{userId} {
       allow read, write: if true;

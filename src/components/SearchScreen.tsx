@@ -13,6 +13,8 @@ import {
   Trash2,
   CornerDownLeft,
   Archive,
+  Lock,
+  Sparkles,
 } from 'lucide-react';
 import { CloudFile, FileType } from '../types';
 import {
@@ -24,11 +26,19 @@ import {
 
 interface SearchScreenProps {
   files: CloudFile[];
+  isLocked?: boolean;
+  onOpenPayment?: () => void;
   onBack: () => void;
   onSelectFile?: (file: CloudFile) => void;
 }
 
-export const SearchScreen: React.FC<SearchScreenProps> = ({ files, onBack, onSelectFile }) => {
+export const SearchScreen: React.FC<SearchScreenProps> = ({
+  files,
+  isLocked = false,
+  onOpenPayment,
+  onBack,
+  onSelectFile,
+}) => {
   const [query, setQuery] = useState('');
   const [selectedQuickFilter, setSelectedQuickFilter] = useState<FileType | null>(null);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
@@ -260,6 +270,29 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({ files, onBack, onSel
         </div>
       </div>
 
+      {/* Lock Banner */}
+      {isLocked && (
+        <div className="bg-gradient-to-r from-rose-950/75 to-[#2c1319] border border-rose-500/50 rounded-2xl p-3 mb-4 flex items-center justify-between gap-2.5 shadow-lg">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <Lock className="w-4.5 h-4.5 text-rose-400 shrink-0" />
+            <div className="min-w-0">
+              <h4 className="text-xs font-bold text-rose-200">৩০ দিনের ফ্রি ট্রায়াল শেষ হয়েছে • লকড</h4>
+              <p className="text-[10px] text-slate-300">ফাইল দেখতে ১০০ টাকা পেমেন্ট করে আনলক করুন</p>
+            </div>
+          </div>
+          {onOpenPayment && (
+            <button
+              type="button"
+              onClick={onOpenPayment}
+              className="bg-rose-600 hover:bg-rose-500 text-white ai-solid-text-white text-[11px] font-bold px-3 py-1.5 rounded-xl shrink-0 flex items-center gap-1 cursor-pointer"
+            >
+              <Sparkles className="w-3 h-3 text-amber-300" />
+              <span>৳১০০ আনলক</span>
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Search Tips card */}
       {showTips ? (
         <div className="bg-[#121c2c] border border-[#1f3049] rounded-2xl p-4 space-y-2.5">
@@ -289,6 +322,10 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({ files, onBack, onSel
               <div
                 key={f.id}
                 onClick={() => {
+                  if (isLocked) {
+                    onOpenPayment?.();
+                    return;
+                  }
                   if (query.trim()) {
                     commitSearch(query);
                   }
@@ -298,7 +335,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({ files, onBack, onSel
               >
                 <div className="flex items-center gap-3">
                   <div className="w-9 h-9 rounded-lg bg-[#182740] flex items-center justify-center">
-                    {renderFileIcon(f.type)}
+                    {isLocked ? <Lock className="w-4 h-4 text-rose-400" /> : renderFileIcon(f.type)}
                   </div>
                   <div>
                     <h5 className="text-xs font-semibold text-white">{f.name}</h5>

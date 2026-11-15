@@ -8,7 +8,12 @@ interface AuthScreenProps {
   websiteName?: string;
   logoUrl?: string;
   registeredUsers: RegisteredUser[];
-  onSuccess: (user: UserProfile, passwordPlain?: string, cloudRecord?: RegisteredUser) => void;
+  onSuccess: (
+    user: UserProfile,
+    passwordPlain?: string,
+    cloudRecord?: RegisteredUser,
+    isNewSignup?: boolean
+  ) => void;
   onUserRegistered?: (user: RegisteredUser) => void;
 }
 
@@ -19,8 +24,17 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
   onSuccess,
   onUserRegistered,
 }) => {
-  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
+  const [authMode, setAuthMode] = useState<'signin' | 'signup'>(() =>
+    registeredUsers.length === 0 ? 'signup' : 'signin'
+  );
+  const [userToggledMode, setUserToggledMode] = useState(false);
   const [loginMethod, setLoginMethod] = useState<'phone' | 'email'>('phone');
+
+  React.useEffect(() => {
+    if (!userToggledMode) {
+      setAuthMode(registeredUsers.length === 0 ? 'signup' : 'signin');
+    }
+  }, [registeredUsers.length, userToggledMode]);
 
   // Form Fields - starts clean with NO demo values
   const [fullName, setFullName] = useState('');
@@ -154,7 +168,7 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
           onUserRegistered(newRecord);
         }
 
-        onSuccess(newUserProfile, password, newRecord);
+        onSuccess(newUserProfile, password, newRecord, true);
         return;
       } else {
         // ==========================================
@@ -200,7 +214,6 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
         });
 
         // Step B: If not found in local memory, query directly from Cloud Firestore!
-        // This solves: "একটি ওয়েবসাইটে সাইন আপ করে অন্য ওয়েবসাইটে লগইন করলে আসে না বলে এই সমস্যা"
         if (!foundUser) {
           try {
             const cloudUser = await firestoreService.findRegisteredUser(searchIdentifier);
@@ -236,7 +249,7 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
           avatarUrl: foundUser.avatarUrl,
         };
 
-        onSuccess(loggedInUser, password, foundUser);
+        onSuccess(loggedInUser, password, foundUser, false);
         return;
       }
     } catch (err: any) {
@@ -247,12 +260,12 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
   };
 
   return (
-    <div className="flex-1 flex flex-col px-6 py-7 text-white overflow-y-auto">
-      <div className="my-auto flex flex-col gap-5">
+    <div className="flex-1 flex flex-col px-5 py-4 text-white overflow-y-auto">
+      <div className="my-auto flex flex-col gap-3">
       {/* Top Branding Header */}
       <div className="flex flex-col items-center text-center">
-        <div className="mb-2.5 relative group">
-          <div className="w-16 h-16 rounded-2xl overflow-hidden ring-2 ring-blue-500/50 shadow-2xl bg-[#111e33] flex items-center justify-center">
+        <div className="mb-2 relative">
+          <div className="w-14 h-14 rounded-2xl overflow-hidden ring-2 ring-blue-500/45 shadow-xl bg-[#111e33] flex items-center justify-center">
             <img
               src={logoUrl || '/assets/aistudio/0a4ee58c-1d1d-4faa-8126-cfb8779227ba_f85ac4d0.png'}
               alt={websiteName}
@@ -260,33 +273,28 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
             />
           </div>
         </div>
-        <h1 className="text-2xl font-black tracking-tight text-white mb-0.5">
+        <h1 className="text-xl font-extrabold tracking-tight text-white mb-0.5">
           {websiteName}
         </h1>
-        <p className="text-[11px] text-slate-300 leading-relaxed max-w-[290px]">
-          নিরাপদ ক্লাউড স্টোরেজ • যেকোনো ওয়েবসাইট ও ডিভাইস থেকে একই একাউন্টে লগইন
+        <p className="text-[11.5px] text-slate-400 leading-snug max-w-[300px]">
+          নিরাপদ ব্যক্তিগত ক্লাউড স্টোরেজ ও Bashar Cloud AI — ৩০ দিনের ফ্রি ট্রায়ালসহ শুরু করুন
         </p>
-
-        {/* Global Cross-Site Cloud Badge */}
-        <div className="mt-2.5 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-[10px] font-medium text-emerald-300 shadow-sm">
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-          <span>সার্বজনীন ক্লাউড সিঙ্ক সক্রিয় (Multi-domain Sync)</span>
-        </div>
       </div>
 
       {/* Main Authentication Container */}
-      <div className="w-full mt-4">
-        {/* Brand New Modern Sign In / Sign Up Bar ("নতুন করে সাইন আপ বার হবে") */}
-        <div className="orbit-card bg-[#0d1626] rounded-2xl p-1.5 mb-4 shadow-lg flex items-center">
+      <div className="w-full mt-1">
+        {/* Clean Sign In / Sign Up Switcher */}
+        <div className="orbit-card bg-[#0d1626] rounded-2xl p-1.5 mb-3 shadow-lg flex items-center gap-1">
           <button
             type="button"
             onClick={() => {
+              setUserToggledMode(true);
               setAuthMode('signin');
               setErrorMessage('');
             }}
-            className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs font-bold transition-all duration-300 ${
+            className={`flex-1 min-h-[44px] flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${
               authMode === 'signin'
-                ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-900/50 scale-[1.02]'
+                ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white ai-solid-text-white shadow-md'
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
@@ -297,12 +305,13 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
           <button
             type="button"
             onClick={() => {
+              setUserToggledMode(true);
               setAuthMode('signup');
               setErrorMessage('');
             }}
-            className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs font-bold transition-all duration-300 ${
+            className={`flex-1 min-h-[44px] flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${
               authMode === 'signup'
-                ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-900/50 scale-[1.02]'
+                ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white ai-solid-text-white shadow-md'
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
@@ -312,22 +321,19 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
         </div>
 
         {/* Section Heading */}
-        <div className="mb-3.5">
-          <h2 className="text-base font-bold tracking-tight text-white flex items-center gap-2">
-            <span>{authMode === 'signin' ? 'অ্যাকাউন্টে প্রবেশ করুন' : 'নতুন অ্যাকাউন্ট তৈরি করুন'}</span>
-            <span className="text-[10px] bg-blue-500/20 text-blue-300 border border-blue-500/30 px-2 py-0.5 rounded-full font-semibold">
-              {authMode === 'signin' ? 'Universal Login' : 'Direct Sign Up'}
-            </span>
+        <div className="mb-2.5">
+          <h2 className="text-base font-bold tracking-tight text-white">
+            {authMode === 'signin' ? 'অ্যাকাউন্টে প্রবেশ করুন' : 'নতুন অ্যাকাউন্ট তৈরি করুন'}
           </h2>
           <p className="text-[11px] text-slate-400 mt-0.5">
             {authMode === 'signin'
-              ? 'যেকোনো ওয়েবসাইটে নিবন্ধিত নম্বর/ইমেইল এবং পাসওয়ার্ড দিয়ে সরাসরি প্রবেশ করুন'
-              : 'সব তথ্য দিয়ে সাইন আপ করুন। একবার খুললেই সব ওয়েবসাইটে কার্যকর থাকবে।'}
+              ? 'নিবন্ধিত মোবাইল নম্বর বা ইমেইল ও পাসওয়ার্ড দিয়ে লগইন করুন'
+              : 'নাম, মোবাইল নম্বর, ইমেইল ও পাসওয়ার্ড দিয়ে নতুন অ্যাকাউন্ট খুলুন'}
           </p>
         </div>
 
         {/* Form */}
-        <form onSubmit={handleSubmit} className="space-y-3">
+        <form onSubmit={handleSubmit} className="space-y-2.5">
           {/* Sign Up: Optional Avatar / Profile Picture Upload */}
           {authMode === 'signup' && (
             <div className="flex items-center gap-3.5 bg-[#121c2d] border border-[#20324e] rounded-2xl p-3">

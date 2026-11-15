@@ -620,6 +620,8 @@ export const RenameFileModal: React.FC<RenameFileModalProps> = ({
 interface ZipArchiveModalProps {
   file: CloudFile | null;
   isOpen: boolean;
+  isLocked?: boolean;
+  onOpenPayment?: () => void;
   onClose: () => void;
   onExtractAll?: (file: CloudFile) => void;
 }
@@ -627,6 +629,8 @@ interface ZipArchiveModalProps {
 export const ZipArchiveModal: React.FC<ZipArchiveModalProps> = ({
   file,
   isOpen,
+  isLocked = false,
+  onOpenPayment,
   onClose,
   onExtractAll,
 }) => {
@@ -637,6 +641,11 @@ export const ZipArchiveModal: React.FC<ZipArchiveModalProps> = ({
   const entries = file.archiveEntries || [];
 
   const handleExtract = () => {
+    if (isLocked) {
+      onClose();
+      onOpenPayment?.();
+      return;
+    }
     if (entries.length === 0) return;
     if (onExtractAll) {
       onExtractAll(file);
@@ -703,8 +712,15 @@ export const ZipArchiveModal: React.FC<ZipArchiveModalProps> = ({
         <div className="pt-3 border-t border-[#1f2f4a] flex items-center gap-2">
           {file.url && (
             <a
-              href={file.url}
-              download={file.name}
+              href={isLocked ? '#unlock' : file.url}
+              download={isLocked ? undefined : file.name}
+              onClick={(e) => {
+                if (isLocked) {
+                  e.preventDefault();
+                  onClose();
+                  onOpenPayment?.();
+                }
+              }}
               className="flex-1 bg-[#1b2b46] hover:bg-[#233859] border border-[#2e4771] text-slate-200 font-semibold py-2.5 px-3 rounded-xl text-xs transition-colors flex items-center justify-center gap-1.5"
             >
               <Download className="w-4 h-4 text-sky-400" />

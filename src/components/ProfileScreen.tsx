@@ -12,6 +12,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { UserProfile, StorageUsage, UserSubscription } from '../types';
+import { toBengaliDigits } from '../utils/subscription';
 
 interface ProfileScreenProps {
   user: UserProfile;
@@ -127,9 +128,9 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 {isApproved
                   ? 'অনুমোদিত • আনলিমিটেড ব্যবহার সক্রিয়'
                   : isExpired
-                  ? '১ মাসের ট্রায়াল শেষ • ১০০ টাকা পেমেন্ট করুন'
+                  ? '৩০ দিনের ট্রায়াল শেষ • আনলক করতে ১০০ টাকা পেমেন্ট করুন'
                   : subscription
-                  ? `ফ্রি ট্রায়াল: আর ${subscription.daysRemaining} দিন বাকি • ১০০ টাকা এককালীন`
+                  ? `ফ্রি ট্রায়াল: আর ${toBengaliDigits(subscription.daysRemaining)} দিন বাকি • ১০০ টাকা এককালীন`
                   : 'বিকাশ বা নগদ সেন্ড মানি করে আনলক করুন'}
               </p>
             </div>

@@ -47,7 +47,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ language, code }) => {
           )}
         </button>
       </div>
-      <pre className="p-3.5 overflow-x-auto text-[12.5px] leading-relaxed font-mono text-slate-100">
+      <pre className="p-3.5 overflow-x-auto text-[12px] leading-relaxed font-mono text-slate-100">
         <code>{code}</code>
       </pre>
     </div>
@@ -55,7 +55,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ language, code }) => {
 };
 
 function renderInlineFormatting(line: string, isLight: boolean): React.ReactNode[] {
-  const tokenRegex = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g;
+  const tokenRegex = /(`[^`]+`|\[[^\]]+\]\(https?:\/\/[^)\s]+\)|\*\*[^*]+\*\*|~~[^~]+~~|\*[^*]+\*)/g;
   const parts = line.split(tokenRegex);
 
   return parts.map((part, idx) => {
@@ -74,11 +74,34 @@ function renderInlineFormatting(line: string, isLight: boolean): React.ReactNode
         </code>
       );
     }
+    const linkMatch = part.match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/);
+    if (linkMatch) {
+      return (
+        <a
+          key={idx}
+          href={linkMatch[2]}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={`underline underline-offset-2 font-medium ${
+            isLight ? 'text-blue-600 hover:text-blue-700' : 'text-sky-400 hover:text-sky-300'
+          }`}
+        >
+          {linkMatch[1]}
+        </a>
+      );
+    }
     if (part.startsWith('**') && part.endsWith('**') && part.length >= 4) {
       return (
         <strong key={idx} className="font-bold">
           {part.slice(2, -2)}
         </strong>
+      );
+    }
+    if (part.startsWith('~~') && part.endsWith('~~') && part.length >= 4) {
+      return (
+        <del key={idx} className="opacity-70">
+          {part.slice(2, -2)}
+        </del>
       );
     }
     if (part.startsWith('*') && part.endsWith('*') && part.length >= 3) {
@@ -90,6 +113,18 @@ function renderInlineFormatting(line: string, isLight: boolean): React.ReactNode
     }
     return <React.Fragment key={idx}>{part}</React.Fragment>;
   });
+}
+
+function splitTableRow(line: string): string[] {
+  const trimmed = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+  return trimmed.split('|').map((cell) => cell.trim());
+}
+
+function isTableSeparatorLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed.includes('|') && !trimmed.includes('-')) return false;
+  const cells = splitTableRow(trimmed);
+  return cells.length >= 2 && cells.every((c) => /^:?-{2,}:?$/.test(c));
 }
 
 function renderTextSegment(segment: string, isLight: boolean, keyPrefix: string): React.ReactNode {
@@ -123,12 +158,82 @@ function renderTextSegment(segment: string, isLight: boolean, keyPrefix: string)
     listItems = null;
   };
 
-  lines.forEach((rawLine, index) => {
+  for (let index = 0; index < lines.length; index++) {
+    const rawLine = lines[index];
     const trimmed = rawLine.trim();
 
     if (!trimmed) {
       flushList(index);
-      return;
+      continue;
+    }
+
+    // Markdown Table Detection (Header row + separator row)
+    if (
+      trimmed.includes('|') &&
+      index + 1 < lines.length &&
+      isTableSeparatorLine(lines[index + 1])
+    ) {
+      flushList(index);
+      const headers = splitTableRow(trimmed);
+      const rows: string[][] = [];
+      let scan = index + 2;
+      while (scan < lines.length) {
+        const rowLine = lines[scan].trim();
+        if (!rowLine || !rowLine.includes('|')) break;
+        rows.push(splitTableRow(rowLine));
+        scan++;
+      }
+
+      nodes.push(
+        <div
+          key={`${keyPrefix}-tbl-${index}`}
+          className={`my-2.5 overflow-x-auto rounded-xl border ${
+            isLight ? 'border-slate-200 bg-white' : 'border-[#233758] bg-[#0b1322]'
+          }`}
+        >
+          <table className="w-full text-left border-collapse text-[12px]">
+            <thead>
+              <tr
+                className={
+                  isLight
+                    ? 'bg-slate-100 text-slate-900 border-b border-slate-200'
+                    : 'bg-[#14223a] text-slate-100 border-b border-[#233758]'
+                }
+              >
+                {headers.map((h, hIdx) => (
+                  <th key={hIdx} className="px-2.5 py-2 font-bold whitespace-nowrap">
+                    {renderInlineFormatting(h, isLight)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className={isLight ? 'divide-y divide-slate-200' : 'divide-y divide-[#1a2b46]'}>
+              {rows.map((cells, rIdx) => (
+                <tr
+                  key={rIdx}
+                  className={
+                    isLight
+                      ? rIdx % 2 === 1
+                        ? 'bg-slate-50/70'
+                        : 'bg-white'
+                      : rIdx % 2 === 1
+                      ? 'bg-[#0e1829]'
+                      : 'bg-transparent'
+                  }
+                >
+                  {headers.map((_, cIdx) => (
+                    <td key={cIdx} className="px-2.5 py-1.5 align-top leading-snug">
+                      {renderInlineFormatting(cells[cIdx] ?? '', isLight)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+      index = scan - 1;
+      continue;
     }
 
     const bulletMatch = rawLine.match(/^\s*[-*•]\s+(.+)$/);
@@ -136,7 +241,7 @@ function renderTextSegment(segment: string, isLight: boolean, keyPrefix: string)
       if (listItems && listItems.ordered) flushList(index);
       if (!listItems) listItems = { ordered: false, items: [] };
       listItems.items.push(bulletMatch[1]);
-      return;
+      continue;
     }
 
     const orderedMatch = rawLine.match(/^\s*\d+[.)]\s+(.+)$/);
@@ -144,7 +249,7 @@ function renderTextSegment(segment: string, isLight: boolean, keyPrefix: string)
       if (listItems && !listItems.ordered) flushList(index);
       if (!listItems) listItems = { ordered: true, items: [] };
       listItems.items.push(orderedMatch[1]);
-      return;
+      continue;
     }
 
     flushList(index);
@@ -156,7 +261,16 @@ function renderTextSegment(segment: string, isLight: boolean, keyPrefix: string)
           className={`my-3 ${isLight ? 'border-slate-200' : 'border-slate-700/70'}`}
         />
       );
-      return;
+      continue;
+    }
+
+    if (trimmed.startsWith('#### ')) {
+      nodes.push(
+        <h5 key={`${keyPrefix}-h5-${index}`} className="text-[13px] font-bold mt-2.5 mb-1">
+          {renderInlineFormatting(trimmed.slice(5), isLight)}
+        </h5>
+      );
+      continue;
     }
 
     if (trimmed.startsWith('### ')) {
@@ -165,7 +279,7 @@ function renderTextSegment(segment: string, isLight: boolean, keyPrefix: string)
           {renderInlineFormatting(trimmed.slice(4), isLight)}
         </h4>
       );
-      return;
+      continue;
     }
 
     if (trimmed.startsWith('## ')) {
@@ -174,7 +288,7 @@ function renderTextSegment(segment: string, isLight: boolean, keyPrefix: string)
           {renderInlineFormatting(trimmed.slice(3), isLight)}
         </h3>
       );
-      return;
+      continue;
     }
 
     if (trimmed.startsWith('# ')) {
@@ -183,7 +297,7 @@ function renderTextSegment(segment: string, isLight: boolean, keyPrefix: string)
           {renderInlineFormatting(trimmed.slice(2), isLight)}
         </h2>
       );
-      return;
+      continue;
     }
 
     if (trimmed.startsWith('> ')) {
@@ -197,7 +311,7 @@ function renderTextSegment(segment: string, isLight: boolean, keyPrefix: string)
           {renderInlineFormatting(trimmed.slice(2), isLight)}
         </blockquote>
       );
-      return;
+      continue;
     }
 
     nodes.push(
@@ -205,7 +319,7 @@ function renderTextSegment(segment: string, isLight: boolean, keyPrefix: string)
         {renderInlineFormatting(rawLine, isLight)}
       </p>
     );
-  });
+  }
 
   flushList(lines.length);
   return nodes;
@@ -214,9 +328,9 @@ function renderTextSegment(segment: string, isLight: boolean, keyPrefix: string)
 export const MarkdownMessage: React.FC<MarkdownMessageProps> = ({ text, isLight = false }) => {
   if (!text) return null;
 
-  // Split out fenced code blocks cleanly
+  // Split out fenced code blocks cleanly (handle optional CR + spaces after lang)
   const segments: Array<{ type: 'text' | 'code'; content: string; language?: string }> = [];
-  const codeBlockRegex = /```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g;
+  const codeBlockRegex = /```([a-zA-Z0-9_-]*)[ \t]*\r?\n([\s\S]*?)```/g;
   let lastIdx = 0;
   let match: RegExpExecArray | null;
 

@@ -117,6 +117,23 @@
         "ownerId": { "type": "string", "maxLength": 128 }
       },
       "required": ["id", "title", "pinned", "createdAt", "updatedAt"]
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "Admin-published advertisements and user notifications stored globally",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 180 },
+        "message": { "type": "string", "maxLength": 2000 },
+        "category": { "type": "string", "enum": ["offer", "important", "update", "general"] },
+        "imageUrl": { "type": "string", "maxLength": 260000 },
+        "actionLabel": { "type": "string", "maxLength": 80 },
+        "actionUrl": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "maxLength": 80 },
+        "createdTimestamp": { "type": "number" }
+      },
+      "required": ["id", "title", "message", "category", "createdTimestamp"]
     }
   },
   "firestore": {
@@ -131,6 +148,10 @@
     "/payment_requests/{paymentId}": {
       "schema": { "$ref": "#/entities/PaymentRequest" },
       "description": "Stores Bkash and Nagad payment transactions submitted by users"
+    },
+    "/announcements/{adId}": {
+      "schema": { "$ref": "#/entities/Announcement" },
+      "description": "Stores admin-published advertisements and notices synced to user notifications"
     },
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/User" },

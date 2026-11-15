@@ -43,6 +43,7 @@ export interface UserProfile {
   phone: string;
   email: string;
   avatarUrl?: string;
+  registeredTimestamp?: number;
 }
 
 export interface StorageUsage {
@@ -123,6 +124,8 @@ export interface AiAttachment {
   id: string;
   name: string;
   snippet: string;
+  imageDataUrl?: string;
+  mimeType?: string;
 }
 
 export interface AiMessage {
@@ -145,6 +148,20 @@ export interface AiChatThread {
   updatedAt: number;
   mode: AiMode;
   messages: AiMessage[];
+}
+
+export type AnnouncementCategory = 'offer' | 'important' | 'update' | 'general';
+
+export interface AdminAnnouncement {
+  id: string;
+  title: string;
+  message: string;
+  category: AnnouncementCategory;
+  imageUrl?: string;
+  actionLabel?: string;
+  actionUrl?: string;
+  createdAt: string;
+  createdTimestamp: number;
 }
 
 export type ScreenMode = 

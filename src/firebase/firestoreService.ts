@@ -19,6 +19,7 @@ import {
   SiteSettings,
   PaymentRequest,
   AiChatThread,
+  AdminAnnouncement,
 } from '../types';
 import {
   sanitizeFileForPersistence,
@@ -26,6 +27,10 @@ import {
   fitFilePayloadToFirestoreLimit,
   stripUndefinedDeep,
 } from '../utils/fileVault';
+import {
+  normalizeAnnouncementCategory,
+  sortAnnouncementsNewestFirst,
+} from '../utils/announcements';
 
 export const firestoreService = {
   // ==========================================
@@ -71,7 +76,7 @@ export const firestoreService = {
   /**
    * Fetch all registered users from Firestore
    */
-  async getRegisteredUsers(): Promise<RegisteredUser[]> {
+  async getRegisteredUsersWithMeta(): Promise<{ users: RegisteredUser[]; fromCache: boolean } | null> {
     const path = 'registered_users';
     try {
       const snapshot = await getDocs(collection(db, 'registered_users'));
@@ -94,11 +99,16 @@ export const firestoreService = {
           lastTrxId: d.lastTrxId || '',
         });
       });
-      return list;
+      return { users: list, fromCache: snapshot.metadata.fromCache };
     } catch (error) {
       handleFirestoreError(error, OperationType.LIST, path);
-      return [];
+      return null;
     }
+  },
+
+  async getRegisteredUsers(): Promise<RegisteredUser[]> {
+    const result = await this.getRegisteredUsersWithMeta();
+    return result ? result.users : [];
   },
 
   /**
@@ -782,5 +792,99 @@ export const firestoreService = {
         handleFirestoreError(error, OperationType.GET, path);
       }
     );
+  },
+
+  // ==========================================
+  // 6. ADMIN ANNOUNCEMENTS / ADVERTISEMENTS
+  // ==========================================
+
+  async saveAnnouncement(ad: AdminAnnouncement): Promise<void> {
+    if (!ad?.id) return;
+    const path = `announcements/${ad.id}`;
+    try {
+      const payload = stripUndefinedDeep({
+        id: ad.id,
+        title: (ad.title || '').slice(0, 180),
+        message: (ad.message || '').slice(0, 2000),
+        category: normalizeAnnouncementCategory(ad.category),
+        imageUrl: sanitizeFirestoreMediaUrl(ad.imageUrl, 240_000),
+        actionLabel: ad.actionLabel ? ad.actionLabel.slice(0, 80) : '',
+        actionUrl: ad.actionUrl ? ad.actionUrl.slice(0, 500) : '',
+        createdAt: ad.createdAt || '',
+        createdTimestamp: Number(ad.createdTimestamp) || Date.now(),
+        updatedAt: new Date().toISOString(),
+      });
+      await setDoc(doc(db, 'announcements', ad.id), payload, { merge: true });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, path);
+    }
+  },
+
+  async getAnnouncements(): Promise<AdminAnnouncement[] | null> {
+    const path = 'announcements';
+    try {
+      const snap = await getDocs(collection(db, 'announcements'));
+      const list: AdminAnnouncement[] = [];
+      snap.forEach((docSnap) => {
+        const d = docSnap.data();
+        list.push({
+          id: docSnap.id,
+          title: d.title || '',
+          message: d.message || '',
+          category: normalizeAnnouncementCategory(d.category),
+          imageUrl: d.imageUrl || undefined,
+          actionLabel: d.actionLabel || undefined,
+          actionUrl: d.actionUrl || undefined,
+          createdAt: d.createdAt || '',
+          createdTimestamp: Number(d.createdTimestamp) || 0,
+        });
+      });
+      return sortAnnouncementsNewestFirst(list);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, path);
+      return null;
+    }
+  },
+
+  subscribeToAnnouncements(
+    onData: (list: AdminAnnouncement[], meta?: { fromCache: boolean }) => void
+  ): () => void {
+    const path = 'announcements';
+    return onSnapshot(
+      collection(db, 'announcements'),
+      (snapshot) => {
+        const list: AdminAnnouncement[] = [];
+        snapshot.forEach((docSnap) => {
+          const d = docSnap.data();
+          list.push({
+            id: docSnap.id,
+            title: d.title || '',
+            message: d.message || '',
+            category: normalizeAnnouncementCategory(d.category),
+            imageUrl: d.imageUrl || undefined,
+            actionLabel: d.actionLabel || undefined,
+            actionUrl: d.actionUrl || undefined,
+            createdAt: d.createdAt || '',
+            createdTimestamp: Number(d.createdTimestamp) || 0,
+          });
+        });
+        onData(sortAnnouncementsNewestFirst(list), {
+          fromCache: snapshot.metadata.fromCache,
+        });
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.GET, path);
+      }
+    );
+  },
+
+  async deleteAnnouncement(adId: string): Promise<void> {
+    if (!adId) return;
+    const path = `announcements/${adId}`;
+    try {
+      await deleteDoc(doc(db, 'announcements', adId));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, path);
+    }
   },
 };
