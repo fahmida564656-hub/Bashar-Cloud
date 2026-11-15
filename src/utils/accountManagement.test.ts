@@ -1,7 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { removeUserFromList, isStateClean } from './accountManagement';
-import { RegisteredUser, CloudFile, StorageUsage } from '../types';
+import {
+  removeUserFromList,
+  isStateClean,
+  normalizeAccountPhone,
+  doesPaymentBelongToUser,
+  filterOutUserPayments,
+} from './accountManagement';
+import { RegisteredUser, CloudFile, StorageUsage, PaymentRequest } from '../types';
 import { initialFiles, initialRecycleBin, initialStorageUsage, defaultSiteSettings } from '../data/initialData';
 
 test('removeUserFromList correctly removes target user while keeping others', () => {
@@ -76,3 +82,94 @@ test('initial state contains strictly zero sample files and enforces admin passw
   assert.equal(isStateClean(initialFiles, initialStorageUsage), true);
   assert.equal(isStateClean([sampleFile], nonEmptyStorage), false);
 });
+
+test('filterOutUserPayments deletes all payment records matching deleted user ID, email, or phone while preserving others', () => {
+  assert.equal(normalizeAccountPhone('+8801711-223344'), '1711223344');
+  assert.equal(normalizeAccountPhone('123'), '');
+
+  const payments: PaymentRequest[] = [
+    {
+      id: 'pay-by-email',
+      userId: 'Target@Test.com',
+      userName: 'Target User',
+      userEmail: 'target@test.com',
+      userPhone: '',
+      method: 'bkash',
+      senderPhone: '01711223344',
+      transactionId: 'TRX111111',
+      amount: 100,
+      submittedAt: 'Mar 12, 2026',
+      submittedTimestamp: 1773200000000,
+      status: 'pending',
+    },
+    {
+      id: 'pay-by-phone-sender',
+      userId: 'guest-user',
+      userName: 'Target User',
+      userEmail: '',
+      userPhone: '+8801711223344',
+      method: 'nagad',
+      senderPhone: '01711223344',
+      transactionId: 'TRX222222',
+      amount: 100,
+      submittedAt: 'Mar 12, 2026',
+      submittedTimestamp: 1773200050000,
+      status: 'approved',
+    },
+    {
+      id: 'pay-by-uid',
+      userId: 'user-target-99',
+      userName: 'Target User',
+      userEmail: '',
+      userPhone: '',
+      method: 'bkash',
+      senderPhone: '01900000000',
+      transactionId: 'TRX333333',
+      amount: 100,
+      submittedAt: 'Mar 12, 2026',
+      submittedTimestamp: 1773200090000,
+      status: 'pending',
+    },
+    {
+      id: 'pay-other-user',
+      userId: 'other@test.com',
+      userName: 'Other User',
+      userEmail: 'other@test.com',
+      userPhone: '01855667788',
+      method: 'bkash',
+      senderPhone: '01855667788',
+      transactionId: 'TRX999999',
+      amount: 100,
+      submittedAt: 'Mar 12, 2026',
+      submittedTimestamp: 1773200100000,
+      status: 'approved',
+    },
+  ];
+
+  assert.equal(
+    doesPaymentBelongToUser(payments[0], {
+      id: 'user-target-99',
+      email: 'target@test.com',
+      phone: '01711223344',
+    }),
+    true
+  );
+
+  assert.equal(
+    doesPaymentBelongToUser(payments[3], {
+      id: 'user-target-99',
+      email: 'target@test.com',
+      phone: '01711223344',
+    }),
+    false
+  );
+
+  const remaining = filterOutUserPayments(payments, {
+    id: 'user-target-99',
+    email: 'target@test.com',
+    phone: '01711223344',
+  });
+  assert.equal(remaining.length, 1);
+  assert.equal(remaining[0].id, 'pay-other-user');
+});
+

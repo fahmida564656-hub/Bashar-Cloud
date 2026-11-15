@@ -54,9 +54,14 @@ html.light .bg-\[\#101928\],
 html.light .bg-\[\#0e1726\],
 html.light .bg-\[\#0d1626\],
 html.light .bg-\[\#121c2d\],
+html.light .bg-\[\#142236\],
 html.light .bg-\[\#131e30\] {
   background-color: #f8fafc !important;
   color: #0f172a !important;
+}
+
+html.light .divide-\[\#1c2d47\] > :not(:last-child) {
+  border-color: #e2e8f0 !important;
 }
 
 html.light .hover\:bg-\[\#162338\]:hover,

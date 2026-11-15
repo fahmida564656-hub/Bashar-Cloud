@@ -6,8 +6,6 @@ import {
   onSnapshot,
   getDocs,
   getDoc,
-  query,
-  where,
 } from 'firebase/firestore';
 import { db } from './config';
 import { handleFirestoreError, OperationType } from './errorHandler';
@@ -31,6 +29,10 @@ import {
   normalizeAnnouncementCategory,
   sortAnnouncementsNewestFirst,
 } from '../utils/announcements';
+import {
+  doesPaymentBelongToUser,
+  PaymentOwnerTarget,
+} from '../utils/accountManagement';
 
 export const firestoreService = {
   // ==========================================
@@ -272,11 +274,65 @@ export const firestoreService = {
   },
 
   /**
-   * Delete registered user and completely wipe all their cloud files and data
+   * Delete every payment_request document belonging to a user (matched by id, email, or phone)
    */
-  async deleteRegisteredUserAndData(userId: string): Promise<void> {
+  async deleteUserPaymentRequests(target: PaymentOwnerTarget): Promise<void> {
+    try {
+      const snap = await getDocs(collection(db, 'payment_requests'));
+      const payDeletes: Promise<void>[] = [];
+      snap.forEach((pDoc) => {
+        const data = pDoc.data() as PaymentRequest;
+        if (doesPaymentBelongToUser({ ...data, id: data.id || pDoc.id }, target)) {
+          payDeletes.push(deleteDoc(pDoc.ref));
+        }
+      });
+      if (payDeletes.length > 0) {
+        await Promise.all(payDeletes);
+      }
+    } catch (err) {
+      console.warn('Could not delete user payment requests:', err);
+    }
+  },
+
+  /**
+   * Delete every document in payment_requests
+   */
+  async deleteAllPaymentRequests(): Promise<void> {
+    try {
+      const snap = await getDocs(collection(db, 'payment_requests'));
+      const deletes: Promise<void>[] = [];
+      snap.forEach((pDoc) => {
+        deletes.push(deleteDoc(pDoc.ref));
+      });
+      if (deletes.length > 0) {
+        await Promise.all(deletes);
+      }
+    } catch (err) {
+      console.warn('Error deleting all payment requests:', err);
+    }
+  },
+
+  /**
+   * Delete registered user and completely wipe all their cloud files, storage, chats, and payment data
+   */
+  async deleteRegisteredUserAndData(
+    userId: string,
+    fallbackContact?: { email?: string; phone?: string }
+  ): Promise<void> {
     const path = `registered_users/${userId}`;
     try {
+      // 0. Capture user contact metadata before deleting doc so cascade payment deletion matches email/phone too
+      let targetEmail = fallbackContact?.email || '';
+      let targetPhone = fallbackContact?.phone || '';
+      try {
+        const userSnap = await getDoc(doc(db, 'registered_users', userId));
+        if (userSnap.exists()) {
+          const ud = userSnap.data();
+          if (!targetEmail && typeof ud.email === 'string') targetEmail = ud.email;
+          if (!targetPhone && typeof ud.phone === 'string') targetPhone = ud.phone;
+        }
+      } catch {}
+
       // 1. Delete registered user document
       await deleteDoc(doc(db, 'registered_users', userId));
 
@@ -306,15 +362,12 @@ export const firestoreService = {
         await deleteDoc(doc(db, 'users', userId));
       } catch {}
 
-      // 4. Delete user payment requests
-      try {
-        const paySnap = await getDocs(
-          query(collection(db, 'payment_requests'), where('userId', '==', userId))
-        );
-        const payDeletes: Promise<void>[] = [];
-        paySnap.forEach((pDoc) => payDeletes.push(deleteDoc(pDoc.ref)));
-        await Promise.all(payDeletes);
-      } catch {}
+      // 4. Cascade delete all matching payment requests (by userId, email, or phone)
+      await this.deleteUserPaymentRequests({
+        id: userId,
+        email: targetEmail,
+        phone: targetPhone,
+      });
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, path);
     }
@@ -341,14 +394,19 @@ export const firestoreService = {
   },
 
   /**
-   * Delete all registered accounts and their files from Firestore
+   * Delete all registered accounts, files, and payment requests from Firestore
    */
   async deleteAllRegisteredAccounts(): Promise<void> {
     try {
       const snap = await getDocs(collection(db, 'registered_users'));
       for (const d of snap.docs) {
-        await this.deleteRegisteredUserAndData(d.id);
+        const data = d.data();
+        await this.deleteRegisteredUserAndData(d.id, {
+          email: typeof data.email === 'string' ? data.email : undefined,
+          phone: typeof data.phone === 'string' ? data.phone : undefined,
+        });
       }
+      await this.deleteAllPaymentRequests();
     } catch (error) {
       console.warn('Error deleting all accounts:', error);
     }
@@ -432,20 +490,27 @@ export const firestoreService = {
     }
   },
 
-  async getPaymentRequests(): Promise<PaymentRequest[]> {
+  async getPaymentRequestsWithMeta(): Promise<{ payments: PaymentRequest[]; fromCache: boolean } | null> {
     try {
       const snapshot = await getDocs(collection(db, 'payment_requests'));
       const list: PaymentRequest[] = [];
       snapshot.forEach((docSnap) => {
         list.push(docSnap.data() as PaymentRequest);
       });
-      return list;
+      return { payments: list, fromCache: snapshot.metadata.fromCache };
     } catch {
-      return [];
+      return null;
     }
   },
 
-  subscribeToPaymentRequests(onData: (list: PaymentRequest[]) => void): () => void {
+  async getPaymentRequests(): Promise<PaymentRequest[]> {
+    const res = await this.getPaymentRequestsWithMeta();
+    return res ? res.payments : [];
+  },
+
+  subscribeToPaymentRequests(
+    onData: (list: PaymentRequest[], meta?: { fromCache: boolean }) => void
+  ): () => void {
     return onSnapshot(
       collection(db, 'payment_requests'),
       (snapshot) => {
@@ -453,7 +518,7 @@ export const firestoreService = {
         snapshot.forEach((docSnap) => {
           list.push(docSnap.data() as PaymentRequest);
         });
-        onData(list);
+        onData(list, { fromCache: snapshot.metadata.fromCache });
       },
       () => {}
     );

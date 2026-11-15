@@ -70,6 +70,7 @@ import {
   removeDeletedFileIds,
   clearDeletedFileIds,
 } from './utils/fileVault';
+import { filterOutUserPayments } from './utils/accountManagement';
 import { formatBytes } from './utils/uploadFlow';
 import {
   createAiThread,
@@ -667,23 +668,25 @@ export default function App() {
     });
 
     // 3. Synchronize Payment Requests across all websites
-    firestoreService.getPaymentRequests().then((cloudPayments) => {
-      if (cloudPayments && cloudPayments.length > 0) {
-        setPaymentRequests(cloudPayments);
+    firestoreService.getPaymentRequestsWithMeta().then((metaRes) => {
+      if (metaRes && (!metaRes.fromCache || metaRes.payments.length > 0)) {
+        setPaymentRequests(metaRes.payments);
         try {
-          localStorage.setItem('bashar_cloud_payment_requests', JSON.stringify(cloudPayments));
+          localStorage.setItem('bashar_cloud_payment_requests', JSON.stringify(metaRes.payments));
         } catch {}
       }
     });
 
-    const unsubscribePayments = firestoreService.subscribeToPaymentRequests((cloudPayments) => {
-      if (cloudPayments && cloudPayments.length > 0) {
-        setPaymentRequests(cloudPayments);
-        try {
-          localStorage.setItem('bashar_cloud_payment_requests', JSON.stringify(cloudPayments));
-        } catch {}
+    const unsubscribePayments = firestoreService.subscribeToPaymentRequests(
+      (cloudPayments, meta) => {
+        if (!meta?.fromCache || cloudPayments.length > 0) {
+          setPaymentRequests(cloudPayments);
+          try {
+            localStorage.setItem('bashar_cloud_payment_requests', JSON.stringify(cloudPayments));
+          } catch {}
+        }
       }
-    });
+    );
 
     // 4. Synchronize Admin Advertisements / Announcements across all devices & users
     firestoreService.getAnnouncements().then((cloudAds) => {
@@ -820,15 +823,15 @@ export default function App() {
       persistVaultState(updated);
 
       if (canonicalUserId && canonicalUserId !== 'guest_user') {
-        await Promise.all(
+        void Promise.all(
           finalizedFiles.map((f) =>
             firestoreService.saveFile(canonicalUserId, f).catch(() => {})
           )
         );
       }
 
-      setSyncToast(`সফলভাবে ${finalizedFiles.length}টি ফাইল স্থায়ীভাবে সেভ হয়েছে!`);
-      setTimeout(() => setSyncToast(null), 3500);
+      setSyncToast(`সফলভাবে ${finalizedFiles.length}টি ফাইল দ্রুত সেভ হয়েছে!`);
+      setTimeout(() => setSyncToast(null), 3000);
     }
 
     if (navigateToFiles) {
@@ -1347,20 +1350,42 @@ export default function App() {
   // Admin & User Account Deletion: Wipes user, all cloud files, storage, recycle bin, and payment data
   const handleDeleteUser = async (userId: string) => {
     const userToDelete = registeredUsers.find((u) => u.id === userId);
+    const isCurrentById = canonicalUserId === userId;
+    const targetContact = {
+      id: userId,
+      email: userToDelete?.email || (isCurrentById ? user.email : ''),
+      phone: userToDelete?.phone || (isCurrentById ? user.phone : ''),
+    };
+
     setRegisteredUsers((prev) => prev.filter((u) => u.id !== userId));
     try {
       const remaining = registeredUsers.filter((u) => u.id !== userId);
       localStorage.setItem('bashar_cloud_registered_users', JSON.stringify(remaining));
     } catch {}
+
+    // Cascade delete any payments belonging to this account immediately in local state & localStorage
+    setPaymentRequests((prev) => {
+      const remainingPayments = filterOutUserPayments(prev, targetContact);
+      try {
+        localStorage.setItem('bashar_cloud_payment_requests', JSON.stringify(remainingPayments));
+      } catch {}
+      return remainingPayments;
+    });
+
     storageProviderMock.clearUserLocalVault(userId);
     try {
       localStorage.removeItem(`bashar_cloud_trial_start_${userId}`);
     } catch {}
-    await firestoreService.deleteRegisteredUserAndData(userId).catch(() => {});
+    await firestoreService
+      .deleteRegisteredUserAndData(userId, {
+        email: targetContact.email,
+        phone: targetContact.phone,
+      })
+      .catch(() => {});
 
     // If currently active user was deleted, log out and reset session to clean slate
     const isCurrent =
-      canonicalUserId === userId ||
+      isCurrentById ||
       (userToDelete && (
         (user.email && user.email.toLowerCase() === userToDelete.email.toLowerCase()) ||
         (user.phone && cleanPhone(user.phone) === cleanPhone(userToDelete.phone))
@@ -1380,16 +1405,18 @@ export default function App() {
       setScreen('welcome-email');
       auth.signOut().catch(() => {});
     }
-    setSyncToast('অ্যাকাউন্ট ও সমস্ত ডাটা সফলভাবে মুছে ফেলা হয়েছে');
+    setSyncToast('অ্যাকাউন্ট, পেমেন্ট ও সমস্ত ডাটা সফলভাবে মুছে ফেলা হয়েছে');
     setTimeout(() => setSyncToast(null), 3000);
   };
 
-  // Delete all accounts and data completely
+  // Delete all accounts, payment requests, and data completely
   const handleDeleteAllUsers = async () => {
     registeredUsers.forEach((u) => storageProviderMock.clearUserLocalVault(u.id));
     setRegisteredUsers([]);
+    setPaymentRequests([]);
     try {
       localStorage.removeItem('bashar_cloud_registered_users');
+      localStorage.removeItem('bashar_cloud_payment_requests');
     } catch {}
     await firestoreService.deleteAllRegisteredAccounts().catch(() => {});
     await clearAllFileBlobs().catch(() => {});
@@ -1401,7 +1428,7 @@ export default function App() {
     storageProviderMock.saveMetadataState([], initialUserProfile, initialStorageUsage, []);
     setScreen('welcome-email');
     auth.signOut().catch(() => {});
-    setSyncToast('সকল অ্যাকাউন্ট ও ক্লাউড ডাটা সফলভাবে মুছে ফেলা হয়েছে');
+    setSyncToast('সকল অ্যাকাউন্ট, পেমেন্ট ও ক্লাউড ডাটা সফলভাবে মুছে ফেলা হয়েছে');
     setTimeout(() => setSyncToast(null), 3000);
   };
 
@@ -1444,6 +1471,21 @@ export default function App() {
       await handleDeleteUser(canonicalUserId);
       return;
     }
+
+    const fallbackTarget = {
+      id: canonicalUserId,
+      email: user.email,
+      phone: user.phone,
+    };
+    setPaymentRequests((prev) => {
+      const remaining = filterOutUserPayments(prev, fallbackTarget);
+      try {
+        localStorage.setItem('bashar_cloud_payment_requests', JSON.stringify(remaining));
+      } catch {}
+      return remaining;
+    });
+    await firestoreService.deleteUserPaymentRequests(fallbackTarget).catch(() => {});
+
     setUser(initialUserProfile);
     setFiles([]);
     setRecycleBin([]);

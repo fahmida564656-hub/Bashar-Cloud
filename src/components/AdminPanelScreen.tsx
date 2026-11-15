@@ -21,13 +21,11 @@ import {
   CheckCircle2,
   XCircle,
   Copy,
-  Clock,
   Smartphone,
   AlertTriangle,
   Megaphone,
   Gift,
   Send,
-  ExternalLink,
   X,
 } from 'lucide-react';
 import {
@@ -42,10 +40,9 @@ import { compressImageToSafeDataUrl } from '../utils/fileVault';
 import {
   ANNOUNCEMENT_CATEGORY_META,
   buildAnnouncement,
-  isSafeExternalUrl,
-  normalizeAnnouncementCategory,
   sortAnnouncementsNewestFirst,
 } from '../utils/announcements';
+import { AdminAnnouncementDashboard } from './AdminAnnouncementDashboard';
 
 interface AdminPanelScreenProps {
   settings: SiteSettings;
@@ -98,7 +95,7 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
   const [showAdminPassword, setShowAdminPassword] = useState<boolean>(false);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState<string>('');
 
-  // Advertisements / Announcements form & archive state
+  // Advertisements / Announcements form state
   const [adTitle, setAdTitle] = useState<string>('');
   const [adMessage, setAdMessage] = useState<string>('');
   const [adCategory, setAdCategory] = useState<AnnouncementCategory>('offer');
@@ -106,8 +103,6 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
   const [adActionLabel, setAdActionLabel] = useState<string>('');
   const [adActionUrl, setAdActionUrl] = useState<string>('');
   const [adFormError, setAdFormError] = useState<string>('');
-  const [adSearchQuery, setAdSearchQuery] = useState<string>('');
-  const [confirmDeleteAdId, setConfirmDeleteAdId] = useState<string | null>(null);
 
   // Search & Filter states
   const [userSearchQuery, setUserSearchQuery] = useState<string>('');
@@ -207,17 +202,6 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
     () => sortAnnouncementsNewestFirst(announcements || []),
     [announcements]
   );
-
-  const filteredAnnouncements = sortedAnnouncements.filter((ad) => {
-    const q = adSearchQuery.toLowerCase().trim();
-    if (!q) return true;
-    const catLabel = ANNOUNCEMENT_CATEGORY_META[normalizeAnnouncementCategory(ad.category)].bnLabel;
-    return (
-      ad.title.toLowerCase().includes(q) ||
-      ad.message.toLowerCase().includes(q) ||
-      catLabel.toLowerCase().includes(q)
-    );
-  });
 
   const handleAdBannerUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -622,137 +606,11 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
             </form>
           </div>
 
-          {/* Card 2: Persistent Saved Ads Archive */}
-          <div className="bg-[#121c2d] border border-[#1f3049] rounded-2xl p-4 shadow-xl space-y-3">
-            <div className="flex items-center justify-between pb-2 border-b border-[#1b2b42]">
-              <div className="flex items-center gap-2">
-                <Bell className="w-4.5 h-4.5 text-sky-400 shrink-0" />
-                <div>
-                  <h3 className="text-sm font-bold text-white">জমা থাকা সকল বিজ্ঞাপন</h3>
-                  <p className="text-[11px] text-slate-400">
-                    প্রকাশিত বিজ্ঞাপনসমূহ স্থায়ীভাবে সংরক্ষিত থাকে — চাইলে ডিলিট করতে পারবেন
-                  </p>
-                </div>
-              </div>
-              <span className="text-[11px] font-bold bg-blue-500/20 text-sky-300 border border-blue-500/30 px-2.5 py-0.5 rounded-full shrink-0 tabular-nums">
-                মোট {sortedAnnouncements.length}টি
-              </span>
-            </div>
-
-            {sortedAnnouncements.length > 2 && (
-              <div className="relative flex items-center bg-[#142134] border border-[#223654] rounded-xl px-3 py-2 text-xs">
-                <Search className="w-3.5 h-3.5 text-slate-400 mr-2 shrink-0" />
-                <input
-                  type="text"
-                  value={adSearchQuery}
-                  onChange={(e) => setAdSearchQuery(e.target.value)}
-                  placeholder="জমা থাকা বিজ্ঞাপন খুঁজুন..."
-                  className="w-full bg-transparent text-white placeholder-slate-500 focus:outline-none"
-                />
-              </div>
-            )}
-
-            {filteredAnnouncements.length === 0 ? (
-              <div className="text-center py-8 text-xs text-slate-400 bg-[#142134]/35 rounded-xl border border-[#20324e]/50 px-4 space-y-1">
-                <p className="font-semibold text-slate-300">
-                  {adSearchQuery.trim()
-                    ? 'খোঁজার সাথে কোনো বিজ্ঞাপন মেলেনি।'
-                    : 'এখনো কোনো বিজ্ঞাপন জমা নেই।'}
-                </p>
-                <p className="text-[11px] text-slate-400">
-                  উপরের ফর্ম থেকে বিজ্ঞাপন দিলে এখানে স্থায়ীভাবে জমা থাকবে এবং ইউজারদের নোটিফিকেশনে যাবে।
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {filteredAnnouncements.map((ad) => {
-                  const cat = normalizeAnnouncementCategory(ad.category);
-                  const meta = ANNOUNCEMENT_CATEGORY_META[cat];
-                  const hasSafeUrl = isSafeExternalUrl(ad.actionUrl);
-
-                  return (
-                    <div
-                      key={ad.id}
-                      className="bg-[#152338] border border-[#233859] rounded-2xl overflow-hidden shadow-md text-xs"
-                    >
-                      <div className={`h-1 w-full bg-gradient-to-r ${meta.accentBar}`} />
-
-                      {ad.imageUrl && (
-                        <img
-                          src={ad.imageUrl}
-                          alt={ad.title}
-                          className="w-full h-32 object-cover border-b border-[#1f324f]"
-                        />
-                      )}
-
-                      <div className="p-3.5 space-y-2">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0 space-y-1">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span
-                                className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${meta.badgeDark}`}
-                              >
-                                {meta.bnLabel}
-                              </span>
-                              <span className="text-[10px] text-slate-400 flex items-center gap-1 tabular-nums">
-                                <Clock className="w-3 h-3" />
-                                <span>{ad.createdAt}</span>
-                              </span>
-                            </div>
-                            <h4 className="text-sm font-bold text-white leading-snug">{ad.title}</h4>
-                          </div>
-
-                          {confirmDeleteAdId === ad.id ? (
-                            <div className="flex items-center gap-1 shrink-0">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  onDeleteAnnouncement(ad.id);
-                                  setConfirmDeleteAdId(null);
-                                }}
-                                className="min-h-[34px] px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white ai-solid-text-white text-[11px] font-bold cursor-pointer"
-                              >
-                                নিশ্চিত
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setConfirmDeleteAdId(null)}
-                                className="min-h-[34px] px-2 py-1 rounded-lg bg-[#1d2e49] text-slate-300 text-[11px] font-semibold cursor-pointer"
-                              >
-                                বাতিল
-                              </button>
-                            </div>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => setConfirmDeleteAdId(ad.id)}
-                              className="min-h-[34px] px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-[11px] font-bold flex items-center gap-1 shrink-0 cursor-pointer transition-colors"
-                              title="বিজ্ঞাপনটি ডিলিট করুন"
-                            >
-                              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-                              <span>ডিলিট</span>
-                            </button>
-                          )}
-                        </div>
-
-                        <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-line">
-                          {ad.message}
-                        </p>
-
-                        {hasSafeUrl && (
-                          <div className="pt-1 flex items-center gap-1.5 text-[11px] text-sky-300 truncate">
-                            <ExternalLink className="w-3 h-3 shrink-0" />
-                            <span className="font-semibold">{ad.actionLabel || 'বিস্তারিত দেখুন'}:</span>
-                            <span className="truncate font-mono text-slate-400">{ad.actionUrl}</span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+          {/* Card 2: Dedicated Scrollable Announcement Dashboard Table */}
+          <AdminAnnouncementDashboard
+            announcements={announcements}
+            onDeleteAnnouncement={onDeleteAnnouncement}
+          />
         </div>
       )}
 

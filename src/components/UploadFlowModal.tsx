@@ -88,8 +88,10 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [isCommitting, setIsCommitting] = useState<boolean>(false);
   const [savedBatchCount, setSavedBatchCount] = useState<number>(0);
-  const [uploadSpeedMs] = useState<number>(180); // snappy smooth progress tick
   const committedIdsRef = useRef<Set<string>>(new Set());
+  const processingIdsRef = useRef<Set<string>>(new Set());
+  const builtFilesMapRef = useRef<Map<string, CloudFile>>(new Map());
+  const uploadStartedAtRef = useRef<number>(Date.now());
 
   // Hidden input for "Upload More"
   const uploadMoreInputRef = useRef<HTMLInputElement>(null);
@@ -99,6 +101,8 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
     if (!isOpen) return;
 
     committedIdsRef.current = new Set();
+    processingIdsRef.current = new Set();
+    builtFilesMapRef.current = new Map();
     setSavedBatchCount(0);
 
     if (initialFiles && initialFiles.length > 0) {
@@ -126,50 +130,83 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
     setFolders(fresh);
   }, [existingFolders]);
 
-  // Upload Progress Engine (Simulates multi-file upload progress smoothly)
+  // Fast Parallel Upload Engine: processes all pending files concurrently with zero artificial timer lag
   useEffect(() => {
     if (!isOpen || currentStep !== 4 || isPaused) return;
 
-    const interval = setInterval(() => {
-      setQueue((prevQueue) => {
-        // Find first item that is not 'done' and not 'failed'
-        const activeIndex = prevQueue.findIndex((item) => item.status !== 'done' && item.status !== 'failed');
-        if (activeIndex === -1) {
-          clearInterval(interval);
-          return prevQueue; // All completed
-        }
+    const pendingItems = queue.filter(
+      (item) =>
+        item.status === 'preparing' &&
+        !processingIdsRef.current.has(item.id)
+    );
+    if (pendingItems.length === 0) return;
 
-        const activeItem = prevQueue[activeIndex];
-        const nextQueue = [...prevQueue];
+    if (uploadStartedAtRef.current === 0) {
+      uploadStartedAtRef.current = Date.now();
+    }
 
-        if (activeItem.status === 'preparing') {
-          nextQueue[activeIndex] = {
-            ...activeItem,
-            status: 'uploading',
-            progress: 25,
-          };
-        } else if (activeItem.status === 'uploading') {
-          const nextProgress = activeItem.progress + 38;
-          if (nextProgress >= 100) {
-            nextQueue[activeIndex] = {
-              ...activeItem,
-              status: 'done',
-              progress: 100,
-            };
+    const pendingSet = new Set(pendingItems.map((i) => i.id));
+    pendingItems.forEach((i) => processingIdsRef.current.add(i.id));
+
+    setQueue((prev) =>
+      prev.map((item) =>
+        pendingSet.has(item.id)
+          ? { ...item, status: 'uploading', progress: 50 }
+          : item
+      )
+    );
+
+    const baseTime = Date.now();
+    void Promise.all(
+      pendingItems.map(async (item, idx) => {
+        try {
+          const uniqueId = `uploaded-${baseTime}-${idx}-${Math.random().toString(36).slice(2, 6)}`;
+          let builtFile: CloudFile;
+          if (item.fileObj) {
+            builtFile = await buildCloudFileFromBrowserFile(item.fileObj, {
+              id: uniqueId,
+              parentFolderId: destination.id,
+              uploaderName: user.name,
+              typeOverride: item.type,
+            });
           } else {
-            nextQueue[activeIndex] = {
-              ...activeItem,
-              progress: nextProgress,
+            builtFile = {
+              id: uniqueId,
+              name: item.name,
+              type: item.type,
+              sizeBytes: item.sizeBytes,
+              formattedSize: item.formattedSize,
+              date: new Date().toLocaleDateString('en-US', {
+                month: 'short',
+                day: 'numeric',
+                year: 'numeric',
+              }),
+              isFavorite: false,
+              parentFolderId: destination.id,
             };
           }
+
+          builtFilesMapRef.current.set(item.id, builtFile);
+          setQueue((prev) =>
+            prev.map((qItem) =>
+              qItem.id === item.id
+                ? { ...qItem, status: 'done', progress: 100 }
+                : qItem
+            )
+          );
+        } catch (err) {
+          console.error('Fast upload item build failed:', err);
+          setQueue((prev) =>
+            prev.map((qItem) =>
+              qItem.id === item.id
+                ? { ...qItem, status: 'failed', progress: 0 }
+                : qItem
+            )
+          );
         }
-
-        return nextQueue;
-      });
-    }, uploadSpeedMs);
-
-    return () => clearInterval(interval);
-  }, [isOpen, currentStep, isPaused, uploadSpeedMs]);
+      })
+    );
+  }, [isOpen, currentStep, isPaused, queue, destination.id, user.name]);
 
   const buildAndCommitItems = async (
     itemsToCommit: UploadQueueItem[],
@@ -190,14 +227,24 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
       const baseTime = Date.now();
       const finalFiles: CloudFile[] = await Promise.all(
         uncommitted.map(async (item, idx) => {
+          const alreadyBuilt = builtFilesMapRef.current.get(item.id);
+          if (alreadyBuilt) {
+            return {
+              ...alreadyBuilt,
+              parentFolderId: destination.id,
+            };
+          }
+
           const uniqueId = `uploaded-${baseTime}-${idx}-${Math.random().toString(36).slice(2, 6)}`;
           if (item.fileObj) {
-            return await buildCloudFileFromBrowserFile(item.fileObj, {
+            const built = await buildCloudFileFromBrowserFile(item.fileObj, {
               id: uniqueId,
               parentFolderId: destination.id,
               uploaderName: user.name,
               typeOverride: item.type,
             });
+            builtFilesMapRef.current.set(item.id, built);
+            return built;
           }
 
           return {
@@ -231,11 +278,11 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
     }
   };
 
-  // Auto-commit files permanently to IndexedDB + localStorage + Firestore the moment they finish uploading!
+  // Auto-commit files permanently to IndexedDB + localStorage + Firestore immediately when done
   useEffect(() => {
     if (!isOpen || currentStep !== 4 || queue.length === 0 || isCommitting) return;
-    const allFinished = queue.every((i) => i.status === 'done');
-    if (!allFinished) return;
+    const allSettled = queue.every((i) => i.status === 'done' || i.status === 'failed');
+    if (!allSettled) return;
 
     const uncommittedDone = queue.filter((i) => i.status === 'done' && !committedIdsRef.current.has(i.id));
     if (uncommittedDone.length > 0) {

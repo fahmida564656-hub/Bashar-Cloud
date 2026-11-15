@@ -406,11 +406,16 @@ export function formatTotalBytesUsed(totalBytes: number): string {
 // BROWSER INDEXEDDB BLOB VAULT
 // ==========================================
 
+let cachedVaultDbPromise: Promise<IDBDatabase | null> | null = null;
+
 function openVaultDB(): Promise<IDBDatabase | null> {
   if (typeof window === 'undefined' || typeof indexedDB === 'undefined') {
     return Promise.resolve(null);
   }
-  return new Promise((resolve) => {
+  if (cachedVaultDbPromise) {
+    return cachedVaultDbPromise;
+  }
+  cachedVaultDbPromise = new Promise((resolve) => {
     try {
       const request = indexedDB.open(DB_NAME, DB_VERSION);
       request.onupgradeneeded = () => {
@@ -419,12 +424,27 @@ function openVaultDB(): Promise<IDBDatabase | null> {
           db.createObjectStore(STORE_NAME);
         }
       };
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => resolve(null);
+      request.onsuccess = () => {
+        const db = request.result;
+        db.onclose = () => {
+          cachedVaultDbPromise = null;
+        };
+        db.onversionchange = () => {
+          db.close();
+          cachedVaultDbPromise = null;
+        };
+        resolve(db);
+      };
+      request.onerror = () => {
+        cachedVaultDbPromise = null;
+        resolve(null);
+      };
     } catch {
+      cachedVaultDbPromise = null;
       resolve(null);
     }
   });
+  return cachedVaultDbPromise;
 }
 
 export async function saveFileBlob(fileId: string, blob: Blob): Promise<void> {
@@ -435,16 +455,10 @@ export async function saveFileBlob(fileId: string, blob: Blob): Promise<void> {
       const tx = db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
       store.put(blob, fileId);
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => {
-        db.close();
-        resolve();
-      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
     } catch {
-      db.close();
+      cachedVaultDbPromise = null;
       resolve();
     }
   });
@@ -459,15 +473,11 @@ export async function getFileBlob(fileId: string): Promise<Blob | null> {
       const store = tx.objectStore(STORE_NAME);
       const req = store.get(fileId);
       req.onsuccess = () => {
-        db.close();
         resolve(req.result instanceof Blob ? req.result : null);
       };
-      req.onerror = () => {
-        db.close();
-        resolve(null);
-      };
+      req.onerror = () => resolve(null);
     } catch {
-      db.close();
+      cachedVaultDbPromise = null;
       resolve(null);
     }
   });
@@ -481,16 +491,10 @@ export async function deleteFileBlob(fileId: string): Promise<void> {
       const tx = db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
       store.delete(fileId);
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => {
-        db.close();
-        resolve();
-      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
     } catch {
-      db.close();
+      cachedVaultDbPromise = null;
       resolve();
     }
   });
@@ -504,16 +508,10 @@ export async function clearAllFileBlobs(): Promise<void> {
       const tx = db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
       store.clear();
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => {
-        db.close();
-        resolve();
-      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
     } catch {
-      db.close();
+      cachedVaultDbPromise = null;
       resolve();
     }
   });
@@ -710,47 +708,34 @@ export async function buildCloudFileFromBrowserFile(
     year: 'numeric',
   });
 
-  // 1. Always store exact full binary blob in IndexedDB
-  await saveFileBlob(id, file);
-
-  // 2. Live session blob URL for immediate preview/playback
   let liveUrl: string | undefined;
   try {
     liveUrl = URL.createObjectURL(file);
   } catch {}
 
-  // 3. Persistent Data URL for small files (<= 340 KB raw -> ~453 KB base64) so it works cross-device
-  let persistentUrl: string | undefined;
-  if (file.size > 0 && file.size <= 340 * 1024) {
-    const dataUrl = await readBlobAsDataURL(file);
-    if (dataUrl && dataUrl.length <= MAX_INLINE_DATA_URL_CHARS) {
-      persistentUrl = dataUrl;
-    }
-  }
+  const shouldInlineDataUrl = file.size > 0 && file.size <= 340 * 1024;
+  const shouldBuildThumb = resolvedType === 'image' && !shouldInlineDataUrl;
+  const shouldReadText =
+    resolvedType === 'document' && isTextDocumentName(file.name, file.type) && file.size <= 250 * 1024;
+  const shouldExtractZip = resolvedType === 'archive' && file.name.toLowerCase().endsWith('.zip');
 
-  // 4. Thumbnail for larger images
-  let thumbnail: string | undefined;
-  if (resolvedType === 'image' && !persistentUrl) {
-    thumbnail = await createImageThumbnailDataURL(file);
-  }
+  // Run IndexedDB blob write, optional inline DataURL, thumbnail resize, text extraction, and ZIP scan in parallel
+  const [, rawDataUrl, thumbnail, content, parsedZipEntries] = await Promise.all([
+    saveFileBlob(id, file),
+    shouldInlineDataUrl ? readBlobAsDataURL(file) : Promise.resolve(undefined),
+    shouldBuildThumb ? createImageThumbnailDataURL(file) : Promise.resolve(undefined),
+    shouldReadText ? file.text().catch(() => undefined) : Promise.resolve(undefined),
+    shouldExtractZip ? extractZipEntriesFromBlob(file) : Promise.resolve([] as ArchiveEntry[]),
+  ]);
 
-  // 5. Extract text content for documents/notes/code
-  let content: string | undefined;
-  if (resolvedType === 'document' && isTextDocumentName(file.name, file.type) && file.size <= 250 * 1024) {
-    try {
-      content = await file.text();
-    } catch {}
-  }
+  const persistentUrl =
+    rawDataUrl && rawDataUrl.length <= MAX_INLINE_DATA_URL_CHARS ? rawDataUrl : undefined;
 
-  // 6. Inspect real ZIP archive entries
   let archiveEntries: ArchiveEntry[] | undefined;
   let itemCount: number | undefined;
-  if (resolvedType === 'archive' && file.name.toLowerCase().endsWith('.zip')) {
-    const parsed = await extractZipEntriesFromBlob(file);
-    if (parsed.length > 0) {
-      archiveEntries = parsed;
-      itemCount = parsed.filter((e) => !e.isDir).length || parsed.length;
-    }
+  if (parsedZipEntries.length > 0) {
+    archiveEntries = parsedZipEntries;
+    itemCount = parsedZipEntries.filter((e) => !e.isDir).length || parsedZipEntries.length;
   }
 
   const extParts = file.name.split('.');
