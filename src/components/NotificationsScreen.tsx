@@ -134,7 +134,7 @@ export const NotificationsScreen: React.FC<NotificationsScreenProps> = ({
 
       {/* Search Bar */}
       <div
-        className={`relative flex items-center border rounded-xl px-3.5 py-2.5 mb-3.5 transition-colors ${
+        className={`orbit-card relative flex items-center border rounded-xl px-3.5 py-2.5 mb-3.5 transition-colors ${
           isLight
             ? 'bg-white border-slate-200 focus-within:border-blue-500 shadow-sm'
             : 'bg-[#131e30] border-[#233552] focus-within:border-blue-500'
@@ -213,7 +213,7 @@ export const NotificationsScreen: React.FC<NotificationsScreenProps> = ({
       {filteredAds.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center py-6">
           <div
-            className={`w-full border rounded-3xl p-8 flex flex-col items-center text-center shadow-sm ${
+            className={`orbit-card w-full border rounded-3xl p-8 flex flex-col items-center text-center shadow-sm ${
               isLight ? 'bg-white border-slate-200' : 'bg-[#121c2c] border-[#1f3049]'
             }`}
           >

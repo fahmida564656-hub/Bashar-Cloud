@@ -33,6 +33,7 @@ import {
   Archive,
   Info,
   Share2,
+  Play,
 } from 'lucide-react';
 import { CloudFile, FileType, FileVersion } from '../types';
 import { ViewMode, toggleViewMode, normalizeViewMode } from '../utils/fileView';
@@ -67,6 +68,7 @@ interface FilesScreenProps {
   onClearAllFiles?: () => void;
   onRestoreVersion?: (file: CloudFile, version: FileVersion) => void;
   onUploadNewVersion?: (file: CloudFile, newFile: File) => void;
+  onResolveCloudMedia?: (file: CloudFile) => Promise<string | undefined>;
   initialFilter?: string;
   initialFolderId?: string | null;
   onSelectionStateChange?: (active: boolean) => void;
@@ -94,6 +96,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
   onUploadMultipleFiles,
   onRestoreVersion,
   onUploadNewVersion,
+  onResolveCloudMedia,
   initialFilter = 'all',
   initialFolderId = null,
   onSelectionStateChange,
@@ -333,13 +336,16 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
   };
 
   // Handle single download
-  const handleSingleDownload = (file: CloudFile, e?: React.MouseEvent) => {
+  const handleSingleDownload = async (file: CloudFile, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     setActiveMenuFileId(null);
     if (!requireUnlocked('ডাউনলোড করতে')) return;
     if (file.type === 'folder') return;
 
-    let href = file.url || file.thumbnail || '';
+    let href = file.url || (file.type === 'image' ? file.thumbnail : '') || '';
+    if (!href && typeof file.content !== 'string' && onResolveCloudMedia) {
+      href = (await onResolveCloudMedia(file)) || '';
+    }
     let shouldRevoke = false;
     if (!href && typeof file.content === 'string') {
       const blob = new Blob([file.content], { type: 'text/plain;charset=utf-8' });
@@ -495,8 +501,11 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
     if (targets.length === 0) return;
 
     targets.forEach((file, index) => {
-      setTimeout(() => {
-        let href = file.url || '';
+      setTimeout(async () => {
+        let href = file.url || (file.type === 'image' ? file.thumbnail : '') || '';
+        if (!href && typeof file.content !== 'string' && onResolveCloudMedia) {
+          href = (await onResolveCloudMedia(file)) || '';
+        }
         let shouldRevoke = false;
         if (!href && typeof file.content === 'string') {
           const blob = new Blob([file.content], { type: 'text/plain;charset=utf-8' });
@@ -673,7 +682,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
 
       {/* Select All Checkbox & Quick Control Bar */}
       {filteredFiles.length > 0 && (
-        <div className="bg-[#121c2e] border border-[#1f2f48] rounded-xl px-3 py-2 mb-2 flex items-center justify-between text-xs">
+        <div className="orbit-card bg-[#121c2e] rounded-xl px-3 py-2 mb-2 flex items-center justify-between text-xs">
           <label className="flex items-center gap-2 cursor-pointer select-none">
             <input
               type="checkbox"
@@ -807,7 +816,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
 
       {/* Lock banner if expired */}
       {isLocked && (
-        <div className="bg-gradient-to-r from-rose-950/75 to-[#2c1319] border border-rose-500/50 rounded-2xl p-3 mb-3 flex items-center justify-between gap-2.5 shadow-lg animate-in slide-in-from-top-2">
+        <div className="orbit-card bg-gradient-to-r from-rose-950/75 to-[#2c1319] rounded-2xl p-3 mb-3 flex items-center justify-between gap-2.5 shadow-lg animate-in slide-in-from-top-2">
           <div className="flex items-center gap-2.5 min-w-0">
             <Lock className="w-5 h-5 text-rose-400 shrink-0" />
             <div className="min-w-0">
@@ -832,7 +841,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
 
       {/* Folder Breadcrumb Bar when inside a subfolder */}
       {activeFolder && filter === 'all' && (
-        <div className="flex items-center gap-1.5 text-xs text-slate-300 bg-[#111b2c] border border-[#1d2e4a] rounded-xl px-3 py-1.5 mb-2">
+        <div className="orbit-card flex items-center gap-1.5 text-xs text-slate-300 bg-[#111b2c] rounded-xl px-3 py-1.5 mb-2">
           <button
             type="button"
             onClick={() => setActiveFolderId(null)}
@@ -847,7 +856,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
 
       {/* Files List / Grid */}
       {filteredFiles.length === 0 ? (
-        <div className="flex-1 flex flex-col items-center justify-center text-center py-16 px-4 bg-[#121c2c]/60 rounded-3xl border border-[#1f3049]/60 my-2 shadow-inner">
+        <div className="orbit-card flex-1 flex flex-col items-center justify-center text-center py-16 px-4 bg-[#121c2c]/60 rounded-3xl my-2 shadow-inner">
           <div className="w-16 h-16 rounded-2xl bg-[#142134] border border-[#20324e] flex items-center justify-center mb-3 text-slate-400">
             <Folder className="w-8 h-8 text-blue-400/80" />
           </div>
@@ -1085,7 +1094,35 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                   ) : file.type === 'video' ? (
                     <div className="w-full h-24 rounded-xl overflow-hidden bg-[#0f0e1a] mb-2 relative flex items-center justify-center border border-[#2c1d3f] group-hover:border-purple-500/50 transition-colors">
                       {file.url ? (
-                        <video src={file.url} className="w-full h-full object-cover" />
+                        <>
+                          <video
+                            src={file.url}
+                            poster={file.thumbnail}
+                            muted
+                            playsInline
+                            preload="metadata"
+                            className="w-full h-full object-cover"
+                          />
+                          <div className="absolute inset-0 flex items-center justify-center bg-black/25 pointer-events-none">
+                            <div className="w-8 h-8 rounded-full bg-black/65 border border-white/30 flex items-center justify-center text-white shadow">
+                              <Play className="w-3.5 h-3.5 ml-0.5 fill-white" />
+                            </div>
+                          </div>
+                        </>
+                      ) : file.thumbnail ? (
+                        <>
+                          <img
+                            src={file.thumbnail}
+                            alt={file.name}
+                            className="w-full h-full object-cover"
+                            loading="lazy"
+                          />
+                          <div className="absolute inset-0 flex items-center justify-center bg-black/30 pointer-events-none">
+                            <div className="w-8 h-8 rounded-full bg-black/65 border border-white/30 flex items-center justify-center text-white shadow">
+                              <Play className="w-3.5 h-3.5 ml-0.5 fill-white" />
+                            </div>
+                          </div>
+                        </>
                       ) : (
                         <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#24133b] to-[#0f0e1a] text-purple-400 p-2 text-center">
                           <Video className="w-7 h-7 mb-1 opacity-80" />
@@ -1478,7 +1515,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
       {/* LOCKOUT MODAL (when trial expired & user tries to act) */}
       {showLockModal && (
         <div className="fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex items-center justify-center p-4">
-          <div className="bg-[#121c2e] border border-rose-500/50 rounded-3xl p-5 max-w-[360px] w-full text-white space-y-4 shadow-2xl animate-in zoom-in-95 text-center">
+          <div className="orbit-card bg-[#121c2e] rounded-3xl p-5 max-w-[360px] w-full text-white space-y-4 shadow-2xl animate-in zoom-in-95 text-center">
             <div className="w-14 h-14 mx-auto rounded-2xl bg-rose-500/20 border border-rose-400/30 flex items-center justify-center text-rose-400 shadow-lg">
               <Lock className="w-8 h-8" />
             </div>
@@ -1533,7 +1570,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <form
             onSubmit={handleConfirmRename}
-            className="bg-[#121c2e] border border-[#20324e] rounded-3xl p-5 max-w-[360px] w-full space-y-4 text-white shadow-2xl animate-in zoom-in-95"
+            className="orbit-card bg-[#121c2e] rounded-3xl p-5 max-w-[360px] w-full space-y-4 text-white shadow-2xl animate-in zoom-in-95"
           >
             <div className="flex items-center justify-between pb-2 border-b border-[#1f2f4a]">
               <div className="flex items-center gap-2">
@@ -1585,7 +1622,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
       {/* MOVE DESTINATION MODAL */}
       {isMoveModalOpen && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-[#121c2e] border border-[#20324e] rounded-2xl p-5 max-w-[360px] w-full text-white animate-in zoom-in-95">
+          <div className="orbit-card bg-[#121c2e] rounded-2xl p-5 max-w-[360px] w-full text-white animate-in zoom-in-95">
             <div className="flex items-center justify-between pb-3 border-b border-[#1f2f4a] mb-3">
               <div className="flex items-center gap-2">
                 <FolderInput className="w-5 h-5 text-sky-400" />
@@ -1647,7 +1684,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
       {/* PERMANENT DELETE CONFIRMATION DIALOG */}
       {permanentDeleteTargetIds && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-[#121c2e] border border-rose-500/40 rounded-3xl p-5 max-w-[360px] w-full text-white space-y-3.5 shadow-2xl animate-in zoom-in-95">
+          <div className="orbit-card bg-[#121c2e] rounded-3xl p-5 max-w-[360px] w-full text-white space-y-3.5 shadow-2xl animate-in zoom-in-95">
             <div className="flex items-center gap-2.5 text-rose-400 font-bold text-sm">
               <AlertTriangle className="w-5 h-5" />
               <span>Delete Forever (সারা জীবনের জন্য ডিলিট)</span>
@@ -1680,7 +1717,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
       {/* BULK SHARE MODAL */}
       {shareModalFiles && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-[#121c2e] border border-sky-500/40 rounded-3xl p-5 max-w-[380px] w-full text-white space-y-3.5 shadow-2xl animate-in zoom-in-95">
+          <div className="orbit-card bg-[#121c2e] rounded-3xl p-5 max-w-[380px] w-full text-white space-y-3.5 shadow-2xl animate-in zoom-in-95">
             <div className="flex items-center justify-between pb-2.5 border-b border-[#1f2f4a]">
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 rounded-xl bg-sky-500/15 border border-sky-400/35 flex items-center justify-center text-sky-400">

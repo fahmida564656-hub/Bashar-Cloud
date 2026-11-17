@@ -121,7 +121,7 @@ export const PaymentScreen: React.FC<PaymentScreenProps> = ({
       <div className="flex-1 space-y-4 overflow-y-auto pr-0.5">
         {/* Status Card */}
         {isApproved ? (
-          <div className="bg-gradient-to-r from-emerald-950/80 to-[#102a24] border border-emerald-500/50 rounded-2xl p-4 shadow-xl text-center space-y-2 animate-in zoom-in-95">
+          <div className="orbit-card bg-gradient-to-r from-emerald-950/80 to-[#102a24] border border-emerald-500/50 rounded-2xl p-4 shadow-xl text-center space-y-2 animate-in zoom-in-95">
             <div className="w-12 h-12 mx-auto rounded-full bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center text-emerald-400">
               <ShieldCheck className="w-7 h-7" />
             </div>
@@ -135,7 +135,7 @@ export const PaymentScreen: React.FC<PaymentScreenProps> = ({
             </div>
           </div>
         ) : isPending ? (
-          <div className="bg-gradient-to-r from-amber-950/80 to-[#2c2211] border border-amber-500/50 rounded-2xl p-4 shadow-xl text-center space-y-2 animate-in zoom-in-95">
+          <div className="orbit-card bg-gradient-to-r from-amber-950/80 to-[#2c2211] border border-amber-500/50 rounded-2xl p-4 shadow-xl text-center space-y-2 animate-in zoom-in-95">
             <div className="w-12 h-12 mx-auto rounded-full bg-amber-500/20 border border-amber-400/40 flex items-center justify-center text-amber-400">
               <Clock className="w-7 h-7 animate-pulse" />
             </div>
@@ -161,7 +161,7 @@ export const PaymentScreen: React.FC<PaymentScreenProps> = ({
             )}
           </div>
         ) : isRejected ? (
-          <div className="bg-gradient-to-r from-rose-950/80 to-[#2c1319] border border-rose-500/50 rounded-2xl p-4 shadow-xl text-center space-y-2 animate-in zoom-in-95">
+          <div className="orbit-card bg-gradient-to-r from-rose-950/80 to-[#2c1319] border border-rose-500/50 rounded-2xl p-4 shadow-xl text-center space-y-2 animate-in zoom-in-95">
             <div className="w-12 h-12 mx-auto rounded-full bg-rose-500/20 border border-rose-400/40 flex items-center justify-center text-rose-400">
               <AlertCircle className="w-7 h-7" />
             </div>
@@ -171,7 +171,7 @@ export const PaymentScreen: React.FC<PaymentScreenProps> = ({
             </p>
           </div>
         ) : (
-          <div className="bg-gradient-to-br from-[#12233f] to-[#162744] border border-blue-500/40 rounded-2xl p-4 shadow-xl space-y-2">
+          <div className="orbit-card bg-gradient-to-br from-[#12233f] to-[#162744] border border-blue-500/40 rounded-2xl p-4 shadow-xl space-y-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 rounded-lg bg-blue-500/20 border border-blue-400/30 flex items-center justify-center text-blue-400 font-bold text-sm">
@@ -194,7 +194,7 @@ export const PaymentScreen: React.FC<PaymentScreenProps> = ({
         )}
 
         {/* Official Payment Numbers Card */}
-        <div className="bg-[#121c2d] border border-[#1f3049] rounded-2xl p-4 space-y-3 shadow-lg">
+        <div className="orbit-card bg-[#121c2d] border border-[#1f3049] rounded-2xl p-4 space-y-3 shadow-lg">
           <div className="flex items-center justify-between pb-2 border-b border-[#1b2b42]">
             <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
               <Smartphone className="w-3.5 h-3.5 text-blue-400" />
@@ -204,7 +204,7 @@ export const PaymentScreen: React.FC<PaymentScreenProps> = ({
           </div>
 
           {/* bKash Option */}
-          <div className="bg-[#162135] hover:bg-[#1a2840] border border-[#243754] rounded-xl p-3 flex items-center justify-between transition-colors">
+          <div className="orbit-card bg-[#162135] hover:bg-[#1a2840] border border-[#243754] rounded-xl p-3 flex items-center justify-between transition-colors">
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 rounded-lg bg-[#d8195a]/20 border border-[#d8195a]/40 text-[#ff4f8e] font-bold text-xs flex items-center justify-center">
                 bK
@@ -238,7 +238,7 @@ export const PaymentScreen: React.FC<PaymentScreenProps> = ({
           </div>
 
           {/* Nagad Option */}
-          <div className="bg-[#162135] hover:bg-[#1a2840] border border-[#243754] rounded-xl p-3 flex items-center justify-between transition-colors">
+          <div className="orbit-card bg-[#162135] hover:bg-[#1a2840] border border-[#243754] rounded-xl p-3 flex items-center justify-between transition-colors">
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 rounded-lg bg-[#f05a28]/20 border border-[#f05a28]/40 text-[#ff794d] font-bold text-xs flex items-center justify-center">
                 নগদ
@@ -276,7 +276,7 @@ export const PaymentScreen: React.FC<PaymentScreenProps> = ({
         {!isApproved && (
           <form
             onSubmit={handleSubmit}
-            className="bg-[#121c2d] border border-[#1f3049] rounded-2xl p-4 space-y-3.5 shadow-lg"
+            className="orbit-card bg-[#121c2d] border border-[#1f3049] rounded-2xl p-4 space-y-3.5 shadow-lg"
           >
             <div className="pb-2 border-b border-[#1b2b42]">
               <h3 className="text-sm font-bold text-white flex items-center gap-1.5">

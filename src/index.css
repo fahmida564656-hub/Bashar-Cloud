@@ -367,7 +367,7 @@ html[data-orbit="5"] {
   content: "";
   position: absolute;
   inset: 0;
-  padding: 1.25px;
+  padding: 1.5px;
   border-radius: inherit;
   background: conic-gradient(
     from var(--orbit-angle),
@@ -389,7 +389,7 @@ html[data-orbit="5"] {
 }
 
 .orbit-card:hover::before {
-  padding: 1.5px;
+  padding: 1.8px;
   background: conic-gradient(
     from var(--orbit-angle),
     var(--orbit-frame-1) 0deg,
@@ -460,7 +460,7 @@ html[data-orbit="5"] {
 }
 
 html.light .orbit-card::before {
-  opacity: 0.78;
+  opacity: 0.9;
 }
 
 html.light .orbit-website-aura {

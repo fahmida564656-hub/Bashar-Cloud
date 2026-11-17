@@ -172,6 +172,10 @@
     "/users/{userId}/ai_chats/{chatId}": {
       "schema": { "$ref": "#/entities/AiChatThread" },
       "description": "Stores Bashar Cloud AI chat threads per user"
+    },
+    "/users/{userId}/file_chunks/{chunkId}": {
+      "schema": { "$ref": "#/entities/CloudFile" },
+      "description": "Stores chunked binary media payloads for cross-device video and file playback"
     }
   }
 }

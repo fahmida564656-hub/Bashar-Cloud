@@ -229,7 +229,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       {subscription && (
         <div className="mb-3.5">
           {isApproved ? (
-            <div className="bg-gradient-to-r from-emerald-950/80 to-[#102923] border border-emerald-500/40 rounded-2xl p-3 flex items-center justify-between shadow-md">
+            <div className="orbit-card overflow-hidden bg-gradient-to-r from-emerald-950/80 to-[#102923] border border-emerald-500/40 rounded-2xl p-3 flex items-center justify-between shadow-md">
               <div className="flex items-center gap-2.5 min-w-0">
                 <ShieldCheck className="w-4.5 h-4.5 text-emerald-400 shrink-0" />
                 <div className="min-w-0">
@@ -245,7 +245,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             <button
               type="button"
               onClick={onOpenPayment}
-              className="w-full min-h-[52px] text-left bg-gradient-to-r from-rose-950/85 to-[#2c131a] border border-rose-500/50 rounded-2xl p-3 flex items-center justify-between gap-2.5 shadow-lg cursor-pointer hover:border-rose-400 transition-all"
+              className="orbit-card overflow-hidden w-full min-h-[52px] text-left bg-gradient-to-r from-rose-950/85 to-[#2c131a] border border-rose-500/50 rounded-2xl p-3 flex items-center justify-between gap-2.5 shadow-lg cursor-pointer hover:border-rose-400 transition-all"
             >
               <div className="flex items-center gap-2.5 min-w-0">
                 <div className="w-9 h-9 rounded-xl bg-rose-500/20 border border-rose-400/35 flex items-center justify-center text-rose-400 shrink-0">
@@ -269,7 +269,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             <button
               type="button"
               onClick={onOpenPayment}
-              className="w-full min-h-[50px] text-left bg-[#12233e] border border-blue-500/35 rounded-2xl p-3 flex items-center justify-between gap-2 shadow-md cursor-pointer hover:border-blue-400 transition-all"
+              className="orbit-card overflow-hidden w-full min-h-[50px] text-left bg-[#12233e] border border-blue-500/35 rounded-2xl p-3 flex items-center justify-between gap-2 shadow-md cursor-pointer hover:border-blue-400 transition-all"
             >
               <div className="flex items-center gap-2.5 min-w-0">
                 <Clock className="w-4.5 h-4.5 text-sky-400 shrink-0" />
@@ -405,7 +405,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             }
             onOpenCreateFile?.();
           }}
-          className={`min-h-[44px] flex items-center justify-center gap-1.5 text-[11px] font-semibold py-2.5 px-2 rounded-xl shadow-md transition-all active:scale-95 cursor-pointer border ${
+          className={`orbit-card overflow-hidden min-h-[44px] flex items-center justify-center gap-1.5 text-[11px] font-semibold py-2.5 px-2 rounded-xl shadow-md transition-all active:scale-95 cursor-pointer border ${
             isExpired
               ? 'bg-[#1a1824] border-rose-500/35 text-rose-300 opacity-85'
               : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white ai-solid-text-white border-blue-400/40'
@@ -419,7 +419,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         <button
           type="button"
           onClick={() => handleProtectedUploadClick(zipFileInputRef)}
-          className={`min-h-[44px] flex items-center justify-center gap-1.5 text-[11px] font-semibold py-2.5 px-2 rounded-xl border transition-colors cursor-pointer shadow-md ${
+          className={`orbit-card overflow-hidden min-h-[44px] flex items-center justify-center gap-1.5 text-[11px] font-semibold py-2.5 px-2 rounded-xl border transition-colors cursor-pointer shadow-md ${
             isExpired
               ? 'bg-[#1a1824] border-rose-500/35 text-rose-300 opacity-85'
               : 'bg-[#2a1c0d] hover:bg-[#382613] text-amber-300 border-amber-500/40'
@@ -437,7 +437,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         <button
           type="button"
           onClick={() => handleProtectedUploadClick(multiFileInputRef)}
-          className={`min-h-[44px] flex items-center justify-center gap-1.5 text-[11px] font-semibold py-2.5 px-2 rounded-xl border transition-colors cursor-pointer shadow-md ${
+          className={`orbit-card overflow-hidden min-h-[44px] flex items-center justify-center gap-1.5 text-[11px] font-semibold py-2.5 px-2 rounded-xl border transition-colors cursor-pointer shadow-md ${
             isExpired
               ? 'bg-[#1a1824] border-rose-500/35 text-rose-300 opacity-85'
               : 'bg-[#142033] hover:bg-[#1a2c47] text-sky-400 border-[#20324e]'

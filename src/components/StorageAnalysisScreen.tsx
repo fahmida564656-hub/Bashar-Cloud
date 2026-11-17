@@ -48,7 +48,7 @@ export const StorageAnalysisScreen: React.FC<StorageAnalysisScreenProps> = ({
       </div>
 
       {/* Top Storage Overview Card */}
-      <div className="bg-[#121c2c] border border-[#1f3049] rounded-2xl p-4 mb-4">
+      <div className="orbit-card bg-[#121c2c] border border-[#1f3049] rounded-2xl p-4 mb-4">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-xl bg-blue-500/20 text-blue-400 flex items-center justify-center">
@@ -79,7 +79,7 @@ export const StorageAnalysisScreen: React.FC<StorageAnalysisScreenProps> = ({
       </div>
 
       {/* Recharts Doughnut Chart Section */}
-      <div className="bg-[#121c2c] border border-[#1f3049] rounded-2xl p-4 mb-4 flex flex-col items-center relative">
+      <div className="orbit-card bg-[#121c2c] border border-[#1f3049] rounded-2xl p-4 mb-4 flex flex-col items-center relative">
         <div className="w-full flex items-center justify-between mb-1">
           <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-300">
             Storage Distribution
@@ -146,7 +146,7 @@ export const StorageAnalysisScreen: React.FC<StorageAnalysisScreenProps> = ({
         </h4>
 
         {/* Images */}
-        <div className="bg-[#121c2c] border border-[#1f3049] rounded-xl p-3 flex items-center justify-between">
+        <div className="orbit-card bg-[#121c2c] border border-[#1f3049] rounded-xl p-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-lg bg-[#14223d] text-[#3b82f6] border border-[#234277] flex items-center justify-center shrink-0">
               <ImageIcon className="w-4 h-4" />
@@ -165,7 +165,7 @@ export const StorageAnalysisScreen: React.FC<StorageAnalysisScreenProps> = ({
         </div>
 
         {/* Videos */}
-        <div className="bg-[#121c2c] border border-[#1f3049] rounded-xl p-3 flex items-center justify-between">
+        <div className="orbit-card bg-[#121c2c] border border-[#1f3049] rounded-xl p-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-lg bg-[#25173d] text-[#a855f7] border border-[#442777] flex items-center justify-center shrink-0">
               <Video className="w-4 h-4" />
@@ -184,7 +184,7 @@ export const StorageAnalysisScreen: React.FC<StorageAnalysisScreenProps> = ({
         </div>
 
         {/* Audios */}
-        <div className="bg-[#121c2c] border border-[#1f3049] rounded-xl p-3 flex items-center justify-between">
+        <div className="orbit-card bg-[#121c2c] border border-[#1f3049] rounded-xl p-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-lg bg-[#2b2114] text-[#f59e0b] border border-[#523d21] flex items-center justify-center shrink-0">
               <Music className="w-4 h-4" />
@@ -203,7 +203,7 @@ export const StorageAnalysisScreen: React.FC<StorageAnalysisScreenProps> = ({
         </div>
 
         {/* Documents */}
-        <div className="bg-[#121c2c] border border-[#1f3049] rounded-xl p-3 flex items-center justify-between">
+        <div className="orbit-card bg-[#121c2c] border border-[#1f3049] rounded-xl p-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-lg bg-[#102924] text-[#10b981] border border-[#194c40] flex items-center justify-center shrink-0">
               <FileText className="w-4 h-4" />

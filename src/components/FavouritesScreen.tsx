@@ -113,7 +113,7 @@ export const FavouritesScreen: React.FC<FavouritesScreenProps> = ({
 
       {/* Lock Banner */}
       {isLocked && (
-        <div className="bg-gradient-to-r from-rose-950/75 to-[#2c1319] border border-rose-500/50 rounded-2xl p-3 my-2 flex items-center justify-between gap-2.5 shadow-lg">
+        <div className="orbit-card overflow-hidden bg-gradient-to-r from-rose-950/75 to-[#2c1319] border border-rose-500/50 rounded-2xl p-3 my-2 flex items-center justify-between gap-2.5 shadow-lg">
           <div className="flex items-center gap-2.5 min-w-0">
             <Lock className="w-4.5 h-4.5 text-rose-400 shrink-0" />
             <div className="min-w-0">
@@ -136,7 +136,7 @@ export const FavouritesScreen: React.FC<FavouritesScreenProps> = ({
 
       {/* Grid / List View Toggle */}
       <div className="flex items-center my-3">
-        <div className="inline-flex p-1 bg-[#121c2c] border border-[#1f3049] rounded-xl">
+        <div className="orbit-card inline-flex p-1 bg-[#121c2c] border border-[#1f3049] rounded-xl">
           <button
             type="button"
             onClick={() => setViewMode('grid')}
@@ -166,8 +166,8 @@ export const FavouritesScreen: React.FC<FavouritesScreenProps> = ({
 
       {/* Empty State */}
       {favoriteFiles.length === 0 ? (
-        <div className="flex-1 flex flex-col items-center justify-center text-center py-20">
-          <div className="w-24 h-24 rounded-3xl bg-[#0e2724] border border-[#16433e] flex items-center justify-center text-[#10b981] mb-5 shadow-lg">
+        <div className="orbit-card bg-[#121c2c] border border-[#1f3049] rounded-3xl flex-1 flex flex-col items-center justify-center text-center py-16 px-6 shadow-md">
+          <div className="orbit-card w-24 h-24 rounded-3xl bg-[#0e2724] border border-[#16433e] flex items-center justify-center text-[#10b981] mb-5 shadow-lg">
             <Folder className="w-12 h-12 stroke-[1.5]" />
           </div>
 

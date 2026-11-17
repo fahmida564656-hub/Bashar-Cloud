@@ -61,6 +61,7 @@ import {
   hydrateCloudFiles,
   mergeCloudAndLocalFiles,
   computeStorageBreakdown,
+  saveFileBlob,
   getFileBlob,
   deleteFileBlob,
   clearAllFileBlobs,
@@ -72,6 +73,10 @@ import {
 } from './utils/fileVault';
 import { filterOutUserPayments } from './utils/accountManagement';
 import { formatBytes } from './utils/uploadFlow';
+import {
+  shouldChunkFileToCloud,
+  MAX_CLOUD_CHUNK_FILE_BYTES,
+} from './utils/cloudChunkSync';
 import {
   createAiThread,
   sortAiThreads,
@@ -226,6 +231,9 @@ export default function App() {
   const recycleBinRef = useRef<CloudFile[]>(recycleBin);
   const sessionAuthenticatedRef = useRef<boolean>(false);
   const userAbortedAiRef = useRef<boolean>(false);
+  const mediaResolvingRef = useRef<Map<string, Promise<string | undefined>>>(new Map());
+  const liveObjectUrlsRef = useRef<Map<string, string>>(new Map());
+  const chunkUploadingIdsRef = useRef<Set<string>>(new Set());
   filesRef.current = files;
   recycleBinRef.current = recycleBin;
 
@@ -289,6 +297,167 @@ export default function App() {
     (user.email ? user.email.toLowerCase().replace(/[^a-z0-9]/g, '_') : '') ||
     (cleanPhone(user.phone) ? `phone_${cleanPhone(user.phone)}` : '') ||
     'guest_user';
+
+  const getCandidateOwnerIds = (overrideUid?: string): string[] => {
+    const emailSanitized = user.email ? user.email.toLowerCase().replace(/[^a-z0-9]/g, '_') : '';
+    const phoneSuffix = cleanPhone(user.phone);
+    const phonePrefixed = phoneSuffix ? `phone_${phoneSuffix}` : '';
+    const rawList = [
+      overrideUid,
+      canonicalUserId,
+      currentUserRecord?.id,
+      emailSanitized,
+      user.email?.trim().toLowerCase(),
+      phonePrefixed,
+      phoneSuffix,
+    ];
+    return Array.from(
+      new Set(rawList.filter((id): id is string => Boolean(id && id !== 'guest_user')))
+    );
+  };
+
+  const patchResolvedFileUrl = (fileId: string, resolvedUrl: string) => {
+    setFiles((prev) =>
+      prev.map((item) => (item.id === fileId ? { ...item, url: resolvedUrl } : item))
+    );
+    setPreviewFile((prev) =>
+      prev && prev.id === fileId ? { ...prev, url: resolvedUrl } : prev
+    );
+    setSelectedAudioFile((prev) =>
+      prev && prev.id === fileId ? { ...prev, url: resolvedUrl } : prev
+    );
+  };
+
+  const resolveCloudMediaUrl = async (
+    targetFile: CloudFile,
+    overrideUid?: string
+  ): Promise<string | undefined> => {
+    if (!targetFile || targetFile.type === 'folder') return undefined;
+
+    const cachedLive = liveObjectUrlsRef.current.get(targetFile.id);
+    if (cachedLive) {
+      if (!targetFile.url || targetFile.url !== cachedLive) {
+        patchResolvedFileUrl(targetFile.id, cachedLive);
+      }
+      return cachedLive;
+    }
+
+    if (
+      targetFile.url &&
+      (targetFile.url.startsWith('data:') || targetFile.url.startsWith('http'))
+    ) {
+      return targetFile.url;
+    }
+
+    const inFlight = mediaResolvingRef.current.get(targetFile.id);
+    if (inFlight) return inFlight;
+
+    const resolvePromise = (async (): Promise<string | undefined> => {
+      try {
+        const localBlob = await getFileBlob(targetFile.id);
+        if (localBlob) {
+          const objUrl = URL.createObjectURL(localBlob);
+          liveObjectUrlsRef.current.set(targetFile.id, objUrl);
+          patchResolvedFileUrl(targetFile.id, objUrl);
+          return objUrl;
+        }
+
+        const candidateUids = getCandidateOwnerIds(overrideUid || targetFile.ownerId);
+        for (const uid of candidateUids) {
+          const cloudBlob = await firestoreService.getFileBlobFromCloudChunks(
+            uid,
+            targetFile.id,
+            targetFile.cloudChunkCount,
+            targetFile.mimeType
+          );
+          if (cloudBlob) {
+            await saveFileBlob(targetFile.id, cloudBlob).catch(() => {});
+            const objUrl = URL.createObjectURL(cloudBlob);
+            liveObjectUrlsRef.current.set(targetFile.id, objUrl);
+            patchResolvedFileUrl(targetFile.id, objUrl);
+            return objUrl;
+          }
+        }
+      } catch (err) {
+        console.warn('Cloud media resolution error:', err);
+      } finally {
+        mediaResolvingRef.current.delete(targetFile.id);
+      }
+
+      if (targetFile.type === 'image' && targetFile.thumbnail) {
+        return targetFile.thumbnail;
+      }
+      return targetFile.url;
+    })();
+
+    mediaResolvingRef.current.set(targetFile.id, resolvePromise);
+    return resolvePromise;
+  };
+
+  const syncFileChunksInBackground = async (targetUid: string, targetFiles: CloudFile[]) => {
+    if (!targetUid || targetUid === 'guest_user' || !targetFiles.length) return;
+
+    for (const f of targetFiles) {
+      if (!f || f.type === 'folder' || chunkUploadingIdsRef.current.has(f.id)) continue;
+      chunkUploadingIdsRef.current.add(f.id);
+      try {
+        const blob = await getFileBlob(f.id);
+        if (blob && shouldChunkFileToCloud(blob.size)) {
+          const uploadedCount = await firestoreService.saveFileChunks(
+            targetUid,
+            f.id,
+            blob,
+            f.mimeType || blob.type
+          );
+          if (uploadedCount > 0) {
+            setFiles((prev) =>
+              prev.map((item) =>
+                item.id === f.id
+                  ? {
+                      ...item,
+                      cloudChunkCount: uploadedCount,
+                      mimeType: item.mimeType || blob.type || item.mimeType,
+                    }
+                  : item
+              )
+            );
+          }
+        }
+      } catch (err) {
+        console.warn('Background chunk upload warning:', err);
+      } finally {
+        chunkUploadingIdsRef.current.delete(f.id);
+      }
+    }
+  };
+
+  const hydrateMissingCloudMedia = async (targetFiles: CloudFile[], overrideUid?: string) => {
+    const queue = targetFiles.filter((f) => {
+      if (f.type === 'folder') return false;
+      const isMedia = f.type === 'video' || f.type === 'audio' || f.type === 'image';
+      if (!isMedia) return false;
+      const needsResolution =
+        !f.url || (f.type === 'image' && f.url === f.thumbnail && (f.cloudChunkCount || 0) > 0);
+      if (!needsResolution) return false;
+      return (
+        (f.cloudChunkCount && f.cloudChunkCount > 0) ||
+        (f.sizeBytes > 0 && f.sizeBytes <= MAX_CLOUD_CHUNK_FILE_BYTES)
+      );
+    });
+
+    if (queue.length === 0) return;
+
+    const concurrency = 2;
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < queue.length) {
+        const idx = cursor++;
+        const item = queue[idx];
+        await resolveCloudMediaUrl(item, overrideUid).catch(() => undefined);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, () => worker()));
+  };
 
   // Hydrate IndexedDB blobs & user's saved orbit preset on boot and whenever active user changes
   useEffect(() => {
@@ -390,11 +559,19 @@ export default function App() {
 
       // Push any locally-uploaded active files that are not yet present in Firestore snapshot
       const cloudIdSet = new Set(cloudFiles.map((f) => f.id));
+      const filesToSyncChunks: CloudFile[] = [];
       hydrated.forEach((f) => {
         if (!cloudIdSet.has(f.id) && !deletedIds.has(f.id)) {
           firestoreService.saveFile(canonicalUserId, f).catch(() => {});
+          filesToSyncChunks.push(f);
+        } else if (shouldChunkFileToCloud(f.sizeBytes) && !f.cloudChunkCount && !deletedIds.has(f.id)) {
+          filesToSyncChunks.push(f);
         }
       });
+      if (filesToSyncChunks.length > 0) {
+        void syncFileChunksInBackground(canonicalUserId, filesToSyncChunks);
+      }
+      void hydrateMissingCloudMedia(hydrated, canonicalUserId);
     });
 
     return () => {
@@ -828,6 +1005,7 @@ export default function App() {
             firestoreService.saveFile(canonicalUserId, f).catch(() => {})
           )
         );
+        void syncFileChunksInBackground(canonicalUserId, finalizedFiles);
       }
 
       setSyncToast(`সফলভাবে ${finalizedFiles.length}টি ফাইল দ্রুত সেভ হয়েছে!`);
@@ -1028,6 +1206,7 @@ export default function App() {
   const handlePermanentDelete = (id: string) => {
     if (!checkActionAllowed()) return;
     addDeletedFileIds(canonicalUserId, [id]);
+    liveObjectUrlsRef.current.delete(id);
     const updatedFiles = filesRef.current.filter((f) => f.id !== id);
     const updatedRecycle = recycleBinRef.current.filter((f) => f.id !== id);
     setFiles(updatedFiles);
@@ -1036,6 +1215,7 @@ export default function App() {
 
     deleteFileBlob(id).catch(() => {});
     firestoreService.deleteFile(canonicalUserId, id).catch(() => {});
+    firestoreService.deleteFileChunks(canonicalUserId, id).catch(() => {});
     firestoreService.removeDeletedFile(canonicalUserId, id).catch(() => {});
   };
 
@@ -1051,8 +1231,10 @@ export default function App() {
     persistVaultState(updatedFiles, updatedRecycle);
 
     ids.forEach((id) => {
+      liveObjectUrlsRef.current.delete(id);
       deleteFileBlob(id).catch(() => {});
       firestoreService.deleteFile(canonicalUserId, id).catch(() => {});
+      firestoreService.deleteFileChunks(canonicalUserId, id).catch(() => {});
       firestoreService.removeDeletedFile(canonicalUserId, id).catch(() => {});
     });
   };
@@ -1207,6 +1389,8 @@ export default function App() {
       uploaderName: user.name,
     });
 
+    liveObjectUrlsRef.current.delete(targetFile.id);
+    let updatedTargetForChunkSync: CloudFile | null = null;
     const updated = filesRef.current.map((f) => {
       if (f.id === targetFile.id) {
         const reuploaded = appendFileVersion(
@@ -1214,6 +1398,8 @@ export default function App() {
             ...f,
             url: rebuilt.url,
             thumbnail: rebuilt.thumbnail,
+            mimeType: rebuilt.mimeType ?? f.mimeType,
+            cloudChunkCount: rebuilt.cloudChunkCount ?? f.cloudChunkCount,
             content: rebuilt.content ?? f.content,
             archiveEntries: rebuilt.archiveEntries ?? f.archiveEntries,
           },
@@ -1226,6 +1412,7 @@ export default function App() {
             modifiedBy: user.name || 'User',
           }
         );
+        updatedTargetForChunkSync = reuploaded;
         firestoreService.saveFile(canonicalUserId, reuploaded).catch(() => {});
         return reuploaded;
       }
@@ -1234,6 +1421,9 @@ export default function App() {
 
     setFiles(updated);
     persistVaultState(updated);
+    if (updatedTargetForChunkSync && canonicalUserId && canonicalUserId !== 'guest_user') {
+      void syncFileChunksInBackground(canonicalUserId, [updatedTargetForChunkSync]);
+    }
     setSyncToast('নতুন ভার্সন সফলভাবে ক্লাউডে আপলোড ও সংরক্ষিত হয়েছে!');
     setTimeout(() => setSyncToast(null), 3000);
   };
@@ -1356,6 +1546,12 @@ export default function App() {
       email: userToDelete?.email || (isCurrentById ? user.email : ''),
       phone: userToDelete?.phone || (isCurrentById ? user.phone : ''),
     };
+    const isCurrent =
+      isCurrentById ||
+      (userToDelete && (
+        (user.email && user.email.toLowerCase() === userToDelete.email.toLowerCase()) ||
+        (user.phone && cleanPhone(user.phone) === cleanPhone(userToDelete.phone))
+      ));
 
     setRegisteredUsers((prev) => prev.filter((u) => u.id !== userId));
     try {
@@ -1376,21 +1572,8 @@ export default function App() {
     try {
       localStorage.removeItem(`bashar_cloud_trial_start_${userId}`);
     } catch {}
-    await firestoreService
-      .deleteRegisteredUserAndData(userId, {
-        email: targetContact.email,
-        phone: targetContact.phone,
-      })
-      .catch(() => {});
 
-    // If currently active user was deleted, log out and reset session to clean slate
-    const isCurrent =
-      isCurrentById ||
-      (userToDelete && (
-        (user.email && user.email.toLowerCase() === userToDelete.email.toLowerCase()) ||
-        (user.phone && cleanPhone(user.phone) === cleanPhone(userToDelete.phone))
-      ));
-
+    // If currently active user was deleted, reset UI and session immediately
     if (isCurrent) {
       setUser(initialUserProfile);
       setFiles([]);
@@ -1401,12 +1584,28 @@ export default function App() {
       const resetChat = createAiThread();
       setAiThreads([resetChat]);
       setActiveAiThreadId(resetChat.id);
-      await clearAllFileBlobs().catch(() => {});
+      liveObjectUrlsRef.current.forEach((blobUrl) => {
+        if (blobUrl.startsWith('blob:')) URL.revokeObjectURL(blobUrl);
+      });
+      liveObjectUrlsRef.current.clear();
+      chunkUploadingIdsRef.current.clear();
       setScreen('welcome-email');
-      auth.signOut().catch(() => {});
+      void clearAllFileBlobs().catch(() => {});
     }
+
     setSyncToast('অ্যাকাউন্ট, পেমেন্ট ও সমস্ত ডাটা সফলভাবে মুছে ফেলা হয়েছে');
     setTimeout(() => setSyncToast(null), 3000);
+
+    await firestoreService
+      .deleteRegisteredUserAndData(userId, {
+        email: targetContact.email,
+        phone: targetContact.phone,
+      })
+      .catch(() => {});
+
+    if (isCurrent) {
+      auth.signOut().catch(() => {});
+    }
   };
 
   // Delete all accounts, payment requests, and data completely
@@ -1426,6 +1625,11 @@ export default function App() {
     setRecycleBin([]);
     setStorage(initialStorageUsage);
     storageProviderMock.saveMetadataState([], initialUserProfile, initialStorageUsage, []);
+    liveObjectUrlsRef.current.forEach((blobUrl) => {
+      if (blobUrl.startsWith('blob:')) URL.revokeObjectURL(blobUrl);
+    });
+    liveObjectUrlsRef.current.clear();
+    chunkUploadingIdsRef.current.clear();
     setScreen('welcome-email');
     auth.signOut().catch(() => {});
     setSyncToast('সকল অ্যাকাউন্ট, পেমেন্ট ও ক্লাউড ডাটা সফলভাবে মুছে ফেলা হয়েছে');
@@ -1622,6 +1826,7 @@ export default function App() {
       hydratedFiles.forEach((cf) => {
         firestoreService.saveFile(userRecord.id, cf).catch(() => {});
       });
+      void hydrateMissingCloudMedia(hydratedFiles, userRecord.id);
     } catch {
       const hydratedLocal = await hydrateCloudFiles(localFiles);
       const hydratedBin = await hydrateCloudFiles(localBin);
@@ -2343,6 +2548,7 @@ export default function App() {
                 onClearAllFiles={handleClearAllFiles}
                 onRestoreVersion={handleRestoreFileVersion}
                 onUploadNewVersion={handleUploadNewVersion}
+                onResolveCloudMedia={(f) => resolveCloudMediaUrl(f)}
                 initialFilter={initialFilesFilter}
                 initialFolderId={initialFilesFolderId}
                 onSelectionStateChange={setIsFilesBulkActive}
@@ -2384,6 +2590,11 @@ export default function App() {
                   const fresh = createAiThread();
                   setAiThreads([fresh]);
                   setActiveAiThreadId(fresh.id);
+                  liveObjectUrlsRef.current.forEach((blobUrl) => {
+                    if (blobUrl.startsWith('blob:')) URL.revokeObjectURL(blobUrl);
+                  });
+                  liveObjectUrlsRef.current.clear();
+                  chunkUploadingIdsRef.current.clear();
                   setScreen('welcome-email');
                   auth.signOut().catch(() => {});
                 }}
@@ -2439,6 +2650,7 @@ export default function App() {
         onRenameFile={handleRenameFile}
         onCopyFile={handleCopyFile}
         onMoveFile={handleMoveFile}
+        onResolveCloudMedia={(f) => resolveCloudMediaUrl(f)}
         availableFolders={files.filter((f) => f.type === 'folder')}
       />
 
@@ -2454,6 +2666,7 @@ export default function App() {
       <AudioPlayerModal
         file={selectedAudioFile}
         onClose={() => setSelectedAudioFile(null)}
+        onResolveCloudMedia={(f) => resolveCloudMediaUrl(f)}
       />
 
       <NewFolderModal

@@ -264,7 +264,7 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
           </h1>
         </div>
 
-        <div className="w-full max-w-[360px] mx-auto bg-[#121c2d] border border-[#203454] rounded-3xl p-6 shadow-2xl space-y-5 animate-in zoom-in-95">
+        <div className="orbit-card w-full max-w-[360px] mx-auto bg-[#121c2d] border border-[#203454] rounded-3xl p-6 shadow-2xl space-y-5 animate-in zoom-in-95">
           <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-xl shadow-blue-900/40">
             <ShieldCheck className="w-9 h-9" />
           </div>
@@ -357,7 +357,7 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
       </div>
 
       {/* Navigation Tabs (Payments, Ads, Branding, Users) */}
-      <div className="grid grid-cols-4 gap-1 bg-[#101b2d] p-1 rounded-2xl border border-[#1e2f4a]">
+      <div className="orbit-card grid grid-cols-4 gap-1 bg-[#101b2d] p-1 rounded-2xl border border-[#1e2f4a]">
         <button
           type="button"
           onClick={() => setActiveTab('payments')}
@@ -438,7 +438,7 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
       {activeTab === 'ads' && (
         <div className="space-y-4 animate-in fade-in">
           {/* Card 1: Create & Publish New Ad */}
-          <div className="bg-[#121c2d] border border-[#1f3049] rounded-2xl p-4 shadow-xl space-y-3.5">
+          <div className="orbit-card bg-[#121c2d] border border-[#1f3049] rounded-2xl p-4 shadow-xl space-y-3.5">
             <div className="flex items-center justify-between pb-2.5 border-b border-[#1b2b42]">
               <div className="flex items-center gap-2.5">
                 <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white ai-solid-text-white flex items-center justify-center shadow-md shrink-0">
@@ -617,7 +617,7 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
       {/* TAB 1: PAYMENTS APPROVAL SECTION */}
       {activeTab === 'payments' && (
         <div className="space-y-3 animate-in fade-in">
-          <div className="bg-[#121c2d] border border-[#1f3049] rounded-2xl p-4 shadow-xl space-y-3">
+          <div className="orbit-card bg-[#121c2d] border border-[#1f3049] rounded-2xl p-4 shadow-xl space-y-3">
             <div className="flex items-center justify-between pb-2 border-b border-[#1b2b42]">
               <div className="flex items-center gap-2">
                 <CreditCard className="w-5 h-5 text-amber-400" />
@@ -664,7 +664,7 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
                   return (
                     <div
                       key={p.id}
-                      className={`border rounded-2xl p-3.5 space-y-2.5 text-xs transition-all ${
+                      className={`orbit-card border rounded-2xl p-3.5 space-y-2.5 text-xs transition-all ${
                         p.status === 'pending'
                           ? 'bg-[#14233c] border-amber-500/40 shadow-lg'
                           : p.status === 'approved'
@@ -777,7 +777,7 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
 
       {/* TAB 2: BRANDING & IDENTITY SETTINGS */}
       {activeTab === 'branding' && (
-        <div className="bg-[#121c2d] border border-[#1f3049] rounded-2xl p-4 shadow-xl space-y-4 animate-in fade-in">
+        <div className="orbit-card bg-[#121c2d] border border-[#1f3049] rounded-2xl p-4 shadow-xl space-y-4 animate-in fade-in">
           <div>
             <h3 className="text-sm font-bold text-white">Website Branding & Identity</h3>
             <p className="text-[11px] text-slate-400">
@@ -896,7 +896,7 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
 
       {/* TAB 3: REGISTERED USERS DIRECTORY */}
       {activeTab === 'users' && (
-        <div className="bg-[#121c2d] border border-[#1f3049] rounded-2xl p-4 shadow-xl space-y-3 animate-in fade-in">
+        <div className="orbit-card bg-[#121c2d] border border-[#1f3049] rounded-2xl p-4 shadow-xl space-y-3 animate-in fade-in">
           <div className="flex items-center justify-between pb-2 border-b border-[#1b2b42]">
             <div className="flex items-center gap-2">
               <Users className="w-5 h-5 text-emerald-400" />
@@ -979,7 +979,7 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
                 return (
                   <div
                     key={`${u.id}-${idx}`}
-                    className="bg-[#152338] border border-[#223654] rounded-xl p-3.5 space-y-2.5 text-xs shadow-md"
+                    className="orbit-card bg-[#152338] border border-[#223654] rounded-xl p-3.5 space-y-2.5 text-xs shadow-md"
                   >
                     {/* Top Row: User Avatar, Name, Email & Delete */}
                     <div className="flex items-center justify-between">

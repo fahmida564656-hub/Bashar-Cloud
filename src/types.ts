@@ -36,6 +36,8 @@ export interface CloudFile {
   archiveEntries?: ArchiveEntry[]; // Inspected entries inside zip files
   ownerId?: string;
   versions?: FileVersion[]; // File version history of uploads & modifications
+  mimeType?: string; // Original MIME type for cross-device media playback
+  cloudChunkCount?: number; // Number of Base64 binary chunks stored in cloud for >340KB files
 }
 
 export interface UserProfile {

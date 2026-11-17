@@ -1,10 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   Trash2,
   RefreshCw,
-  Play,
-  Pause,
   Music,
   FolderPlus,
   AlertTriangle,
@@ -22,6 +20,7 @@ import {
   Clock,
   ArrowUpCircle,
   HardDrive,
+  Loader2,
 } from 'lucide-react';
 import { CloudFile, FileVersion } from '../types';
 import { ensureFileVersions } from '../utils/fileVersioning';
@@ -50,7 +49,7 @@ export const RecycleBinModal: React.FC<RecycleBinProps> = ({
 
   return (
     <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <div className="bg-[#121c2e] border-t sm:border border-[#20324e] rounded-t-3xl sm:rounded-3xl p-5 max-w-[420px] w-full max-h-[85vh] flex flex-col animate-in slide-in-from-bottom-8">
+      <div className="orbit-card bg-[#121c2e] rounded-t-3xl sm:rounded-3xl p-5 max-w-[420px] w-full max-h-[85vh] flex flex-col animate-in slide-in-from-bottom-8">
         <div className="flex items-center justify-between pb-3 border-b border-[#1f2f4a]">
           <div className="flex items-center gap-2">
             <Trash2 className="w-5 h-5 text-rose-400" />
@@ -141,17 +140,56 @@ export const RecycleBinModal: React.FC<RecycleBinProps> = ({
 interface AudioPlayerProps {
   file: CloudFile | null;
   onClose: () => void;
+  onResolveCloudMedia?: (file: CloudFile) => Promise<string | undefined>;
 }
 
-export const AudioPlayerModal: React.FC<AudioPlayerProps> = ({ file, onClose }) => {
-  const [isPlaying, setIsPlaying] = useState(true);
-  const [progress, setProgress] = useState(35);
+export const AudioPlayerModal: React.FC<AudioPlayerProps> = ({
+  file,
+  onClose,
+  onResolveCloudMedia,
+}) => {
+  const [resolvedUrl, setResolvedUrl] = useState<string | undefined>(file?.url);
+  const [isLoadingAudio, setIsLoadingAudio] = useState(false);
+
+  useEffect(() => {
+    if (!file) {
+      setResolvedUrl(undefined);
+      setIsLoadingAudio(false);
+      return;
+    }
+    if (file.url) {
+      setResolvedUrl(file.url);
+      setIsLoadingAudio(false);
+      return;
+    }
+    if (!onResolveCloudMedia) return;
+
+    let cancelled = false;
+    setIsLoadingAudio(true);
+    onResolveCloudMedia(file)
+      .then((res) => {
+        if (!cancelled && res) {
+          setResolvedUrl(res);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsLoadingAudio(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [file?.id, file?.url]);
 
   if (!file) return null;
 
+  const activeAudioUrl = resolvedUrl || file.url;
+
   return (
     <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <div className="bg-[#121c2e] border-t sm:border border-[#20324e] rounded-t-3xl sm:rounded-3xl p-5 max-w-[420px] w-full space-y-4 animate-in slide-in-from-bottom-8">
+      <div className="orbit-card bg-[#121c2e] rounded-t-3xl sm:rounded-3xl p-5 max-w-[420px] w-full space-y-4 animate-in slide-in-from-bottom-8">
         <div className="flex items-center justify-between pb-2 border-b border-[#1f2f4a]">
           <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">Audio Player</span>
           <button onClick={onClose} className="text-slate-400 hover:text-white p-1">
@@ -163,41 +201,46 @@ export const AudioPlayerModal: React.FC<AudioPlayerProps> = ({ file, onClose }) 
           <div className="w-20 h-20 rounded-2xl bg-[#332515] border border-[#5c401e] flex items-center justify-center text-[#f59e0b] shadow-xl mb-4">
             <Music className="w-10 h-10 animate-pulse" />
           </div>
-          <h3 className="text-base font-bold text-white max-w-[260px] truncate">{file.name}</h3>
-          <p className="text-xs text-slate-400 mt-1">{file.formattedSize} • AAC Audio</p>
+          <h3 className="text-base font-bold text-white max-w-[280px] truncate">{file.name}</h3>
+          <p className="text-xs text-slate-400 mt-1">{file.formattedSize} • Cloud Audio</p>
         </div>
 
-        {/* Progress Bar */}
-        <div className="space-y-1">
-          <div
-            className="w-full h-2 bg-[#1b2b46] rounded-full overflow-hidden cursor-pointer"
-            onClick={(e) => {
-              const rect = e.currentTarget.getBoundingClientRect();
-              const p = Math.round(((e.clientX - rect.left) / rect.width) * 100);
-              setProgress(p);
-            }}
-          >
-            <div
-              className="h-full bg-gradient-to-r from-amber-500 to-yellow-400 rounded-full"
-              style={{ width: `${progress}%` }}
+        {activeAudioUrl ? (
+          <div className="pt-1">
+            <audio
+              key={activeAudioUrl}
+              src={activeAudioUrl}
+              controls
+              preload="metadata"
+              className="w-full"
             />
           </div>
-          <div className="flex justify-between text-[11px] text-slate-400">
-            <span>01:14</span>
-            <span>03:28</span>
+        ) : isLoadingAudio ? (
+          <div className="py-4 flex flex-col items-center justify-center gap-2 text-xs text-amber-300">
+            <Loader2 className="w-6 h-6 animate-spin" />
+            <span>ক্লাউড থেকে অডিও লোড হচ্ছে...</span>
           </div>
-        </div>
-
-        {/* Playback Controls */}
-        <div className="flex items-center justify-center gap-6 pt-2">
-          <button
-            type="button"
-            onClick={() => setIsPlaying(!isPlaying)}
-            className="w-14 h-14 rounded-full bg-[#3658dc] hover:bg-blue-600 text-white flex items-center justify-center shadow-lg shadow-blue-900/50"
-          >
-            {isPlaying ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6 ml-0.5" />}
-          </button>
-        </div>
+        ) : (
+          <div className="py-3 text-center space-y-2">
+            <p className="text-xs text-slate-400">অডিও প্লেব্যাক পাওয়া যায়নি</p>
+            {onResolveCloudMedia && (
+              <button
+                type="button"
+                onClick={() => {
+                  setIsLoadingAudio(true);
+                  onResolveCloudMedia(file)
+                    .then((res) => {
+                      if (res) setResolvedUrl(res);
+                    })
+                    .finally(() => setIsLoadingAudio(false));
+                }}
+                className="px-3.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold cursor-pointer"
+              >
+                ক্লাউড থেকে অডিও আনুন
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -228,7 +271,7 @@ export const NewFolderModal: React.FC<NewFolderProps> = ({ isOpen, onClose, onCr
     <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
       <form
         onSubmit={handleSubmit}
-        className="bg-[#121c2e] border border-[#20324e] rounded-3xl p-5 max-w-sm w-full space-y-4 shadow-2xl animate-in zoom-in-95"
+        className="orbit-card bg-[#121c2e] rounded-3xl p-5 max-w-sm w-full space-y-4 shadow-2xl animate-in zoom-in-95"
       >
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-emerald-950/80 border border-emerald-500/40 text-emerald-400 flex items-center justify-center shrink-0">
@@ -372,7 +415,7 @@ export const CreateFileModal: React.FC<CreateFileModalProps> = ({ isOpen, onClos
     <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4">
       <form
         onSubmit={handleSubmit}
-        className="bg-[#121c2e] border border-[#20324e] rounded-3xl p-5 max-w-md w-full space-y-4 shadow-2xl animate-in zoom-in-95 max-h-[92vh] flex flex-col"
+        className="orbit-card bg-[#121c2e] rounded-3xl p-5 max-w-md w-full space-y-4 shadow-2xl animate-in zoom-in-95 max-h-[92vh] flex flex-col"
       >
         {/* Header */}
         <div className="flex items-center justify-between pb-2 border-b border-[#1f2f4a]">
@@ -570,7 +613,7 @@ export const RenameFileModal: React.FC<RenameFileModalProps> = ({
     <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
       <form
         onSubmit={handleSubmit}
-        className="bg-[#121c2e] border border-[#20324e] rounded-3xl p-5 max-w-sm w-full space-y-4 shadow-2xl animate-in zoom-in-95"
+        className="orbit-card bg-[#121c2e] rounded-3xl p-5 max-w-sm w-full space-y-4 shadow-2xl animate-in zoom-in-95"
       >
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-blue-950/80 border border-blue-500/40 text-blue-400 flex items-center justify-center shrink-0">
@@ -659,7 +702,7 @@ export const ZipArchiveModal: React.FC<ZipArchiveModalProps> = ({
 
   return (
     <div className="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <div className="bg-[#121c2e] border-t sm:border border-[#20324e] rounded-t-3xl sm:rounded-3xl p-5 max-w-[420px] w-full max-h-[85vh] flex flex-col animate-in slide-in-from-bottom-8">
+      <div className="orbit-card bg-[#121c2e] rounded-t-3xl sm:rounded-3xl p-5 max-w-[420px] w-full max-h-[85vh] flex flex-col animate-in slide-in-from-bottom-8">
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-[#1f2f4a]">
           <div className="flex items-center gap-2.5">
@@ -796,7 +839,7 @@ export const FileInfoModal: React.FC<FileInfoModalProps> = ({
 
   return (
     <div className="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <div className="bg-[#121c2e] border-t sm:border border-[#20324e] rounded-t-3xl sm:rounded-3xl p-5 max-w-[440px] w-full max-h-[88vh] flex flex-col animate-in slide-in-from-bottom-8">
+      <div className="orbit-card bg-[#121c2e] rounded-t-3xl sm:rounded-3xl p-5 max-w-[440px] w-full max-h-[88vh] flex flex-col animate-in slide-in-from-bottom-8">
         {/* Hidden input for uploading new version of this file */}
         <input
           type="file"

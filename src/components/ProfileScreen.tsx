@@ -101,7 +101,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         <button
           type="button"
           onClick={onOpenPayment}
-          className={`w-full rounded-2xl p-4 flex items-center justify-between transition-all shadow-md text-left ${
+          className={`orbit-card overflow-hidden w-full rounded-2xl p-4 flex items-center justify-between transition-all shadow-md text-left cursor-pointer ${
             isApproved
               ? 'bg-[#102521] border border-emerald-500/40 hover:bg-[#132e29]'
               : isExpired
@@ -211,7 +211,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         <button
           type="button"
           onClick={onOpenAdminPanel}
-          className="w-full bg-[#111e33] hover:bg-[#162744] border border-blue-500/40 rounded-2xl p-4 flex items-center justify-between transition-colors shadow-md shadow-blue-950/20"
+          className="orbit-card overflow-hidden w-full bg-[#111e33] hover:bg-[#162744] border border-blue-500/40 rounded-2xl p-4 flex items-center justify-between transition-colors shadow-md shadow-blue-950/20 cursor-pointer"
         >
           <div className="flex items-center gap-3.5">
             <div className="w-10 h-10 rounded-xl bg-blue-600/20 border border-blue-500/40 flex items-center justify-center text-sky-400 shrink-0">
@@ -237,7 +237,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       <button
         type="button"
         onClick={onOpenAppSettings}
-        className="w-full bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] rounded-2xl p-4 flex items-center justify-between transition-colors"
+        className="orbit-card overflow-hidden w-full bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] rounded-2xl p-4 flex items-center justify-between transition-colors cursor-pointer"
       >
         <div className="flex items-center gap-3.5">
           <div className="w-10 h-10 rounded-xl bg-[#142033] border border-[#233552] flex items-center justify-center text-slate-300 shrink-0">
@@ -255,7 +255,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       <button
         type="button"
         onClick={onSignOut}
-        className="w-full bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 rounded-2xl p-3.5 flex items-center justify-center gap-2 text-sm font-semibold transition-colors mt-auto"
+        className="orbit-card overflow-hidden w-full bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 rounded-2xl p-3.5 flex items-center justify-center gap-2 text-sm font-semibold transition-colors mt-auto cursor-pointer"
       >
         <LogOut className="w-4 h-4" />
         <span>Sign out</span>

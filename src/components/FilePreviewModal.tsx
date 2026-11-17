@@ -19,6 +19,8 @@ import {
   Archive,
   Lock,
   Sparkles,
+  Loader2,
+  Play,
 } from 'lucide-react';
 import { CloudFile } from '../types';
 
@@ -34,6 +36,7 @@ interface FilePreviewModalProps {
   onRenameFile?: (id: string, newName: string) => void;
   onCopyFile?: (file: CloudFile) => void;
   onMoveFile?: (id: string, destinationFolderId: string | null) => void;
+  onResolveCloudMedia?: (file: CloudFile) => Promise<string | undefined>;
   availableFolders?: CloudFile[];
 }
 
@@ -49,6 +52,7 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
   onRenameFile,
   onCopyFile,
   onMoveFile,
+  onResolveCloudMedia,
   availableFolders = [],
 }) => {
   // Rename state
@@ -64,16 +68,66 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
   // Action toast state
   const [actionFeedback, setActionFeedback] = useState<string | null>(null);
 
+  // Resolved media URL from IndexedDB or Firestore cloud chunks
+  const [resolvedMediaUrl, setResolvedMediaUrl] = useState<string | undefined>(file?.url);
+  const [isLoadingCloudMedia, setIsLoadingCloudMedia] = useState(false);
+
   useEffect(() => {
     if (file) {
       setNewName(file.name);
       setIsRenaming(false);
       setIsMovePickerOpen(false);
       setShowPermanentDeleteConfirm(false);
+      setResolvedMediaUrl(file.url);
+    } else {
+      setResolvedMediaUrl(undefined);
     }
   }, [file]);
 
+  useEffect(() => {
+    if (!isOpen || !file || isLocked) return;
+    if (file.url) {
+      setResolvedMediaUrl(file.url);
+      setIsLoadingCloudMedia(false);
+      return;
+    }
+    const needsCloudMedia =
+      file.type === 'video' || file.type === 'audio' || file.type === 'image';
+    if (!needsCloudMedia || !onResolveCloudMedia) return;
+
+    let cancelled = false;
+    setIsLoadingCloudMedia(true);
+    onResolveCloudMedia(file)
+      .then((resolved) => {
+        if (!cancelled && resolved) {
+          setResolvedMediaUrl(resolved);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsLoadingCloudMedia(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, file?.id, file?.url, file?.type, isLocked]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen || !file) return null;
+
+  const activeMediaUrl = resolvedMediaUrl || file.url;
 
   const showFeedback = (msg: string) => {
     setActionFeedback(msg);
@@ -124,8 +178,13 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
   const ext = getExtension(file.name);
 
   return (
-    <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-5 animate-in fade-in duration-200">
-      <div className="bg-[#101928] border border-[#20324e] rounded-3xl max-w-[430px] w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 text-white relative">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Preview ${file.name}`}
+      className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-5 animate-in fade-in duration-200"
+    >
+      <div className="orbit-card bg-[#101928] rounded-3xl max-w-[430px] w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 text-white relative">
         
         {/* Feedback Toast */}
         {actionFeedback && (
@@ -205,7 +264,9 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="w-8 h-8 rounded-full bg-[#17253b] hover:bg-[#203452] flex items-center justify-center text-slate-400 hover:text-white transition-colors shrink-0 ml-1"
+            aria-label="Close preview"
+            title="Close preview"
+            className="w-8 h-8 rounded-full bg-[#17253b] hover:bg-[#203452] flex items-center justify-center text-slate-400 hover:text-white transition-colors shrink-0 ml-1 cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
@@ -213,7 +274,7 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
 
         {/* Visual Preview Area */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          <div className="w-full bg-[#09101d] border border-[#1b2b42] rounded-2xl overflow-hidden min-h-[200px] max-h-[280px] flex items-center justify-center relative group">
+          <div className="orbit-card w-full bg-[#09101d] rounded-2xl overflow-hidden min-h-[200px] max-h-[280px] flex items-center justify-center relative group">
             {isLocked ? (
               <div className="w-full py-10 px-6 flex flex-col items-center justify-center text-center bg-gradient-to-b from-rose-950/50 to-[#0e1220]">
                 <div className="w-16 h-16 rounded-2xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400 mb-3 shadow-lg">
@@ -238,12 +299,17 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                 )}
               </div>
             ) : file.type === 'image' ? (
-              (file.url || file.thumbnail) ? (
+              (activeMediaUrl || file.thumbnail) ? (
                 <img
-                  src={file.url || file.thumbnail}
+                  src={activeMediaUrl || file.thumbnail}
                   alt={file.name}
                   className="w-full h-full object-contain max-h-[260px]"
                 />
+              ) : isLoadingCloudMedia ? (
+                <div className="w-full py-10 px-6 flex flex-col items-center justify-center text-center bg-gradient-to-b from-[#0e1726] to-[#080d17]">
+                  <Loader2 className="w-8 h-8 text-blue-400 animate-spin mb-2" />
+                  <span className="text-xs font-semibold text-white">ক্লাউড থেকে ছবি লোড হচ্ছে...</span>
+                </div>
               ) : (
                 <div className="w-full py-10 px-6 flex flex-col items-center justify-center text-center bg-gradient-to-b from-[#0e1726] to-[#080d17]">
                   <div className="w-16 h-16 rounded-2xl bg-blue-500/15 border border-blue-500/30 flex items-center justify-center text-blue-400 mb-3 shadow-inner">
@@ -305,29 +371,99 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                 </div>
               )
             ) : file.type === 'video' ? (
-              file.url ? (
+              activeMediaUrl ? (
                 <video
-                  src={file.url}
+                  key={activeMediaUrl}
+                  src={activeMediaUrl}
+                  poster={file.thumbnail}
                   controls
+                  playsInline
+                  preload="metadata"
                   className="w-full max-h-[260px] bg-black"
                 />
-              ) : (
-                <div className="w-full py-10 px-6 flex flex-col items-center justify-center text-center bg-gradient-to-b from-[#1a112c] to-[#0d0717]">
-                  <div className="w-16 h-16 rounded-full bg-purple-500/20 border border-purple-500/40 flex items-center justify-center text-purple-400 mb-3 shadow-lg">
-                    <Video className="w-8 h-8" />
+              ) : isLoadingCloudMedia ? (
+                <div className="w-full py-10 px-6 flex flex-col items-center justify-center text-center bg-gradient-to-b from-[#1a112c] to-[#0d0717] relative overflow-hidden">
+                  {file.thumbnail && (
+                    <img
+                      src={file.thumbnail}
+                      alt={file.name}
+                      className="absolute inset-0 w-full h-full object-cover opacity-25 blur-[2px]"
+                    />
+                  )}
+                  <div className="relative z-10 flex flex-col items-center">
+                    <Loader2 className="w-8 h-8 text-purple-400 animate-spin mb-2" />
+                    <span className="text-xs font-semibold text-white">ক্লাউড থেকে ভিডিও লোড হচ্ছে...</span>
+                    <span className="text-[11px] text-slate-300 mt-1">{file.name}</span>
                   </div>
-                  <span className="text-xs font-semibold text-white">Video Media File</span>
-                  <span className="text-[11px] text-slate-400 mt-1">{file.name}</span>
+                </div>
+              ) : (
+                <div className="w-full py-10 px-6 flex flex-col items-center justify-center text-center bg-gradient-to-b from-[#1a112c] to-[#0d0717] relative overflow-hidden">
+                  {file.thumbnail && (
+                    <img
+                      src={file.thumbnail}
+                      alt={file.name}
+                      className="absolute inset-0 w-full h-full object-cover opacity-35"
+                    />
+                  )}
+                  <div className="relative z-10 flex flex-col items-center">
+                    <div className="w-16 h-16 rounded-full bg-purple-500/25 border border-purple-500/50 flex items-center justify-center text-purple-300 mb-3 shadow-lg">
+                      <Play className="w-7 h-7 ml-0.5" />
+                    </div>
+                    <span className="text-xs font-semibold text-white">Video Media File</span>
+                    <span className="text-[11px] text-slate-300 mt-1">{file.name}</span>
+                    {onResolveCloudMedia && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsLoadingCloudMedia(true);
+                          onResolveCloudMedia(file)
+                            .then((res) => {
+                              if (res) setResolvedMediaUrl(res);
+                              else showFeedback('ক্লাউড থেকে ভিডিও পাওয়া যায়নি');
+                            })
+                            .finally(() => setIsLoadingCloudMedia(false));
+                        }}
+                        className="mt-3 px-3.5 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-[11px] font-semibold shadow-md cursor-pointer"
+                      >
+                        ক্লাউড থেকে প্লে করুন
+                      </button>
+                    )}
+                  </div>
                 </div>
               )
             ) : file.type === 'audio' ? (
-              <div className="w-full py-10 px-6 flex flex-col items-center justify-center text-center bg-gradient-to-b from-[#251b0d] to-[#120b04]">
-                <div className="w-16 h-16 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 mb-3 shadow-lg">
-                  <Music className="w-8 h-8" />
+              activeMediaUrl ? (
+                <div className="w-full py-6 px-5 flex flex-col items-center justify-center text-center bg-gradient-to-b from-[#251b0d] to-[#120b04] gap-3">
+                  <div className="w-14 h-14 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shadow-lg">
+                    <Music className="w-7 h-7" />
+                  </div>
+                  <div className="min-w-0 max-w-full">
+                    <div className="text-xs font-semibold text-white truncate">{file.name}</div>
+                    <div className="text-[11px] text-slate-400 mt-0.5">{file.formattedSize}</div>
+                  </div>
+                  <audio
+                    key={activeMediaUrl}
+                    src={activeMediaUrl}
+                    controls
+                    preload="metadata"
+                    className="w-full"
+                  />
                 </div>
-                <span className="text-xs font-semibold text-white">Audio Track</span>
-                <span className="text-[11px] text-slate-400 mt-1">{file.name}</span>
-              </div>
+              ) : isLoadingCloudMedia ? (
+                <div className="w-full py-10 px-6 flex flex-col items-center justify-center text-center bg-gradient-to-b from-[#251b0d] to-[#120b04]">
+                  <Loader2 className="w-8 h-8 text-amber-400 animate-spin mb-2" />
+                  <span className="text-xs font-semibold text-white">ক্লাউড থেকে অডিও লোড হচ্ছে...</span>
+                  <span className="text-[11px] text-slate-400 mt-1">{file.name}</span>
+                </div>
+              ) : (
+                <div className="w-full py-10 px-6 flex flex-col items-center justify-center text-center bg-gradient-to-b from-[#251b0d] to-[#120b04]">
+                  <div className="w-16 h-16 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 mb-3 shadow-lg">
+                    <Music className="w-8 h-8" />
+                  </div>
+                  <span className="text-xs font-semibold text-white">Audio Track</span>
+                  <span className="text-[11px] text-slate-400 mt-1">{file.name}</span>
+                </div>
+              )
             ) : (
               <div className="w-full py-10 px-6 flex flex-col items-center justify-center text-center">
                 <Folder className="w-16 h-16 text-blue-400 mb-2" />
@@ -377,7 +513,7 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
 
           {/* Move Picker Popover */}
           {isMovePickerOpen && (
-            <div className="bg-[#121c2e] border border-blue-500/40 rounded-2xl p-3 space-y-2 animate-in zoom-in-95">
+            <div className="orbit-card bg-[#121c2e] rounded-2xl p-3 space-y-2 animate-in zoom-in-95">
               <div className="flex items-center justify-between pb-1.5 border-b border-[#1f2f49] text-xs font-semibold text-white">
                 <span className="flex items-center gap-1.5">
                   <FolderInput className="w-3.5 h-3.5 text-blue-400" />
@@ -418,7 +554,7 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
           )}
 
           {/* Basic Details List */}
-          <div className="bg-[#121c2d] border border-[#1f2f49] rounded-2xl p-4 space-y-2.5 text-xs">
+          <div className="orbit-card bg-[#121c2d] rounded-2xl p-4 space-y-2.5 text-xs">
             <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1">
               File Details
             </h4>
@@ -508,14 +644,21 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
 
           <button
             type="button"
-            onClick={() => {
+            onClick={async () => {
               if (!guardLocked()) return;
-              const downloadUrl = file.url || file.thumbnail;
+              let downloadUrl =
+                activeMediaUrl || (file.type === 'image' ? file.thumbnail : undefined) || '';
+              if (!downloadUrl && onResolveCloudMedia) {
+                showFeedback('ক্লাউড থেকে ফাইল ডাউনলোডের জন্য প্রস্তুত হচ্ছে...');
+                downloadUrl = (await onResolveCloudMedia(file)) || '';
+              }
               if (downloadUrl) {
                 const a = document.createElement('a');
                 a.href = downloadUrl;
                 a.download = file.name;
+                document.body.appendChild(a);
                 a.click();
+                document.body.removeChild(a);
                 showFeedback(`Downloading ${file.name}`);
               } else if (file.content !== undefined) {
                 const blob = new Blob([file.content], { type: 'text/plain;charset=utf-8' });
@@ -523,11 +666,13 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                 const a = document.createElement('a');
                 a.href = tempUrl;
                 a.download = file.name;
+                document.body.appendChild(a);
                 a.click();
+                document.body.removeChild(a);
                 setTimeout(() => URL.revokeObjectURL(tempUrl), 1000);
                 showFeedback(`Downloaded ${file.name}`);
               } else {
-                showFeedback(`No local binary available on this device`);
+                showFeedback('ফাইলটি এই মুহূর্তে ক্লাউড থেকে পাওয়া যায়নি');
               }
             }}
             className="flex-1 py-2.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-all shadow-md active:scale-98"

@@ -178,10 +178,11 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
         setLoadingText('ক্লাউড সার্ভারে অ্যাকাউন্ট যাচাই করা হচ্ছে...');
 
         let searchIdentifier = '';
-        let isPhoneMode = loginMethod === 'phone';
+        const rawPhoneInput = phone.trim();
+        let isPhoneMode = loginMethod === 'phone' && !rawPhoneInput.includes('@');
 
         if (isPhoneMode) {
-          const inputPhone = cleanPhone(phone);
+          const inputPhone = cleanPhone(rawPhoneInput);
           if (!inputPhone) {
             setErrorMessage('অনুগ্রহ করে আপনার মোবাইল নম্বর দিন');
             setIsLoading(false);
@@ -189,13 +190,16 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
           }
           searchIdentifier = inputPhone;
         } else {
-          const inputEmail = email.trim().toLowerCase();
+          const inputEmail = (rawPhoneInput.includes('@') && loginMethod === 'phone' ? rawPhoneInput : email)
+            .trim()
+            .toLowerCase();
           if (!inputEmail) {
-            setErrorMessage('অনুগ্রহ করে আপনার ইমেইল দিন');
+            setErrorMessage('অনুগ্রহ করে আপনার জিমেইল / ইমেইল দিন');
             setIsLoading(false);
             return;
           }
           searchIdentifier = inputEmail;
+          isPhoneMode = false;
         }
 
         if (!password) {
@@ -213,8 +217,8 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
           }
         });
 
-        // Step B: If not found in local memory, query directly from Cloud Firestore!
-        if (!foundUser) {
+        // Step B: If not found locally (or local password differs), query directly from Cloud Firestore!
+        if (!foundUser || (foundUser.passwordPlain && foundUser.passwordPlain !== password)) {
           try {
             const cloudUser = await firestoreService.findRegisteredUser(searchIdentifier);
             if (cloudUser) {
@@ -282,9 +286,9 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
       </div>
 
       {/* Main Authentication Container */}
-      <div className="w-full mt-1">
+      <div className="w-full mt-1 space-y-3">
         {/* Clean Sign In / Sign Up Switcher */}
-        <div className="orbit-card bg-[#0d1626] rounded-2xl p-1.5 mb-3 shadow-lg flex items-center gap-1">
+        <div className="orbit-card bg-[#0d1626] rounded-2xl p-1.5 shadow-lg flex items-center gap-1">
           <button
             type="button"
             onClick={() => {
@@ -320,23 +324,25 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
           </button>
         </div>
 
-        {/* Section Heading */}
-        <div className="mb-2.5">
-          <h2 className="text-base font-bold tracking-tight text-white">
-            {authMode === 'signin' ? 'অ্যাকাউন্টে প্রবেশ করুন' : 'নতুন অ্যাকাউন্ট তৈরি করুন'}
-          </h2>
-          <p className="text-[11px] text-slate-400 mt-0.5">
-            {authMode === 'signin'
-              ? 'নিবন্ধিত মোবাইল নম্বর বা ইমেইল ও পাসওয়ার্ড দিয়ে লগইন করুন'
-              : 'নাম, মোবাইল নম্বর, ইমেইল ও পাসওয়ার্ড দিয়ে নতুন অ্যাকাউন্ট খুলুন'}
-          </p>
-        </div>
+        {/* Auth Card */}
+        <div className="orbit-card bg-[#0d1626]/95 rounded-2xl p-4 shadow-xl space-y-3">
+          {/* Section Heading */}
+          <div>
+            <h2 className="text-base font-bold tracking-tight text-white">
+              {authMode === 'signin' ? 'অ্যাকাউন্টে প্রবেশ করুন' : 'নতুন অ্যাকাউন্ট তৈরি করুন'}
+            </h2>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              {authMode === 'signin'
+                ? 'যেকোনো ডিভাইস থেকে নিবন্ধিত জিমেইল বা মোবাইল নম্বর ও পাসওয়ার্ড দিয়ে প্রবেশ করুন'
+                : 'নাম, মোবাইল নম্বর, জিমেইল/ইমেইল ও পাসওয়ার্ড দিয়ে নতুন অ্যাকাউন্ট খুলুন'}
+            </p>
+          </div>
 
-        {/* Form */}
-        <form onSubmit={handleSubmit} className="space-y-2.5">
-          {/* Sign Up: Optional Avatar / Profile Picture Upload */}
-          {authMode === 'signup' && (
-            <div className="flex items-center gap-3.5 bg-[#121c2d] border border-[#20324e] rounded-2xl p-3">
+          {/* Form */}
+          <form onSubmit={handleSubmit} className="space-y-2.5">
+            {/* Sign Up: Optional Avatar / Profile Picture Upload */}
+            {authMode === 'signup' && (
+              <div className="orbit-card flex items-center gap-3.5 bg-[#121c2d] rounded-2xl p-3">
               <div className="relative w-12 h-12 rounded-full bg-[#182740] border border-blue-500/40 flex items-center justify-center shrink-0 overflow-hidden shadow-inner">
                 {avatarUrl ? (
                   <img src={avatarUrl} alt="Avatar Preview" className="w-full h-full object-cover" />
@@ -432,21 +438,38 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
               </div>
             </>
           ) : (
-            /* Sign In Mode: Login via Phone or Email */
+            /* Sign In Mode: Prominent 2-Tab Switcher (Phone+Password OR Gmail+Password) */
             <>
-              <div className="flex items-center justify-between text-xs px-0.5">
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
-                  {loginMethod === 'phone' ? 'মোবাইল নম্বর (Phone)' : 'ইমেইল ঠিকানা (Email)'}
-                </span>
+              <div className="orbit-card bg-[#111b2d] rounded-xl p-1 flex items-center gap-1">
                 <button
                   type="button"
                   onClick={() => {
-                    setLoginMethod(loginMethod === 'phone' ? 'email' : 'phone');
+                    setLoginMethod('phone');
                     setErrorMessage('');
                   }}
-                  className="text-[11px] text-sky-400 hover:text-sky-300 font-medium underline"
+                  className={`flex-1 py-2 px-2.5 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                    loginMethod === 'phone'
+                      ? 'bg-blue-600 text-white ai-solid-text-white shadow'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
                 >
-                  {loginMethod === 'phone' ? 'ইমেইল দিয়ে লগইন করুন' : 'মোবাইল নম্বর দিয়ে লগইন করুন'}
+                  <Phone className="w-3.5 h-3.5" />
+                  <span>মোবাইল ও পাসওয়ার্ড</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLoginMethod('email');
+                    setErrorMessage('');
+                  }}
+                  className={`flex-1 py-2 px-2.5 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                    loginMethod === 'email'
+                      ? 'bg-blue-600 text-white ai-solid-text-white shadow'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Mail className="w-3.5 h-3.5" />
+                  <span>জিমেইল / ইমেইল ও পাসওয়ার্ড</span>
                 </button>
               </div>
 
@@ -471,7 +494,7 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder="Enter your email"
+                    placeholder="name@gmail.com"
                     required
                     className="w-full bg-transparent text-white placeholder-slate-500 focus:outline-none text-sm"
                   />
@@ -551,12 +574,13 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
           </button>
         </form>
 
-        <div className="mt-4 text-center">
+        <div className="pt-1 text-center">
           <p className="text-[11px] text-slate-400">
             {authMode === 'signin'
               ? 'অ্যাকাউন্ট নেই? উপরের বারে "নতুন অ্যাকাউন্ট (Sign Up)" চাপুন'
               : 'ইতিমধ্যে অ্যাকাউন্ট আছে? উপরের বারে "লগইন (Sign In)" চাপুন'}
           </p>
+        </div>
         </div>
       </div>
       </div>

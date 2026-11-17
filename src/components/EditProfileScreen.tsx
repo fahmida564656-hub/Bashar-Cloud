@@ -120,7 +120,7 @@ export const EditProfileScreen: React.FC<EditProfileScreenProps> = ({
             <label className="block text-xs font-semibold text-slate-300 mb-1.5">
               পুরো নাম (Full name) <span className="text-rose-400">*</span>
             </label>
-            <div className="relative flex items-center bg-[#121c2c] border border-[#1f3049] focus-within:border-blue-500 rounded-xl px-4 py-3 transition-colors">
+            <div className="orbit-card relative flex items-center bg-[#121c2c] border border-[#1f3049] focus-within:border-blue-500 rounded-xl px-4 py-3 transition-colors">
               <User className="w-4 h-4 text-slate-400 mr-2.5 shrink-0" />
               <input
                 type="text"
@@ -138,7 +138,7 @@ export const EditProfileScreen: React.FC<EditProfileScreenProps> = ({
             <label className="block text-xs font-semibold text-slate-300 mb-1.5">
               মোবাইল নম্বর (Phone number)
             </label>
-            <div className="relative flex items-center bg-[#121c2c] border border-[#1f3049] focus-within:border-blue-500 rounded-xl px-4 py-3 transition-colors">
+            <div className="orbit-card relative flex items-center bg-[#121c2c] border border-[#1f3049] focus-within:border-blue-500 rounded-xl px-4 py-3 transition-colors">
               <Phone className="w-4 h-4 text-slate-400 mr-2.5 shrink-0" />
               <input
                 type="tel"
@@ -155,7 +155,7 @@ export const EditProfileScreen: React.FC<EditProfileScreenProps> = ({
             <label className="block text-xs font-semibold text-slate-300 mb-1.5">
               ইমেইল (Email address)
             </label>
-            <div className="relative flex items-center bg-[#121c2c] border border-[#1f3049] focus-within:border-blue-500 rounded-xl px-4 py-3 transition-colors">
+            <div className="orbit-card relative flex items-center bg-[#121c2c] border border-[#1f3049] focus-within:border-blue-500 rounded-xl px-4 py-3 transition-colors">
               <Mail className="w-4 h-4 text-slate-400 mr-2.5 shrink-0" />
               <input
                 type="email"

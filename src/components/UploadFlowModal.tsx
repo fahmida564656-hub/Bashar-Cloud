@@ -376,7 +376,7 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
         className="hidden"
       />
 
-      <div className="relative w-full max-w-[420px] h-[92vh] max-h-[820px] bg-[#0c1626] text-white rounded-3xl border border-sky-500/25 shadow-2xl flex flex-col overflow-hidden font-sans">
+      <div className="orbit-card relative w-full max-w-[420px] h-[92vh] max-h-[820px] bg-[#0c1626] text-white rounded-3xl border border-sky-500/25 shadow-2xl flex flex-col overflow-hidden font-sans">
         {/* Decorative electric wave glowing bands matching screenshot */}
         <div className="absolute top-0 inset-x-0 h-28 bg-gradient-to-b from-blue-600/20 via-sky-500/10 to-transparent pointer-events-none" />
         <div className="absolute -top-10 -right-10 w-44 h-44 bg-blue-500/15 rounded-full blur-3xl pointer-events-none" />
@@ -435,7 +435,7 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
               {/* Configuration Cards Stack (Cards 1, 2, 3 from Image 1) */}
               <div className="space-y-3.5">
                 {/* CARD 1: Selected files info */}
-                <div className="bg-[#121f33]/90 border border-[#213552] rounded-2xl p-4 flex items-center gap-3.5 shadow-lg">
+                <div className="orbit-card bg-[#121f33]/90 border border-[#213552] rounded-2xl p-4 flex items-center gap-3.5 shadow-lg">
                   <div className="w-11 h-11 rounded-xl bg-sky-500/15 border border-sky-500/30 flex items-center justify-center text-sky-400 shrink-0">
                     <Paperclip className="w-5 h-5 -rotate-45" />
                   </div>
@@ -450,7 +450,7 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
                 </div>
 
                 {/* CARD 2: Account identification */}
-                <div className="bg-[#121f33]/90 border border-[#213552] rounded-2xl p-4 flex items-center gap-3.5 shadow-lg">
+                <div className="orbit-card bg-[#121f33]/90 border border-[#213552] rounded-2xl p-4 flex items-center gap-3.5 shadow-lg">
                   <div className="w-11 h-11 rounded-xl bg-blue-500/15 border border-blue-500/30 flex items-center justify-center text-blue-400 shrink-0">
                     <User className="w-5 h-5" />
                   </div>
@@ -468,7 +468,7 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
                     setTempSelectedDestination(destination);
                     setCurrentStep(2);
                   }}
-                  className="bg-[#121f33]/90 hover:bg-[#162740] border border-[#213552] hover:border-sky-500/40 rounded-2xl p-4 flex items-center justify-between gap-3.5 shadow-lg cursor-pointer transition-all group active:scale-[0.99]"
+                  className="orbit-card bg-[#121f33]/90 hover:bg-[#162740] border border-[#213552] hover:border-sky-500/40 rounded-2xl p-4 flex items-center justify-between gap-3.5 shadow-lg cursor-pointer transition-all group active:scale-[0.99]"
                   title="Click to select destination folder"
                 >
                   <div className="flex items-center gap-3.5 min-w-0">
@@ -623,7 +623,7 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
             {/* ======================================================== */}
             {isCreateFolderSheetOpen && (
               <div className="absolute inset-0 z-20 bg-black/60 backdrop-blur-xs flex flex-col justify-end animate-in fade-in">
-                <div className="bg-[#121c2d] border-t border-x border-[#233550] rounded-t-3xl p-5 shadow-2xl space-y-4 animate-in slide-in-from-bottom duration-200">
+                <div className="orbit-card bg-[#121c2d] border-t border-x border-[#233550] rounded-t-3xl p-5 shadow-2xl space-y-4 animate-in slide-in-from-bottom duration-200">
                   {/* Top Handle bar */}
                   <div className="w-10 h-1 bg-slate-600 rounded-full mx-auto mb-1" />
 
@@ -735,7 +735,7 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
               </div>
 
               {/* Upload Progress Card Container */}
-              <div className="bg-[#121f33]/90 border border-[#213552] rounded-2xl p-4 space-y-3.5 shadow-xl">
+              <div className="orbit-card bg-[#121f33]/90 border border-[#213552] rounded-2xl p-4 space-y-3.5 shadow-xl">
                 {/* Header row with Counter badge (e.g. 2/49) */}
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-bold text-white">Upload Progress</h3>
@@ -773,7 +773,7 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
                 {/* 3 Stat Boxes Grid (Done, Queued, Failed) from Image 4 */}
                 <div className="grid grid-cols-3 gap-2.5 pt-1">
                   {/* Done Box (Green) */}
-                  <div className="bg-emerald-950/50 border border-emerald-500/40 rounded-xl p-2.5 flex flex-col items-center justify-center text-center shadow-sm">
+                  <div className="orbit-card bg-emerald-950/50 border border-emerald-500/40 rounded-xl p-2.5 flex flex-col items-center justify-center text-center shadow-sm">
                     <Check className="w-4 h-4 text-emerald-400 mb-0.5" />
                     <span className="text-base font-extrabold text-emerald-300 font-mono">
                       {doneCount}
@@ -782,7 +782,7 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
                   </div>
 
                   {/* Queued Box (Blue) */}
-                  <div className="bg-blue-950/50 border border-blue-500/40 rounded-xl p-2.5 flex flex-col items-center justify-center text-center shadow-sm">
+                  <div className="orbit-card bg-blue-950/50 border border-blue-500/40 rounded-xl p-2.5 flex flex-col items-center justify-center text-center shadow-sm">
                     <Clock className="w-4 h-4 text-blue-400 mb-0.5" />
                     <span className="text-base font-extrabold text-blue-300 font-mono">
                       {queuedCount}
@@ -791,7 +791,7 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
                   </div>
 
                   {/* Failed Box (Red) */}
-                  <div className="bg-rose-950/50 border border-rose-500/40 rounded-xl p-2.5 flex flex-col items-center justify-center text-center shadow-sm">
+                  <div className="orbit-card bg-rose-950/50 border border-rose-500/40 rounded-xl p-2.5 flex flex-col items-center justify-center text-center shadow-sm">
                     <AlertCircle className="w-4 h-4 text-rose-400 mb-0.5" />
                     <span className="text-base font-extrabold text-rose-300 font-mono">
                       {failedCount}
@@ -813,7 +813,7 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
                     return (
                       <div
                         key={item.id}
-                        className="bg-[#142135] border border-[#203452] rounded-xl p-3 flex items-center justify-between gap-3 shadow-md"
+                        className="orbit-card bg-[#142135] border border-[#203452] rounded-xl p-3 flex items-center justify-between gap-3 shadow-md"
                       >
                         <div className="flex items-center gap-3 min-w-0">
                           <div className="w-9 h-9 rounded-xl bg-[#1b2b42] flex items-center justify-center shrink-0">

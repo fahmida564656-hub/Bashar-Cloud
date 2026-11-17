@@ -788,7 +788,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
           <div className="flex flex-col items-center text-center pt-1 pb-2">
             {/* Executive Hero Card */}
             <div
-              className={`w-full rounded-3xl border p-4.5 mb-3.5 relative overflow-hidden ${
+              className={`orbit-card w-full rounded-3xl border p-4.5 mb-3.5 relative overflow-hidden ${
                 isLight
                   ? 'bg-gradient-to-b from-blue-50/90 to-white border-blue-200/80'
                   : 'bg-gradient-to-b from-[#13213a] to-[#0f1727] border-[#213556]'
@@ -936,7 +936,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                     <Sparkles className="w-3.5 h-3.5" />
                   </div>
                   <div
-                    className={`flex-1 min-w-0 rounded-2xl rounded-tl-xs border px-3.5 py-2.5 ${
+                    className={`orbit-card flex-1 min-w-0 rounded-2xl rounded-tl-xs border px-3.5 py-2.5 ${
                       msg.isError
                         ? isLight
                           ? 'bg-rose-50 border-rose-200 text-rose-900'
@@ -1076,7 +1076,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
       {/* In-Frame Cloud + Device Attachment Picker */}
       {isAttachPickerOpen && (
         <div
-          className={`shrink-0 mx-3 mb-2 rounded-2xl border p-3 shadow-xl ${
+          className={`orbit-card shrink-0 mx-3 mb-2 rounded-2xl border p-3 shadow-xl ${
             isLight
               ? 'bg-slate-50 border-slate-200 text-slate-900'
               : 'bg-[#111b2d] border-[#213454] text-white'

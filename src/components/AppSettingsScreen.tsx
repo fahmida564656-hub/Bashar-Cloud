@@ -104,7 +104,7 @@ export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
 
         <div className="space-y-3">
           {/* Theme Toggle Card (Light / Dark mode) */}
-          <div className="bg-[#121c2c] border border-[#1f3049] rounded-2xl p-4 shadow-md">
+          <div className="orbit-card bg-[#121c2c] border border-[#1f3049] rounded-2xl p-4 shadow-md">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-3">
                 <div
@@ -299,7 +299,7 @@ export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
 
         <div className="space-y-3">
           {/* Cloud Sync Card */}
-          <div className="bg-[#121c2c] border border-[#1f3049] rounded-2xl p-4 shadow-md">
+          <div className="orbit-card bg-[#121c2c] border border-[#1f3049] rounded-2xl p-4 shadow-md">
             <div className="flex items-center justify-between mb-2.5">
               <div className="flex items-center gap-3">
                 <div
@@ -372,7 +372,7 @@ export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
           {/* Subscription Plan Overview Card */}
           {subscription && (
             <div
-              className={`rounded-2xl p-4 border shadow-md flex items-center justify-between gap-3 ${
+              className={`orbit-card rounded-2xl p-4 border shadow-md flex items-center justify-between gap-3 ${
                 isApproved
                   ? 'bg-[#102521] border-emerald-500/40'
                   : isExpired
@@ -444,7 +444,7 @@ export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
           </span>
         </div>
 
-        <div className="bg-[#121c2c] border border-[#1f3049] rounded-2xl overflow-hidden shadow-md divide-y divide-[#1b2b42]">
+        <div className="orbit-card bg-[#121c2c] border border-[#1f3049] rounded-2xl overflow-hidden shadow-md divide-y divide-[#1b2b42]">
           <button
             type="button"
             onClick={() => setModalType('password')}
@@ -484,7 +484,7 @@ export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
       {/* MODALS */}
       {modalType === 'password' && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-[#121c2e] border border-[#20324e] rounded-3xl p-5 max-w-sm w-full space-y-4 text-white">
+          <div className="orbit-card bg-[#121c2e] border border-[#20324e] rounded-3xl p-5 max-w-sm w-full space-y-4 text-white">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-bold text-white">Change Password</h3>
               <button
@@ -542,7 +542,7 @@ export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
 
       {modalType === 'delete' && (
         <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-[#121c2e] border border-rose-500/30 rounded-3xl p-6 max-w-sm w-full space-y-4 text-center text-white">
+          <div className="orbit-card bg-[#121c2e] border border-rose-500/30 rounded-3xl p-6 max-w-sm w-full space-y-4 text-center text-white">
             <div className="w-12 h-12 rounded-full bg-rose-500/20 text-rose-400 mx-auto flex items-center justify-center">
               <Trash2 className="w-6 h-6" />
             </div>

@@ -6,6 +6,8 @@ import {
   onSnapshot,
   getDocs,
   getDoc,
+  query,
+  where,
 } from 'firebase/firestore';
 import { db } from './config';
 import { handleFirestoreError, OperationType } from './errorHandler';
@@ -33,6 +35,13 @@ import {
   doesPaymentBelongToUser,
   PaymentOwnerTarget,
 } from '../utils/accountManagement';
+import {
+  buildChunkDocId,
+  CloudChunkRecord,
+  reassembleCloudChunksToBlob,
+  shouldChunkFileToCloud,
+  splitBinaryIntoCloudChunks,
+} from '../utils/cloudChunkSync';
 
 export const firestoreService = {
   // ==========================================
@@ -321,53 +330,49 @@ export const firestoreService = {
   ): Promise<void> {
     const path = `registered_users/${userId}`;
     try {
-      // 0. Capture user contact metadata before deleting doc so cascade payment deletion matches email/phone too
       let targetEmail = fallbackContact?.email || '';
       let targetPhone = fallbackContact?.phone || '';
-      try {
-        const userSnap = await getDoc(doc(db, 'registered_users', userId));
-        if (userSnap.exists()) {
-          const ud = userSnap.data();
-          if (!targetEmail && typeof ud.email === 'string') targetEmail = ud.email;
-          if (!targetPhone && typeof ud.phone === 'string') targetPhone = ud.phone;
-        }
-      } catch {}
-
-      // 1. Delete registered user document
-      await deleteDoc(doc(db, 'registered_users', userId));
-
-      // 2. Delete all user cloud files, recycle bin & AI chats in subcollections
-      try {
-        const filesSnap = await getDocs(collection(db, 'users', userId, 'files'));
-        const binSnap = await getDocs(collection(db, 'users', userId, 'recycle_bin'));
-        const aiSnap = await getDocs(collection(db, 'users', userId, 'ai_chats'));
-        const deletePromises: Promise<void>[] = [];
-        filesSnap.forEach((fileDoc) => {
-          deletePromises.push(deleteDoc(fileDoc.ref));
-        });
-        binSnap.forEach((binDoc) => {
-          deletePromises.push(deleteDoc(binDoc.ref));
-        });
-        aiSnap.forEach((chatDoc) => {
-          deletePromises.push(deleteDoc(chatDoc.ref));
-        });
-        await Promise.all(deletePromises);
-      } catch (fileErr) {
-        console.warn('Could not delete user files during account deletion:', fileErr);
+      if (!targetEmail || !targetPhone) {
+        try {
+          const userSnap = await getDoc(doc(db, 'registered_users', userId));
+          if (userSnap.exists()) {
+            const ud = userSnap.data();
+            if (!targetEmail && typeof ud.email === 'string') targetEmail = ud.email;
+            if (!targetPhone && typeof ud.phone === 'string') targetPhone = ud.phone;
+          }
+        } catch {}
       }
 
-      // 3. Delete user storage and profile
-      try {
-        await deleteDoc(doc(db, 'users', userId, 'storage', 'usage'));
-        await deleteDoc(doc(db, 'users', userId));
-      } catch {}
+      const subcollectionCleanup = async () => {
+        try {
+          const [filesSnap, binSnap, aiSnap, chunkSnap] = await Promise.all([
+            getDocs(collection(db, 'users', userId, 'files')),
+            getDocs(collection(db, 'users', userId, 'recycle_bin')),
+            getDocs(collection(db, 'users', userId, 'ai_chats')),
+            getDocs(collection(db, 'users', userId, 'file_chunks')),
+          ]);
+          const deletePromises: Promise<void>[] = [];
+          filesSnap.forEach((fileDoc) => deletePromises.push(deleteDoc(fileDoc.ref)));
+          binSnap.forEach((binDoc) => deletePromises.push(deleteDoc(binDoc.ref)));
+          aiSnap.forEach((chatDoc) => deletePromises.push(deleteDoc(chatDoc.ref)));
+          chunkSnap.forEach((chunkDoc) => deletePromises.push(deleteDoc(chunkDoc.ref)));
+          await Promise.all(deletePromises);
+        } catch (fileErr) {
+          console.warn('Could not delete user files during account deletion:', fileErr);
+        }
+      };
 
-      // 4. Cascade delete all matching payment requests (by userId, email, or phone)
-      await this.deleteUserPaymentRequests({
-        id: userId,
-        email: targetEmail,
-        phone: targetPhone,
-      });
+      await Promise.all([
+        deleteDoc(doc(db, 'registered_users', userId)),
+        subcollectionCleanup(),
+        deleteDoc(doc(db, 'users', userId, 'storage', 'usage')).catch(() => {}),
+        deleteDoc(doc(db, 'users', userId)).catch(() => {}),
+        this.deleteUserPaymentRequests({
+          id: userId,
+          email: targetEmail,
+          phone: targetPhone,
+        }),
+      ]);
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, path);
     }
@@ -378,14 +383,20 @@ export const firestoreService = {
    */
   async clearAllUserFiles(userId: string): Promise<void> {
     try {
-      const filesSnap = await getDocs(collection(db, 'users', userId, 'files'));
-      const binSnap = await getDocs(collection(db, 'users', userId, 'recycle_bin'));
+      const [filesSnap, binSnap, chunksSnap] = await Promise.all([
+        getDocs(collection(db, 'users', userId, 'files')),
+        getDocs(collection(db, 'users', userId, 'recycle_bin')),
+        getDocs(collection(db, 'users', userId, 'file_chunks')),
+      ]);
       const deletePromises: Promise<void>[] = [];
       filesSnap.forEach((fileDoc) => {
         deletePromises.push(deleteDoc(fileDoc.ref));
       });
       binSnap.forEach((binDoc) => {
         deletePromises.push(deleteDoc(binDoc.ref));
+      });
+      chunksSnap.forEach((chunkDoc) => {
+        deletePromises.push(deleteDoc(chunkDoc.ref));
       });
       await Promise.all(deletePromises);
     } catch (error) {
@@ -568,6 +579,8 @@ export const firestoreService = {
           extension: safe.extension || '',
           archiveEntries: safe.archiveEntries || [],
           versions: safe.versions || [],
+          mimeType: safe.mimeType || '',
+          cloudChunkCount: safe.cloudChunkCount || 0,
           ownerId: userId,
           updatedAt: new Date().toISOString(),
         })
@@ -575,6 +588,145 @@ export const firestoreService = {
       await setDoc(doc(db, 'users', userId, 'files', safe.id), boundedPayload, { merge: true });
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
+    }
+  },
+
+  /**
+   * Splits large binary files (videos, audio, high-res photos, PDFs >340KB) into Base64 chunks
+   * and uploads them in parallel batches so any logged-in device/website can stream/view them seamlessly.
+   */
+  async saveFileChunks(
+    userId: string,
+    fileId: string,
+    blob: Blob,
+    mimeType?: string
+  ): Promise<number> {
+    if (!userId || userId === 'guest_user' || !fileId || !blob) return 0;
+    if (!shouldChunkFileToCloud(blob.size)) return 0;
+
+    try {
+      const buf = await blob.arrayBuffer();
+      const chunks = splitBinaryIntoCloudChunks(new Uint8Array(buf));
+      if (chunks.length === 0) return 0;
+
+      const resolvedMime = mimeType || blob.type || 'application/octet-stream';
+      const batchSize = 4;
+      for (let start = 0; start < chunks.length; start += batchSize) {
+        const batch = chunks.slice(start, start + batchSize);
+        await Promise.all(
+          batch.map((data, offsetIdx) => {
+            const index = start + offsetIdx;
+            return setDoc(
+              doc(db, 'users', userId, 'file_chunks', buildChunkDocId(fileId, index)),
+              {
+                fileId,
+                index,
+                totalChunks: chunks.length,
+                mimeType: resolvedMime,
+                data,
+              }
+            );
+          })
+        );
+      }
+
+      await setDoc(
+        doc(db, 'users', userId, 'files', fileId),
+        {
+          cloudChunkCount: chunks.length,
+          mimeType: resolvedMime,
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      );
+      return chunks.length;
+    } catch (error) {
+      console.warn('Chunked cloud media upload warning:', error);
+      return 0;
+    }
+  },
+
+  /**
+   * Downloads and reassembles chunked binary media from Firestore for cross-website video/audio/file playback.
+   */
+  async getFileBlobFromCloudChunks(
+    userId: string,
+    fileId: string,
+    expectedChunkCount?: number,
+    expectedMimeType?: string
+  ): Promise<Blob | null> {
+    if (!userId || userId === 'guest_user' || !fileId) return null;
+
+    try {
+      const records: CloudChunkRecord[] = [];
+      let detectedMime = expectedMimeType || '';
+
+      if (expectedChunkCount && expectedChunkCount > 0) {
+        const indices = Array.from({ length: expectedChunkCount }, (_, i) => i);
+        const batchSize = 6;
+        for (let start = 0; start < indices.length; start += batchSize) {
+          const slice = indices.slice(start, start + batchSize);
+          const docs = await Promise.all(
+            slice.map((idx) =>
+              getDoc(doc(db, 'users', userId, 'file_chunks', buildChunkDocId(fileId, idx)))
+            )
+          );
+          for (const snap of docs) {
+            if (snap.exists()) {
+              const d = snap.data();
+              if (!detectedMime && typeof d.mimeType === 'string' && d.mimeType) {
+                detectedMime = d.mimeType;
+              }
+              if (typeof d.data === 'string' && typeof d.index === 'number') {
+                records.push({ index: d.index, data: d.data });
+              }
+            }
+          }
+        }
+      }
+
+      if (records.length === 0) {
+        const q = query(
+          collection(db, 'users', userId, 'file_chunks'),
+          where('fileId', '==', fileId)
+        );
+        const snap = await getDocs(q);
+        snap.forEach((docSnap) => {
+          const d = docSnap.data();
+          if (!detectedMime && typeof d.mimeType === 'string' && d.mimeType) {
+            detectedMime = d.mimeType;
+          }
+          if (typeof d.data === 'string' && typeof d.index === 'number') {
+            records.push({ index: d.index, data: d.data });
+          }
+        });
+      }
+
+      if (records.length === 0) return null;
+      return reassembleCloudChunksToBlob(records, detectedMime || 'application/octet-stream');
+    } catch (error) {
+      console.warn('Error hydrating cloud file chunks:', error);
+      return null;
+    }
+  },
+
+  async deleteFileChunks(userId: string, fileId: string): Promise<void> {
+    if (!userId || userId === 'guest_user' || !fileId) return;
+    try {
+      const q = query(
+        collection(db, 'users', userId, 'file_chunks'),
+        where('fileId', '==', fileId)
+      );
+      const snap = await getDocs(q);
+      const deletes: Promise<void>[] = [];
+      snap.forEach((docSnap) => {
+        deletes.push(deleteDoc(docSnap.ref));
+      });
+      if (deletes.length > 0) {
+        await Promise.all(deletes);
+      }
+    } catch (err) {
+      console.warn('Error deleting file chunks:', err);
     }
   },
 
@@ -608,6 +760,8 @@ export const firestoreService = {
           extension: safe.extension || '',
           archiveEntries: safe.archiveEntries || [],
           versions: safe.versions || [],
+          mimeType: safe.mimeType || '',
+          cloudChunkCount: safe.cloudChunkCount || 0,
           ownerId: userId,
           deletedAt: new Date().toISOString(),
         })
@@ -650,6 +804,8 @@ export const firestoreService = {
           extension: data.extension || undefined,
           archiveEntries: data.archiveEntries,
           versions: data.versions,
+          mimeType: data.mimeType || undefined,
+          cloudChunkCount: data.cloudChunkCount || undefined,
         });
       });
       return list;
@@ -724,6 +880,8 @@ export const firestoreService = {
               extension: data.extension || undefined,
               archiveEntries: data.archiveEntries,
               versions: data.versions,
+              mimeType: data.mimeType || undefined,
+              cloudChunkCount: data.cloudChunkCount || undefined,
             });
           });
           if (list.length > 0) {
@@ -764,6 +922,8 @@ export const firestoreService = {
             extension: data.extension || undefined,
             archiveEntries: data.archiveEntries,
             versions: data.versions,
+            mimeType: data.mimeType || undefined,
+            cloudChunkCount: data.cloudChunkCount || undefined,
           });
         });
         onData(files, { fromCache: snapshot.metadata.fromCache });

@@ -49,6 +49,11 @@ service cloud.firestore {
       match /ai_chats/{chatId} {
         allow read, write: if true;
       }
+
+      // Chunked binary media storage for cross-website video/audio/file playback
+      match /file_chunks/{chunkId} {
+        allow read, write: if true;
+      }
     }
   }
 }

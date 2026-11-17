@@ -2,6 +2,7 @@ import JSZip from 'jszip';
 import { ArchiveEntry, CloudFile, FileType, StorageUsage } from '../types';
 import { createInitialVersion } from './fileVersioning';
 import { resolveFileType, formatBytes } from './uploadFlow';
+import { estimateChunkCount, shouldChunkFileToCloud } from './cloudChunkSync';
 
 const DB_NAME = 'BasharCloudVaultDB';
 const DB_VERSION = 1;
@@ -179,6 +180,10 @@ export function sanitizeFileForPersistence(
       : {}),
     ...(file.ownerId ? { ownerId: file.ownerId } : {}),
     ...(safeVersions ? { versions: safeVersions } : {}),
+    ...(file.mimeType ? { mimeType: file.mimeType } : {}),
+    ...(typeof file.cloudChunkCount === 'number' && file.cloudChunkCount > 0
+      ? { cloudChunkCount: file.cloudChunkCount }
+      : {}),
   };
 
   return sanitized;
@@ -316,6 +321,9 @@ export function mergeCloudAndLocalFiles(
           : local.versions
         : local.versions;
 
+    const resolvedMimeType = cf.mimeType || local.mimeType;
+    const resolvedChunkCount = Math.max(cf.cloudChunkCount || 0, local.cloudChunkCount || 0);
+
     mergedCloud.push({
       ...cf,
       ...(resolvedUrl ? { url: resolvedUrl } : {}),
@@ -323,6 +331,8 @@ export function mergeCloudAndLocalFiles(
       ...(resolvedContent !== undefined ? { content: resolvedContent } : {}),
       ...(resolvedArchiveEntries ? { archiveEntries: resolvedArchiveEntries } : {}),
       ...(resolvedVersions ? { versions: resolvedVersions } : {}),
+      ...(resolvedMimeType ? { mimeType: resolvedMimeType } : {}),
+      ...(resolvedChunkCount > 0 ? { cloudChunkCount: resolvedChunkCount } : {}),
     });
   }
 
@@ -579,6 +589,80 @@ async function createImageThumbnailDataURL(blob: Blob): Promise<string | undefin
   });
 }
 
+async function createVideoThumbnailDataURL(blob: Blob): Promise<string | undefined> {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return undefined;
+  return new Promise((resolve) => {
+    let settled = false;
+    let videoUrl: string | null = null;
+    const finish = (val?: string) => {
+      if (settled) return;
+      settled = true;
+      if (videoUrl) {
+        try {
+          URL.revokeObjectURL(videoUrl);
+        } catch {}
+      }
+      resolve(val);
+    };
+
+    const timer = window.setTimeout(() => finish(undefined), 1800);
+
+    try {
+      videoUrl = URL.createObjectURL(blob);
+      const video = document.createElement('video');
+      video.preload = 'metadata';
+      video.muted = true;
+      video.playsInline = true;
+
+      const captureFrame = () => {
+        try {
+          const vw = video.videoWidth || 320;
+          const vh = video.videoHeight || 180;
+          const maxDim = 420;
+          const scale = Math.min(1, maxDim / Math.max(vw, vh));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(vw * scale));
+          canvas.height = Math.max(1, Math.round(vh * scale));
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            window.clearTimeout(timer);
+            finish(undefined);
+            return;
+          }
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.72);
+          window.clearTimeout(timer);
+          finish(dataUrl.length <= MAX_THUMBNAIL_CHARS ? dataUrl : undefined);
+        } catch {
+          window.clearTimeout(timer);
+          finish(undefined);
+        }
+      };
+
+      video.onloadeddata = () => {
+        try {
+          if (video.duration && Number.isFinite(video.duration) && video.duration > 0.4) {
+            video.currentTime = Math.min(0.3, video.duration / 3);
+          } else {
+            captureFrame();
+          }
+        } catch {
+          captureFrame();
+        }
+      };
+      video.onseeked = captureFrame;
+      video.onerror = () => {
+        window.clearTimeout(timer);
+        finish(undefined);
+      };
+      video.src = videoUrl;
+    } catch {
+      window.clearTimeout(timer);
+      finish(undefined);
+    }
+  });
+}
+
 /**
  * Compresses an uploaded image Blob or oversized Data URL into a crisp, Firestore-safe Data URL.
  * Scales dimensions down to maxDim (default 320px for avatars/logos) and steps down quality until <= maxChars.
@@ -715,19 +799,23 @@ export async function buildCloudFileFromBrowserFile(
 
   const shouldInlineDataUrl = file.size > 0 && file.size <= 340 * 1024;
   const shouldBuildThumb = resolvedType === 'image' && !shouldInlineDataUrl;
+  const shouldBuildVideoThumb = resolvedType === 'video';
   const shouldReadText =
     resolvedType === 'document' && isTextDocumentName(file.name, file.type) && file.size <= 250 * 1024;
   const shouldExtractZip = resolvedType === 'archive' && file.name.toLowerCase().endsWith('.zip');
+  const plannedChunkCount = shouldChunkFileToCloud(file.size) ? estimateChunkCount(file.size) : 0;
 
   // Run IndexedDB blob write, optional inline DataURL, thumbnail resize, text extraction, and ZIP scan in parallel
-  const [, rawDataUrl, thumbnail, content, parsedZipEntries] = await Promise.all([
+  const [, rawDataUrl, imgThumbnail, videoThumbnail, content, parsedZipEntries] = await Promise.all([
     saveFileBlob(id, file),
     shouldInlineDataUrl ? readBlobAsDataURL(file) : Promise.resolve(undefined),
     shouldBuildThumb ? createImageThumbnailDataURL(file) : Promise.resolve(undefined),
+    shouldBuildVideoThumb ? createVideoThumbnailDataURL(file) : Promise.resolve(undefined),
     shouldReadText ? file.text().catch(() => undefined) : Promise.resolve(undefined),
     shouldExtractZip ? extractZipEntriesFromBlob(file) : Promise.resolve([] as ArchiveEntry[]),
   ]);
 
+  const thumbnail = imgThumbnail || videoThumbnail;
   const persistentUrl =
     rawDataUrl && rawDataUrl.length <= MAX_INLINE_DATA_URL_CHARS ? rawDataUrl : undefined;
 
@@ -750,10 +838,12 @@ export async function buildCloudFileFromBrowserFile(
     date: dateStr,
     isFavorite: false,
     parentFolderId,
-    url: persistentUrl || liveUrl || thumbnail,
+    url: persistentUrl || liveUrl || (resolvedType === 'image' ? thumbnail : undefined),
     ...(thumbnail ? { thumbnail } : {}),
     ...(content !== undefined ? { content } : {}),
     ...(extension ? { extension } : {}),
+    ...(file.type ? { mimeType: file.type } : {}),
+    ...(plannedChunkCount > 0 ? { cloudChunkCount: plannedChunkCount } : {}),
     ...(archiveEntries ? { archiveEntries } : {}),
     ...(itemCount !== undefined ? { itemCount } : {}),
     versions: [
@@ -791,7 +881,7 @@ export async function hydrateCloudFiles(files: CloudFile[]): Promise<CloudFile[]
         } catch {}
       }
 
-      if (f.thumbnail && isPersistableUrl(f.thumbnail)) {
+      if (f.type === 'image' && f.thumbnail && isPersistableUrl(f.thumbnail)) {
         return { ...f, url: f.thumbnail };
       }
 

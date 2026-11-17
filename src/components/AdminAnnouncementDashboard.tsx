@@ -69,7 +69,7 @@ export const AdminAnnouncementDashboard: React.FC<AdminAnnouncementDashboardProp
     <>
       <section
         aria-label="Admin Announcement Dashboard"
-        className="bg-[#121c2d] border border-[#1f3049] rounded-2xl p-4 shadow-xl space-y-3"
+        className="orbit-card bg-[#121c2d] border border-[#1f3049] rounded-2xl p-4 shadow-xl space-y-3"
       >
         {/* Header Bar */}
         <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-[#1b2b42]">
@@ -119,7 +119,7 @@ export const AdminAnnouncementDashboard: React.FC<AdminAnnouncementDashboardProp
 
         {/* Scrollable Table View or Empty State */}
         {filteredAnnouncements.length === 0 ? (
-          <div className="text-center py-8 text-xs text-slate-400 bg-[#142134]/40 rounded-xl border border-[#20324e]/60 px-4 space-y-1">
+          <div className="orbit-card text-center py-8 text-xs text-slate-400 bg-[#142134]/40 rounded-xl border border-[#20324e]/60 px-4 space-y-1">
             <p className="font-semibold text-slate-300">
               {searchQuery.trim()
                 ? 'খোঁজার সাথে কোনো বিজ্ঞাপন মেলেনি।'
@@ -235,7 +235,7 @@ export const AdminAnnouncementDashboard: React.FC<AdminAnnouncementDashboardProp
             }
           }}
         >
-          <div className="w-full max-w-[360px] bg-[#121c2d] border border-rose-500/40 rounded-2xl p-5 shadow-2xl space-y-4 animate-in zoom-in-95 duration-150">
+          <div className="orbit-card w-full max-w-[360px] bg-[#121c2d] border border-rose-500/40 rounded-2xl p-5 shadow-2xl space-y-4 animate-in zoom-in-95 duration-150">
             <div className="flex items-start gap-3">
               <div className="w-10 h-10 rounded-xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400 shrink-0">
                 <AlertTriangle className="w-5 h-5" />

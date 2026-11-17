@@ -133,7 +133,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
           <ChevronLeft className="w-5 h-5" />
         </button>
 
-        <div className="flex-1 relative flex items-center bg-[#131e30] border border-[#233552] rounded-xl px-3.5 py-2.5 focus-within:border-blue-500 focus-within:ring-1 focus-within:ring-blue-500/30 transition-all shadow-inner">
+        <div className="orbit-card flex-1 relative flex items-center bg-[#131e30] border border-[#233552] rounded-xl px-3.5 py-2.5 focus-within:border-blue-500 focus-within:ring-1 focus-within:ring-blue-500/30 transition-all shadow-inner">
           <Search className="w-4 h-4 text-slate-400 mr-2.5 shrink-0" />
           <input
             type="text"
@@ -168,7 +168,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
 
       {/* RECENT SEARCH TERMS SECTION (Persistent in localStorage) */}
       {recentSearches.length > 0 && (
-        <div className="mb-4 bg-[#121c2c]/90 border border-[#1f3049] rounded-2xl p-3.5 shadow-sm">
+        <div className="orbit-card mb-4 bg-[#121c2c]/90 border border-[#1f3049] rounded-2xl p-3.5 shadow-sm">
           <div className="flex items-center justify-between mb-2.5">
             <div className="flex items-center gap-1.5 text-xs font-semibold tracking-wider uppercase text-slate-400">
               <History className="w-3.5 h-3.5 text-blue-400" />
@@ -272,7 +272,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
 
       {/* Lock Banner */}
       {isLocked && (
-        <div className="bg-gradient-to-r from-rose-950/75 to-[#2c1319] border border-rose-500/50 rounded-2xl p-3 mb-4 flex items-center justify-between gap-2.5 shadow-lg">
+        <div className="orbit-card overflow-hidden bg-gradient-to-r from-rose-950/75 to-[#2c1319] border border-rose-500/50 rounded-2xl p-3 mb-4 flex items-center justify-between gap-2.5 shadow-lg">
           <div className="flex items-center gap-2.5 min-w-0">
             <Lock className="w-4.5 h-4.5 text-rose-400 shrink-0" />
             <div className="min-w-0">
@@ -295,7 +295,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
 
       {/* Search Tips card */}
       {showTips ? (
-        <div className="bg-[#121c2c] border border-[#1f3049] rounded-2xl p-4 space-y-2.5">
+        <div className="orbit-card bg-[#121c2c] border border-[#1f3049] rounded-2xl p-4 space-y-2.5">
           <div className="flex items-center gap-2 text-sm font-semibold text-white">
             <span className="text-base">💡</span>
             <span>Search Tips</span>
@@ -314,7 +314,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
             Found {results.length} result{results.length === 1 ? '' : 's'}
           </p>
           {results.length === 0 ? (
-            <div className="text-center py-12 text-slate-400 text-xs bg-[#121c2c]/40 rounded-2xl border border-[#1f3049]/50">
+            <div className="orbit-card text-center py-12 text-slate-400 text-xs bg-[#121c2c]/40 rounded-2xl border border-[#1f3049]/50">
               No matching files or folders found for "{query}"
             </div>
           ) : (
@@ -331,7 +331,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                   }
                   if (onSelectFile) onSelectFile(f);
                 }}
-                className="bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] rounded-xl p-3 flex items-center justify-between cursor-pointer transition-colors"
+                className="orbit-card bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] rounded-xl p-3 flex items-center justify-between cursor-pointer transition-colors"
               >
                 <div className="flex items-center gap-3">
                   <div className="w-9 h-9 rounded-lg bg-[#182740] flex items-center justify-center">
