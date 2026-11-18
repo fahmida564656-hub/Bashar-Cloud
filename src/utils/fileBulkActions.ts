@@ -110,3 +110,29 @@ export function buildBulkShareText(
   ];
   return lines.join('\n');
 }
+
+export function toggleSelectedFileId(
+  selectedIds: Set<string>,
+  fileId: string
+): Set<string> {
+  const next = new Set(selectedIds);
+  if (next.has(fileId)) {
+    next.delete(fileId);
+  } else {
+    next.add(fileId);
+  }
+  return next;
+}
+
+export function toggleSelectAllFileIds(
+  visibleFiles: CloudFile[],
+  selectedIds: Set<string>
+): Set<string> {
+  if (visibleFiles.length === 0) return new Set();
+  const allVisibleSelected = visibleFiles.every((f) => selectedIds.has(f.id));
+  if (allVisibleSelected) {
+    return new Set();
+  }
+  return new Set(visibleFiles.map((f) => f.id));
+}
+

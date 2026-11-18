@@ -263,3 +263,84 @@ export function parseSseChunks(
 
   return { events, remainder };
 }
+
+export type AiModeType = 'general' | 'deep' | 'fast';
+
+export interface ModelAttemptPlan {
+  targetModel: 'gemini-4-hydrogen' | 'gemini-3.1-flash-lite';
+  thinkingLevelName?: 'LOW' | 'MEDIUM' | 'HIGH' | 'XHIGH' | 'MINIMAL';
+  timeoutMs: number;
+}
+
+/**
+ * Builds an ordered attempt plan per mode so slow or stalled primary model calls
+ * automatically fail over to fast low-latency Gemini models before client watchdogs expire.
+ */
+export function buildModelAttemptPlan(
+  mode?: AiModeType,
+  options?: { skipHydrogen?: boolean }
+): ModelAttemptPlan[] {
+  const liteTimeoutMs = mode === 'deep' ? 20000 : 16000;
+
+  if (mode === 'fast' || options?.skipHydrogen) {
+    return [
+      {
+        targetModel: 'gemini-3.1-flash-lite',
+        thinkingLevelName: 'MINIMAL',
+        timeoutMs: liteTimeoutMs,
+      },
+    ];
+  }
+
+  if (mode === 'deep') {
+    return [
+      {
+        targetModel: 'gemini-4-hydrogen',
+        thinkingLevelName: 'XHIGH',
+        timeoutMs: 4500,
+      },
+      {
+        targetModel: 'gemini-3.1-flash-lite',
+        thinkingLevelName: 'MINIMAL',
+        timeoutMs: 20000,
+      },
+    ];
+  }
+
+  return [
+    {
+      targetModel: 'gemini-4-hydrogen',
+      thinkingLevelName: 'LOW',
+      timeoutMs: 3500,
+    },
+    {
+      targetModel: 'gemini-3.1-flash-lite',
+      thinkingLevelName: 'MINIMAL',
+      timeoutMs: 16000,
+    },
+  ];
+}
+
+export function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label = 'AI request'
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+

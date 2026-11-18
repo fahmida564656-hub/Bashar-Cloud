@@ -8,6 +8,8 @@ import {
   buildUserParts,
   buildCloudSummaryText,
   buildSystemInstruction,
+  buildModelAttemptPlan,
+  withTimeout,
 } from './aiServerHelpers';
 
 test('resolveGeminiApiKey handles whitespace, quotes, fallbacks, and ignores placeholders', () => {
@@ -94,4 +96,34 @@ test('buildSystemInstruction includes user name and Cloud Drive summary when pro
   });
   assert.match(instruction, /Bashar/);
   assert.match(instruction, /0 total items/);
+});
+
+test('buildModelAttemptPlan provides fast bounded primary + fallback models per mode', () => {
+  const fastPlan = buildModelAttemptPlan('fast');
+  assert.equal(fastPlan.length, 1);
+  assert.equal(fastPlan[0].targetModel, 'gemini-3.1-flash-lite');
+
+  const generalPlan = buildModelAttemptPlan('general');
+  assert.equal(generalPlan[0].targetModel, 'gemini-4-hydrogen');
+  assert.ok(generalPlan[0].timeoutMs <= 5000);
+  assert.equal(generalPlan[1].targetModel, 'gemini-3.1-flash-lite');
+
+  const deepPlan = buildModelAttemptPlan('deep');
+  assert.equal(deepPlan[0].targetModel, 'gemini-4-hydrogen');
+  assert.equal(deepPlan[0].thinkingLevelName, 'XHIGH');
+  assert.equal(deepPlan[1].targetModel, 'gemini-3.1-flash-lite');
+
+  const cooldownPlan = buildModelAttemptPlan('general', { skipHydrogen: true });
+  assert.equal(cooldownPlan.length, 1);
+  assert.equal(cooldownPlan[0].targetModel, 'gemini-3.1-flash-lite');
+});
+
+test('withTimeout resolves fast promises and rejects stalled promises cleanly', async () => {
+  const fast = await withTimeout(Promise.resolve('ok'), 200, 'Fast test');
+  assert.equal(fast, 'ok');
+
+  await assert.rejects(
+    () => withTimeout(new Promise(() => {}), 30, 'Slow test'),
+    /Slow test timed out after 30ms/
+  );
 });

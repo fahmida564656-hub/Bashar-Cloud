@@ -13,7 +13,6 @@ import {
   Trash2,
   Download,
   CheckSquare,
-  Square,
   Check,
   FolderInput,
   X,
@@ -42,6 +41,8 @@ import {
   getFileAccentTheme,
   summarizeSelectedFiles,
   buildBulkShareText,
+  toggleSelectedFileId,
+  toggleSelectAllFileIds,
 } from '../utils/fileBulkActions';
 import { FileInfoModal } from './Modals';
 
@@ -257,28 +258,14 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
 
   // Selection handlers
   const toggleSelectFile = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      if (next.size > 0) {
-        setIsSelectionMode(true);
-      }
-      return next;
-    });
+    setSelectedIds((prev) => toggleSelectedFileId(prev, id));
+    setIsSelectionMode(true);
   };
 
   const handleSelectAll = () => {
-    if (selectedIds.size === filteredFiles.length && filteredFiles.length > 0) {
-      setSelectedIds(new Set());
-      setIsSelectionMode(false);
-    } else {
-      setSelectedIds(new Set(filteredFiles.map((f) => f.id)));
-      setIsSelectionMode(true);
-    }
+    const next = toggleSelectAllFileIds(filteredFiles, selectedIds);
+    setSelectedIds(next);
+    setIsSelectionMode(next.size > 0);
   };
 
   const handleExitSelection = () => {
@@ -651,7 +638,7 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
             aria-pressed={isSelectionMode}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
               isSelectionMode
-                ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white border-blue-400 shadow-md shadow-blue-900/40'
+                ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white ai-solid-text-white border-blue-400 shadow-md shadow-blue-900/40'
                 : 'bg-[#131f32] border-[#20324e] text-slate-300 hover:text-white hover:border-blue-500/40'
             }`}
           >
@@ -910,24 +897,26 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                   {/* Top Action & Type Badge & Star & Three-dot menu */}
                   <div className="flex items-center justify-between gap-1 mb-2">
                     <div className="flex items-center gap-1.5">
-                      {/* Selection Checkbox */}
-                      <button
-                        type="button"
-                        aria-label={isSelected ? `Deselect ${file.name}` : `Select ${file.name}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleSelectFile(file.id);
-                        }}
-                        className={`w-5 h-5 rounded-md flex items-center justify-center transition-all cursor-pointer ${
-                          isSelected
-                            ? 'bg-blue-600 text-white shadow-md'
-                            : isSelectionMode
-                            ? 'border-2 border-sky-400/80 bg-[#0b1322]'
-                            : 'opacity-55 group-hover:opacity-100 border border-slate-500 bg-[#0b1322]'
-                        }`}
-                      >
-                        {isSelected && <Check className="w-3.5 h-3.5" />}
-                      </button>
+                      {/* Selection Checkbox Indicator (shown when bulk selection mode is enabled) */}
+                      {isSelectionMode && (
+                        <button
+                          type="button"
+                          role="checkbox"
+                          aria-checked={isSelected}
+                          aria-label={isSelected ? `Deselect ${file.name}` : `Select ${file.name}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleSelectFile(file.id);
+                          }}
+                          className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-blue-600 border-2 border-blue-400 text-white ai-solid-text-white shadow-md shadow-blue-500/30'
+                              : 'border-2 border-sky-400/90 bg-[#0b1322]/90 hover:border-blue-300 shadow-sm'
+                          }`}
+                        >
+                          {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                        </button>
+                      )}
 
                       <span
                         className={`text-[9.5px] font-bold tracking-wider px-1.5 py-0.5 rounded-md border ${accent.badgeClass}`}
@@ -1182,26 +1171,28 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                     : ''
                 }`}
               >
-                <div className="flex items-center justify-between p-2.5">
+                <div className="flex items-center justify-between p-2.5 relative z-10">
                   <div className="flex items-center gap-2.5 min-w-0 pr-2">
-                    {/* Selection Checkbox */}
-                    <button
-                      type="button"
-                      aria-label={isSelected ? `Deselect ${file.name}` : `Select ${file.name}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleSelectFile(file.id);
-                      }}
-                      className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 transition-all cursor-pointer ${
-                        isSelected
-                          ? 'bg-blue-600 text-white shadow-md'
-                          : isSelectionMode
-                          ? 'border-2 border-sky-400/80 bg-[#0b1322]'
-                          : 'opacity-50 group-hover:opacity-100 border border-slate-500 bg-[#0b1322]'
-                      }`}
-                    >
-                      {isSelected && <Check className="w-3.5 h-3.5" />}
-                    </button>
+                    {/* Selection Checkbox Indicator (shown when bulk selection mode is enabled) */}
+                    {isSelectionMode && (
+                      <button
+                        type="button"
+                        role="checkbox"
+                        aria-checked={isSelected}
+                        aria-label={isSelected ? `Deselect ${file.name}` : `Select ${file.name}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleSelectFile(file.id);
+                        }}
+                        className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-blue-600 border-2 border-blue-400 text-white ai-solid-text-white shadow-md shadow-blue-500/30'
+                            : 'border-2 border-sky-400/90 bg-[#0b1322]/90 hover:border-blue-300 shadow-sm'
+                        }`}
+                      >
+                        {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                      </button>
+                    )}
 
                     {isLocked ? (
                       <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 bg-rose-500/15 border border-rose-500/35 text-rose-400">

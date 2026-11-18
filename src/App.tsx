@@ -2062,7 +2062,20 @@ export default function App() {
     if (!trimmed) return;
 
     const currentThread = aiThreadsRef.current.find((t) => t.id === threadId);
-    const priorHistory = (currentThread?.messages || [])
+    const msgs = currentThread?.messages || [];
+    const lastMsg = msgs[msgs.length - 1];
+    const secondLastMsg = msgs[msgs.length - 2];
+    const isRetryingFailedTurn = Boolean(
+      lastMsg &&
+        lastMsg.role === 'model' &&
+        lastMsg.isError &&
+        secondLastMsg &&
+        secondLastMsg.role === 'user' &&
+        secondLastMsg.text.trim() === trimmed
+    );
+
+    const historySource = isRetryingFailedTurn ? msgs.slice(0, -2) : msgs;
+    const priorHistory = historySource
       .filter((m) => !m.isError && m.text.trim().length > 0)
       .map((m) => ({ role: m.role, text: m.text }));
 
@@ -2076,7 +2089,9 @@ export default function App() {
       attachment: attachment || undefined,
     };
 
-    const assistantMsgId = `msg-a-${now + 1}-${Math.random().toString(36).slice(2, 6)}`;
+    const assistantMsgId = isRetryingFailedTurn
+      ? lastMsg.id
+      : `msg-a-${now + 1}-${Math.random().toString(36).slice(2, 6)}`;
     const assistantPlaceholder: AiMessage = {
       id: assistantMsgId,
       role: 'model',
@@ -2085,8 +2100,18 @@ export default function App() {
       mode,
     };
 
-    let nextThreads = appendMessageToThread(aiThreadsRef.current, threadId, userMsg);
-    nextThreads = appendMessageToThread(nextThreads, threadId, assistantPlaceholder);
+    const nextThreads = isRetryingFailedTurn
+      ? updateMessageInThread(
+          aiThreadsRef.current,
+          threadId,
+          assistantMsgId,
+          () => assistantPlaceholder
+        )
+      : appendMessageToThread(
+          appendMessageToThread(aiThreadsRef.current, threadId, userMsg),
+          threadId,
+          assistantPlaceholder
+        );
     persistAiThreadList(nextThreads, threadId);
 
     const controller = new AbortController();
@@ -2148,7 +2173,7 @@ export default function App() {
     let stalledStreamTimedOut = false;
 
     try {
-      const watchdogMs = mode === 'deep' ? 18000 : 12000;
+      const watchdogMs = mode === 'deep' ? 24000 : 18000;
       firstChunkWatchdog = window.setTimeout(() => {
         stalledStreamTimedOut = true;
         controller.abort();
@@ -2162,6 +2187,10 @@ export default function App() {
       });
 
       const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('text/html')) {
+        if (firstChunkWatchdog) clearTimeout(firstChunkWatchdog);
+        throw new Error('AI সার্ভার সাড়া দিচ্ছে না। অনুগ্রহ করে পেজটি রিফ্রেশ করে আবার চেষ্টা করুন।');
+      }
       if (!response.ok && !contentType.includes('text/event-stream')) {
         if (firstChunkWatchdog) clearTimeout(firstChunkWatchdog);
         const errJson = await response.json().catch(() => ({}));
@@ -2239,20 +2268,27 @@ export default function App() {
       if (!fullReply.trim() && !userAbortedAiRef.current) {
         const fallbackController = new AbortController();
         aiAbortRef.current = fallbackController;
-        const fallbackRes = await fetch('/api/ai/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal: fallbackController.signal,
-          body: JSON.stringify({ ...requestBody, stream: false }),
-        });
-        const fallbackJson = await fallbackRes.json().catch(() => ({}));
-        if (!fallbackRes.ok || fallbackJson.error) {
-          throw new Error(fallbackJson.error || `AI সার্ভার ত্রুটি (${fallbackRes.status})`);
-        }
-        if (typeof fallbackJson.reply === 'string' && fallbackJson.reply.trim()) {
-          fullReply = fallbackJson.reply;
-          modelUsed = fallbackJson.model || modelUsed;
-          applyStreamText(fullReply, modelUsed);
+        const fallbackTimer = window.setTimeout(() => {
+          fallbackController.abort();
+        }, 20000);
+        try {
+          const fallbackRes = await fetch('/api/ai/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: fallbackController.signal,
+            body: JSON.stringify({ ...requestBody, stream: false }),
+          });
+          const fallbackJson = await fallbackRes.json().catch(() => ({}));
+          if (!fallbackRes.ok || fallbackJson.error) {
+            throw new Error(fallbackJson.error || `AI সার্ভার ত্রুটি (${fallbackRes.status})`);
+          }
+          if (typeof fallbackJson.reply === 'string' && fallbackJson.reply.trim()) {
+            fullReply = fallbackJson.reply;
+            modelUsed = fallbackJson.model || modelUsed;
+            applyStreamText(fullReply, modelUsed);
+          }
+        } finally {
+          clearTimeout(fallbackTimer);
         }
       }
 

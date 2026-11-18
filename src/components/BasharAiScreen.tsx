@@ -295,6 +295,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
     if (!activeThread || isStreaming) return;
     const lastUserMsg = [...activeThread.messages].reverse().find((m) => m.role === 'user');
     if (lastUserMsg) {
+      onClearError();
       onSendMessage(activeThread.id, lastUserMsg.text, activeMode, lastUserMsg.attachment || null);
     }
   };
@@ -424,6 +425,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
             <button
               type="button"
               onClick={() => {
+                onClearError();
                 onSelectThread(thread.id);
                 setIsDrawerOpen(false);
               }}
@@ -547,6 +549,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
               <button
                 type="button"
                 onClick={() => {
+                  onClearError();
                   onCreateThread();
                   setIsDrawerOpen(false);
                 }}
@@ -740,7 +743,10 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
 
           <button
             type="button"
-            onClick={() => onCreateThread()}
+            onClick={() => {
+              onClearError();
+              onCreateThread();
+            }}
             aria-label="Start new chat"
             title="নতুন চ্যাট"
             className="h-10 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white ai-solid-text-white flex items-center justify-center gap-1 text-xs font-semibold shadow-sm transition-colors whitespace-nowrap cursor-pointer"
@@ -836,7 +842,10 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                     <button
                       key={pt.id}
                       type="button"
-                      onClick={() => onSelectThread(pt.id)}
+                      onClick={() => {
+                        onClearError();
+                        onSelectThread(pt.id);
+                      }}
                       className={`shrink-0 max-w-[175px] px-3 py-2 rounded-xl border text-[11px] font-medium flex items-center gap-1.5 transition-colors cursor-pointer ${
                         isLight
                           ? 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100'
