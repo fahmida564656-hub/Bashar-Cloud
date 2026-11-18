@@ -197,3 +197,33 @@ test('fitFilePayloadToFirestoreLimit trims bulky inline fields so payload stays 
   assert.equal(fitted.name, 'huge.txt');
   assert.equal(fitted.ownerId, 'user-1');
 });
+
+test('sanitizeFileForPersistence and mergeCloudAndLocalFiles preserve verified cloudSynced and chunk counts', () => {
+  const unsynced: CloudFile = {
+    id: 'vid-2',
+    name: 'video2.mp4',
+    type: 'video',
+    sizeBytes: 3_000_000,
+    formattedSize: '2.9 MB',
+    date: 'Today',
+    isFavorite: false,
+    url: 'blob:http://localhost:3000/v2',
+    cloudSynced: false,
+    cloudChunkCount: 0,
+  };
+  const persistedUnsynced = sanitizeFileForPersistence(unsynced);
+  assert.equal(persistedUnsynced.cloudSynced, false);
+  assert.equal(persistedUnsynced.url, undefined);
+
+  const cloudSyncedDoc: CloudFile = {
+    ...unsynced,
+    url: undefined,
+    cloudSynced: true,
+    cloudChunkCount: 8,
+  };
+  const merged = mergeCloudAndLocalFiles([cloudSyncedDoc], [unsynced]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].cloudSynced, true);
+  assert.equal(merged[0].cloudChunkCount, 8);
+  assert.equal(merged[0].url, 'blob:http://localhost:3000/v2');
+});

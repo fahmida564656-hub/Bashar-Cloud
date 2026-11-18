@@ -38,6 +38,7 @@ export interface CloudFile {
   versions?: FileVersion[]; // File version history of uploads & modifications
   mimeType?: string; // Original MIME type for cross-device media playback
   cloudChunkCount?: number; // Number of Base64 binary chunks stored in cloud for >340KB files
+  cloudSynced?: boolean; // True only after all binary chunks are confirmed uploaded to cloud
 }
 
 export interface UserProfile {

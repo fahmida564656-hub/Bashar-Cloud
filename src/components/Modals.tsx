@@ -140,7 +140,10 @@ export const RecycleBinModal: React.FC<RecycleBinProps> = ({
 interface AudioPlayerProps {
   file: CloudFile | null;
   onClose: () => void;
-  onResolveCloudMedia?: (file: CloudFile) => Promise<string | undefined>;
+  onResolveCloudMedia?: (
+    file: CloudFile,
+    options?: { priority?: boolean; onProgress?: (percent: number) => void }
+  ) => Promise<string | undefined>;
 }
 
 export const AudioPlayerModal: React.FC<AudioPlayerProps> = ({
@@ -150,27 +153,46 @@ export const AudioPlayerModal: React.FC<AudioPlayerProps> = ({
 }) => {
   const [resolvedUrl, setResolvedUrl] = useState<string | undefined>(file?.url);
   const [isLoadingAudio, setIsLoadingAudio] = useState(false);
+  const [audioProgress, setAudioProgress] = useState(0);
+  const [audioFailed, setAudioFailed] = useState(false);
 
   useEffect(() => {
     if (!file) {
       setResolvedUrl(undefined);
       setIsLoadingAudio(false);
+      setAudioProgress(0);
+      setAudioFailed(false);
       return;
     }
     if (file.url) {
       setResolvedUrl(file.url);
       setIsLoadingAudio(false);
+      setAudioFailed(false);
       return;
     }
     if (!onResolveCloudMedia) return;
 
     let cancelled = false;
     setIsLoadingAudio(true);
-    onResolveCloudMedia(file)
+    setAudioFailed(false);
+    setAudioProgress(0);
+    onResolveCloudMedia(file, {
+      priority: true,
+      onProgress: (pct) => {
+        if (!cancelled) setAudioProgress(pct);
+      },
+    })
       .then((res) => {
-        if (!cancelled && res) {
+        if (cancelled) return;
+        if (res) {
           setResolvedUrl(res);
+          setAudioFailed(false);
+        } else {
+          setAudioFailed(true);
         }
+      })
+      .catch(() => {
+        if (!cancelled) setAudioFailed(true);
       })
       .finally(() => {
         if (!cancelled) {
@@ -205,36 +227,50 @@ export const AudioPlayerModal: React.FC<AudioPlayerProps> = ({
           <p className="text-xs text-slate-400 mt-1">{file.formattedSize} • Cloud Audio</p>
         </div>
 
-        {activeAudioUrl ? (
+        {activeAudioUrl && !audioFailed ? (
           <div className="pt-1">
             <audio
               key={activeAudioUrl}
               src={activeAudioUrl}
               controls
-              preload="metadata"
+              preload="auto"
+              onError={() => {
+                setAudioFailed(true);
+                setResolvedUrl(undefined);
+              }}
               className="w-full"
             />
           </div>
         ) : isLoadingAudio ? (
           <div className="py-4 flex flex-col items-center justify-center gap-2 text-xs text-amber-300">
             <Loader2 className="w-6 h-6 animate-spin" />
-            <span>ক্লাউড থেকে অডিও লোড হচ্ছে...</span>
+            <span>
+              ক্লাউড থেকে অডিও লোড হচ্ছে{audioProgress > 0 ? `... ${audioProgress}%` : '...'}
+            </span>
           </div>
         ) : (
           <div className="py-3 text-center space-y-2">
-            <p className="text-xs text-slate-400">অডিও প্লেব্যাক পাওয়া যায়নি</p>
+            <p className="text-xs text-slate-400">
+              {audioFailed ? 'অডিও লোড সম্পন্ন হয়নি, আবার চেষ্টা করুন' : 'অডিও প্লেব্যাক পাওয়া যায়নি'}
+            </p>
             {onResolveCloudMedia && (
               <button
                 type="button"
                 onClick={() => {
+                  setAudioFailed(false);
+                  setAudioProgress(0);
                   setIsLoadingAudio(true);
-                  onResolveCloudMedia(file)
+                  onResolveCloudMedia(file, {
+                    priority: true,
+                    onProgress: (pct) => setAudioProgress(pct),
+                  })
                     .then((res) => {
                       if (res) setResolvedUrl(res);
+                      else setAudioFailed(true);
                     })
                     .finally(() => setIsLoadingAudio(false));
                 }}
-                className="px-3.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold cursor-pointer"
+                className="px-3.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white ai-solid-text-white text-xs font-semibold cursor-pointer"
               >
                 ক্লাউড থেকে অডিও আনুন
               </button>

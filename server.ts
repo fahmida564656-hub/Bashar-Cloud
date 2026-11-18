@@ -144,7 +144,230 @@ async function startServer() {
   const port = Number(process.env.PORT) || 3000;
   let hydrogenCooldownUntil = 0;
 
+  // Persistent temp directories for fast binary media streaming & cloud metadata mirror
+  const MEDIA_ROOT_DIR = '/tmp/bashar_cloud_media';
+  const CLOUD_STATE_FILE = '/tmp/bashar_cloud_state.json';
+  fs.mkdirSync(MEDIA_ROOT_DIR, { recursive: true });
+
+  const sanitizeSegment = (val: string) =>
+    String(val || '')
+      .replace(/[^a-zA-Z0-9._-]/g, '_')
+      .slice(0, 120);
+
+  interface CloudStateMirror {
+    users: Record<string, Record<string, unknown>>;
+    filesByUser: Record<string, Record<string, Record<string, unknown>>>;
+  }
+
+  const readCloudStateMirror = (): CloudStateMirror => {
+    try {
+      if (fs.existsSync(CLOUD_STATE_FILE)) {
+        const parsed = JSON.parse(fs.readFileSync(CLOUD_STATE_FILE, 'utf8'));
+        return {
+          users: parsed?.users && typeof parsed.users === 'object' ? parsed.users : {},
+          filesByUser:
+            parsed?.filesByUser && typeof parsed.filesByUser === 'object'
+              ? parsed.filesByUser
+              : {},
+        };
+      }
+    } catch {
+      // Corrupt state resets cleanly
+    }
+    return { users: {}, filesByUser: {} };
+  };
+
+  const writeCloudStateMirror = (state: CloudStateMirror) => {
+    try {
+      fs.writeFileSync(CLOUD_STATE_FILE, JSON.stringify(state));
+    } catch (err) {
+      console.warn('Cloud state mirror write warning:', err);
+    }
+  };
+
+  // Raw binary media upload (mounted BEFORE express.json so all media MIME types stream raw)
+  app.put(
+    '/api/media/:userId/:fileId',
+    express.raw({ type: '*/*', limit: '105mb' }),
+    (req: Request, res: Response) => {
+      try {
+        const safeUid = sanitizeSegment(req.params.userId);
+        const safeFileId = sanitizeSegment(req.params.fileId);
+        if (!safeUid || !safeFileId || !Buffer.isBuffer(req.body) || req.body.length === 0) {
+          res.status(400).json({ error: 'Invalid media upload payload' });
+          return;
+        }
+        const userDir = path.join(MEDIA_ROOT_DIR, safeUid);
+        fs.mkdirSync(userDir, { recursive: true });
+        const dataPath = path.join(userDir, `${safeFileId}.bin`);
+        const metaPath = path.join(userDir, `${safeFileId}.meta.json`);
+        const mimeType =
+          (typeof req.headers['x-file-mime'] === 'string' && req.headers['x-file-mime']) ||
+          (typeof req.headers['content-type'] === 'string' && req.headers['content-type']) ||
+          'application/octet-stream';
+        const fileName =
+          (typeof req.headers['x-file-name'] === 'string' &&
+            decodeURIComponent(req.headers['x-file-name'])) ||
+          safeFileId;
+
+        fs.writeFileSync(dataPath, req.body);
+        fs.writeFileSync(
+          metaPath,
+          JSON.stringify({ mimeType, fileName, sizeBytes: req.body.length })
+        );
+        res.json({ ok: true, sizeBytes: req.body.length, mimeType });
+      } catch (err) {
+        console.warn('Media PUT error:', err);
+        res.status(500).json({ error: 'Failed to store media binary' });
+      }
+    }
+  );
+
+  // Range-capable binary media download/playback
+  app.get('/api/media/:userId/:fileId', (req: Request, res: Response) => {
+    try {
+      const safeUid = sanitizeSegment(req.params.userId);
+      const safeFileId = sanitizeSegment(req.params.fileId);
+      const dataPath = path.join(MEDIA_ROOT_DIR, safeUid, `${safeFileId}.bin`);
+      const metaPath = path.join(MEDIA_ROOT_DIR, safeUid, `${safeFileId}.meta.json`);
+      if (!fs.existsSync(dataPath)) {
+        res.status(404).json({ error: 'Media not found' });
+        return;
+      }
+
+      const stat = fs.statSync(dataPath);
+      const total = stat.size;
+      let mimeType = 'application/octet-stream';
+      try {
+        if (fs.existsSync(metaPath)) {
+          const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+          if (meta?.mimeType) mimeType = meta.mimeType;
+        }
+      } catch {}
+
+      res.setHeader('Content-Type', mimeType);
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+
+      const rangeHeader = req.headers.range;
+      if (rangeHeader) {
+        const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+        if (match) {
+          const start = match[1] ? Number(match[1]) : 0;
+          const end = match[2] ? Math.min(total - 1, Number(match[2])) : total - 1;
+          if (start >= 0 && start <= end && end < total) {
+            res.status(206);
+            res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
+            res.setHeader('Content-Length', String(end - start + 1));
+            fs.createReadStream(dataPath, { start, end }).pipe(res);
+            return;
+          }
+        }
+      }
+
+      res.setHeader('Content-Length', String(total));
+      fs.createReadStream(dataPath).pipe(res);
+    } catch (err) {
+      console.warn('Media GET error:', err);
+      res.status(500).json({ error: 'Failed to stream media binary' });
+    }
+  });
+
+  app.delete('/api/media/:userId/:fileId', (req: Request, res: Response) => {
+    try {
+      const safeUid = sanitizeSegment(req.params.userId);
+      const safeFileId = sanitizeSegment(req.params.fileId);
+      const userDir = path.join(MEDIA_ROOT_DIR, safeUid);
+      const dataPath = path.join(userDir, `${safeFileId}.bin`);
+      const metaPath = path.join(userDir, `${safeFileId}.meta.json`);
+      if (fs.existsSync(dataPath)) fs.unlinkSync(dataPath);
+      if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
+      res.json({ ok: true });
+    } catch {
+      res.json({ ok: true });
+    }
+  });
+
+  app.delete('/api/media/:userId', (req: Request, res: Response) => {
+    try {
+      const safeUid = sanitizeSegment(req.params.userId);
+      const userDir = path.join(MEDIA_ROOT_DIR, safeUid);
+      if (fs.existsSync(userDir)) {
+        fs.rmSync(userDir, { recursive: true, force: true });
+      }
+      res.json({ ok: true });
+    } catch {
+      res.json({ ok: true });
+    }
+  });
+
   app.use(express.json({ limit: '6mb' }));
+
+  // Lightweight cloud metadata mirror routes (helps cross-context sync & protects against Firestore quota exhaustion)
+  app.get('/api/cloud/users', (_req: Request, res: Response) => {
+    const state = readCloudStateMirror();
+    res.json({ users: Object.values(state.users) });
+  });
+
+  app.post('/api/cloud/users', (req: Request, res: Response) => {
+    const user = req.body as Record<string, unknown>;
+    if (!user || typeof user.id !== 'string' || !user.id) {
+      res.status(400).json({ error: 'Invalid user' });
+      return;
+    }
+    const state = readCloudStateMirror();
+    state.users[user.id] = { ...(state.users[user.id] || {}), ...user };
+    writeCloudStateMirror(state);
+    res.json({ ok: true });
+  });
+
+  app.delete('/api/cloud/users/:userId', (req: Request, res: Response) => {
+    const uid = sanitizeSegment(req.params.userId);
+    const state = readCloudStateMirror();
+    delete state.users[uid];
+    delete state.filesByUser[uid];
+    writeCloudStateMirror(state);
+    res.json({ ok: true });
+  });
+
+  app.get('/api/cloud/files/:userId', (req: Request, res: Response) => {
+    const uid = sanitizeSegment(req.params.userId);
+    const state = readCloudStateMirror();
+    res.json({ files: Object.values(state.filesByUser[uid] || {}) });
+  });
+
+  app.post('/api/cloud/files/:userId', (req: Request, res: Response) => {
+    const uid = sanitizeSegment(req.params.userId);
+    const file = req.body as Record<string, unknown>;
+    if (!uid || !file || typeof file.id !== 'string' || !file.id) {
+      res.status(400).json({ error: 'Invalid file payload' });
+      return;
+    }
+    const state = readCloudStateMirror();
+    if (!state.filesByUser[uid]) state.filesByUser[uid] = {};
+    state.filesByUser[uid][file.id] = { ...(state.filesByUser[uid][file.id] || {}), ...file };
+    writeCloudStateMirror(state);
+    res.json({ ok: true });
+  });
+
+  app.delete('/api/cloud/files/:userId/:fileId', (req: Request, res: Response) => {
+    const uid = sanitizeSegment(req.params.userId);
+    const fid = sanitizeSegment(req.params.fileId);
+    const state = readCloudStateMirror();
+    if (state.filesByUser[uid]) {
+      delete state.filesByUser[uid][fid];
+      writeCloudStateMirror(state);
+    }
+    res.json({ ok: true });
+  });
+
+  app.delete('/api/cloud/files/:userId', (req: Request, res: Response) => {
+    const uid = sanitizeSegment(req.params.userId);
+    const state = readCloudStateMirror();
+    delete state.filesByUser[uid];
+    writeCloudStateMirror(state);
+    res.json({ ok: true });
+  });
 
   app.get('/api/health', (_req: Request, res: Response) => {
     const apiKey = resolveGeminiApiKey(process.env);

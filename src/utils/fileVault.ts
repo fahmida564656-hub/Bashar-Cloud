@@ -2,7 +2,7 @@ import JSZip from 'jszip';
 import { ArchiveEntry, CloudFile, FileType, StorageUsage } from '../types';
 import { createInitialVersion } from './fileVersioning';
 import { resolveFileType, formatBytes } from './uploadFlow';
-import { estimateChunkCount, shouldChunkFileToCloud } from './cloudChunkSync';
+import { inferMediaMimeType, shouldChunkFileToCloud } from './cloudChunkSync';
 
 const DB_NAME = 'BasharCloudVaultDB';
 const DB_VERSION = 1;
@@ -184,6 +184,7 @@ export function sanitizeFileForPersistence(
     ...(typeof file.cloudChunkCount === 'number' && file.cloudChunkCount > 0
       ? { cloudChunkCount: file.cloudChunkCount }
       : {}),
+    ...(file.cloudSynced !== undefined ? { cloudSynced: Boolean(file.cloudSynced) } : {}),
   };
 
   return sanitized;
@@ -323,6 +324,7 @@ export function mergeCloudAndLocalFiles(
 
     const resolvedMimeType = cf.mimeType || local.mimeType;
     const resolvedChunkCount = Math.max(cf.cloudChunkCount || 0, local.cloudChunkCount || 0);
+    const resolvedCloudSynced = Boolean(cf.cloudSynced || local.cloudSynced);
 
     mergedCloud.push({
       ...cf,
@@ -333,6 +335,7 @@ export function mergeCloudAndLocalFiles(
       ...(resolvedVersions ? { versions: resolvedVersions } : {}),
       ...(resolvedMimeType ? { mimeType: resolvedMimeType } : {}),
       ...(resolvedChunkCount > 0 ? { cloudChunkCount: resolvedChunkCount } : {}),
+      ...(resolvedCloudSynced ? { cloudSynced: true } : {}),
     });
   }
 
@@ -594,9 +597,20 @@ async function createVideoThumbnailDataURL(blob: Blob): Promise<string | undefin
   return new Promise((resolve) => {
     let settled = false;
     let videoUrl: string | null = null;
+    let videoEl: HTMLVideoElement | null = null;
     const finish = (val?: string) => {
       if (settled) return;
       settled = true;
+      if (videoEl) {
+        try {
+          videoEl.onloadeddata = null;
+          videoEl.onseeked = null;
+          videoEl.onerror = null;
+          videoEl.pause();
+          videoEl.removeAttribute('src');
+          videoEl.load();
+        } catch {}
+      }
       if (videoUrl) {
         try {
           URL.revokeObjectURL(videoUrl);
@@ -610,6 +624,7 @@ async function createVideoThumbnailDataURL(blob: Blob): Promise<string | undefin
     try {
       videoUrl = URL.createObjectURL(blob);
       const video = document.createElement('video');
+      videoEl = video;
       video.preload = 'metadata';
       video.muted = true;
       video.playsInline = true;
@@ -803,7 +818,8 @@ export async function buildCloudFileFromBrowserFile(
   const shouldReadText =
     resolvedType === 'document' && isTextDocumentName(file.name, file.type) && file.size <= 250 * 1024;
   const shouldExtractZip = resolvedType === 'archive' && file.name.toLowerCase().endsWith('.zip');
-  const plannedChunkCount = shouldChunkFileToCloud(file.size) ? estimateChunkCount(file.size) : 0;
+  const resolvedMimeType = inferMediaMimeType(file.name, file.type);
+  const requiresChunkSync = shouldChunkFileToCloud(file.size);
 
   // Run IndexedDB blob write, optional inline DataURL, thumbnail resize, text extraction, and ZIP scan in parallel
   const [, rawDataUrl, imgThumbnail, videoThumbnail, content, parsedZipEntries] = await Promise.all([
@@ -842,8 +858,8 @@ export async function buildCloudFileFromBrowserFile(
     ...(thumbnail ? { thumbnail } : {}),
     ...(content !== undefined ? { content } : {}),
     ...(extension ? { extension } : {}),
-    ...(file.type ? { mimeType: file.type } : {}),
-    ...(plannedChunkCount > 0 ? { cloudChunkCount: plannedChunkCount } : {}),
+    ...(resolvedMimeType ? { mimeType: resolvedMimeType } : {}),
+    ...(!requiresChunkSync ? { cloudSynced: true } : { cloudSynced: false }),
     ...(archiveEntries ? { archiveEntries } : {}),
     ...(itemCount !== undefined ? { itemCount } : {}),
     versions: [

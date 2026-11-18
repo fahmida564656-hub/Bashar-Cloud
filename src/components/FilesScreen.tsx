@@ -69,7 +69,10 @@ interface FilesScreenProps {
   onClearAllFiles?: () => void;
   onRestoreVersion?: (file: CloudFile, version: FileVersion) => void;
   onUploadNewVersion?: (file: CloudFile, newFile: File) => void;
-  onResolveCloudMedia?: (file: CloudFile) => Promise<string | undefined>;
+  onResolveCloudMedia?: (
+    file: CloudFile,
+    options?: { priority?: boolean; onProgress?: (percent: number) => void }
+  ) => Promise<string | undefined>;
   initialFilter?: string;
   initialFolderId?: string | null;
   onSelectionStateChange?: (active: boolean) => void;
@@ -1082,28 +1085,12 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                     </div>
                   ) : file.type === 'video' ? (
                     <div className="w-full h-24 rounded-xl overflow-hidden bg-[#0f0e1a] mb-2 relative flex items-center justify-center border border-[#2c1d3f] group-hover:border-purple-500/50 transition-colors">
-                      {file.url ? (
-                        <>
-                          <video
-                            src={file.url}
-                            poster={file.thumbnail}
-                            muted
-                            playsInline
-                            preload="metadata"
-                            className="w-full h-full object-cover"
-                          />
-                          <div className="absolute inset-0 flex items-center justify-center bg-black/25 pointer-events-none">
-                            <div className="w-8 h-8 rounded-full bg-black/65 border border-white/30 flex items-center justify-center text-white shadow">
-                              <Play className="w-3.5 h-3.5 ml-0.5 fill-white" />
-                            </div>
-                          </div>
-                        </>
-                      ) : file.thumbnail ? (
+                      {file.thumbnail ? (
                         <>
                           <img
                             src={file.thumbnail}
                             alt={file.name}
-                            className="w-full h-full object-cover"
+                            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                             loading="lazy"
                           />
                           <div className="absolute inset-0 flex items-center justify-center bg-black/30 pointer-events-none">
@@ -1114,7 +1101,9 @@ export const FilesScreen: React.FC<FilesScreenProps> = ({
                         </>
                       ) : (
                         <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#24133b] to-[#0f0e1a] text-purple-400 p-2 text-center">
-                          <Video className="w-7 h-7 mb-1 opacity-80" />
+                          <div className="w-9 h-9 rounded-full bg-purple-500/20 border border-purple-400/35 flex items-center justify-center mb-1">
+                            <Play className="w-4 h-4 ml-0.5 fill-purple-300 text-purple-300" />
+                          </div>
                           <span className="text-[10px] font-semibold text-purple-300">Video</span>
                         </div>
                       )}

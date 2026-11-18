@@ -36,7 +36,10 @@ interface FilePreviewModalProps {
   onRenameFile?: (id: string, newName: string) => void;
   onCopyFile?: (file: CloudFile) => void;
   onMoveFile?: (id: string, destinationFolderId: string | null) => void;
-  onResolveCloudMedia?: (file: CloudFile) => Promise<string | undefined>;
+  onResolveCloudMedia?: (
+    file: CloudFile,
+    options?: { priority?: boolean; onProgress?: (percent: number) => void }
+  ) => Promise<string | undefined>;
   availableFolders?: CloudFile[];
 }
 
@@ -71,6 +74,8 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
   // Resolved media URL from IndexedDB or Firestore cloud chunks
   const [resolvedMediaUrl, setResolvedMediaUrl] = useState<string | undefined>(file?.url);
   const [isLoadingCloudMedia, setIsLoadingCloudMedia] = useState(false);
+  const [cloudLoadProgress, setCloudLoadProgress] = useState<number>(0);
+  const [mediaLoadFailed, setMediaLoadFailed] = useState(false);
 
   useEffect(() => {
     if (file) {
@@ -79,28 +84,58 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
       setIsMovePickerOpen(false);
       setShowPermanentDeleteConfirm(false);
       setResolvedMediaUrl(file.url);
+      setMediaLoadFailed(false);
+      setCloudLoadProgress(0);
     } else {
       setResolvedMediaUrl(undefined);
+      setMediaLoadFailed(false);
+      setCloudLoadProgress(0);
     }
-  }, [file]);
+  }, [file?.id]);
 
   useEffect(() => {
     if (!isOpen || !file || isLocked) return;
-    if (file.url) {
+
+    const isThumbnailOnlyImage =
+      file.type === 'image' &&
+      Boolean(file.thumbnail) &&
+      (!file.url || file.url === file.thumbnail) &&
+      Boolean(file.cloudChunkCount && file.cloudChunkCount > 0);
+
+    if (file.url && !isThumbnailOnlyImage) {
       setResolvedMediaUrl(file.url);
       setIsLoadingCloudMedia(false);
+      setMediaLoadFailed(false);
       return;
     }
+
     const needsCloudMedia =
       file.type === 'video' || file.type === 'audio' || file.type === 'image';
     if (!needsCloudMedia || !onResolveCloudMedia) return;
 
     let cancelled = false;
     setIsLoadingCloudMedia(true);
-    onResolveCloudMedia(file)
+    setMediaLoadFailed(false);
+    setCloudLoadProgress(0);
+
+    onResolveCloudMedia(file, {
+      priority: true,
+      onProgress: (pct) => {
+        if (!cancelled) setCloudLoadProgress(pct);
+      },
+    })
       .then((resolved) => {
-        if (!cancelled && resolved) {
+        if (cancelled) return;
+        if (resolved) {
           setResolvedMediaUrl(resolved);
+          setMediaLoadFailed(false);
+        } else if (!file.url) {
+          setMediaLoadFailed(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled && !file.url) {
+          setMediaLoadFailed(true);
         }
       })
       .finally(() => {
@@ -371,14 +406,18 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                 </div>
               )
             ) : file.type === 'video' ? (
-              activeMediaUrl ? (
+              activeMediaUrl && !mediaLoadFailed ? (
                 <video
                   key={activeMediaUrl}
                   src={activeMediaUrl}
                   poster={file.thumbnail}
                   controls
                   playsInline
-                  preload="metadata"
+                  preload="auto"
+                  onError={() => {
+                    setMediaLoadFailed(true);
+                    setResolvedMediaUrl(undefined);
+                  }}
                   className="w-full max-h-[260px] bg-black"
                 />
               ) : isLoadingCloudMedia ? (
@@ -390,10 +429,20 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                       className="absolute inset-0 w-full h-full object-cover opacity-25 blur-[2px]"
                     />
                   )}
-                  <div className="relative z-10 flex flex-col items-center">
+                  <div className="relative z-10 flex flex-col items-center w-full max-w-[220px]">
                     <Loader2 className="w-8 h-8 text-purple-400 animate-spin mb-2" />
-                    <span className="text-xs font-semibold text-white">ক্লাউড থেকে ভিডিও লোড হচ্ছে...</span>
-                    <span className="text-[11px] text-slate-300 mt-1">{file.name}</span>
+                    <span className="text-xs font-semibold text-white">
+                      ক্লাউড থেকে ভিডিও লোড হচ্ছে{cloudLoadProgress > 0 ? `... ${cloudLoadProgress}%` : '...'}
+                    </span>
+                    {cloudLoadProgress > 0 && (
+                      <div className="w-full h-1.5 bg-white/15 rounded-full overflow-hidden mt-2">
+                        <div
+                          className="h-full bg-purple-400 transition-all duration-200"
+                          style={{ width: `${Math.min(100, cloudLoadProgress)}%` }}
+                        />
+                      </div>
+                    )}
+                    <span className="text-[11px] text-slate-300 mt-1.5 truncate max-w-full">{file.name}</span>
                   </div>
                 </div>
               ) : (
@@ -409,21 +458,36 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                     <div className="w-16 h-16 rounded-full bg-purple-500/25 border border-purple-500/50 flex items-center justify-center text-purple-300 mb-3 shadow-lg">
                       <Play className="w-7 h-7 ml-0.5" />
                     </div>
-                    <span className="text-xs font-semibold text-white">Video Media File</span>
+                    <span className="text-xs font-semibold text-white">
+                      {mediaLoadFailed
+                        ? 'ভিডিও লোড সম্পন্ন হয়নি (আবার চেষ্টা করুন)'
+                        : 'Video Media File'}
+                    </span>
                     <span className="text-[11px] text-slate-300 mt-1">{file.name}</span>
                     {onResolveCloudMedia && (
                       <button
                         type="button"
                         onClick={() => {
+                          setMediaLoadFailed(false);
+                          setCloudLoadProgress(0);
                           setIsLoadingCloudMedia(true);
-                          onResolveCloudMedia(file)
+                          onResolveCloudMedia(file, {
+                            priority: true,
+                            onProgress: (pct) => setCloudLoadProgress(pct),
+                          })
                             .then((res) => {
-                              if (res) setResolvedMediaUrl(res);
-                              else showFeedback('ক্লাউড থেকে ভিডিও পাওয়া যায়নি');
+                              if (res) {
+                                setResolvedMediaUrl(res);
+                                setMediaLoadFailed(false);
+                              } else {
+                                setMediaLoadFailed(true);
+                                showFeedback('ক্লাউড থেকে ভিডিওটি পাওয়া যায়নি');
+                              }
                             })
+                            .catch(() => setMediaLoadFailed(true))
                             .finally(() => setIsLoadingCloudMedia(false));
                         }}
-                        className="mt-3 px-3.5 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-[11px] font-semibold shadow-md cursor-pointer"
+                        className="mt-3 px-4 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white ai-solid-text-white text-[11px] font-semibold shadow-md cursor-pointer"
                       >
                         ক্লাউড থেকে প্লে করুন
                       </button>
@@ -432,7 +496,7 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                 </div>
               )
             ) : file.type === 'audio' ? (
-              activeMediaUrl ? (
+              activeMediaUrl && !mediaLoadFailed ? (
                 <div className="w-full py-6 px-5 flex flex-col items-center justify-center text-center bg-gradient-to-b from-[#251b0d] to-[#120b04] gap-3">
                   <div className="w-14 h-14 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shadow-lg">
                     <Music className="w-7 h-7" />
@@ -445,14 +509,20 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                     key={activeMediaUrl}
                     src={activeMediaUrl}
                     controls
-                    preload="metadata"
+                    preload="auto"
+                    onError={() => {
+                      setMediaLoadFailed(true);
+                      setResolvedMediaUrl(undefined);
+                    }}
                     className="w-full"
                   />
                 </div>
               ) : isLoadingCloudMedia ? (
                 <div className="w-full py-10 px-6 flex flex-col items-center justify-center text-center bg-gradient-to-b from-[#251b0d] to-[#120b04]">
                   <Loader2 className="w-8 h-8 text-amber-400 animate-spin mb-2" />
-                  <span className="text-xs font-semibold text-white">ক্লাউড থেকে অডিও লোড হচ্ছে...</span>
+                  <span className="text-xs font-semibold text-white">
+                    ক্লাউড থেকে অডিও লোড হচ্ছে{cloudLoadProgress > 0 ? `... ${cloudLoadProgress}%` : '...'}
+                  </span>
                   <span className="text-[11px] text-slate-400 mt-1">{file.name}</span>
                 </div>
               ) : (
@@ -462,6 +532,28 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                   </div>
                   <span className="text-xs font-semibold text-white">Audio Track</span>
                   <span className="text-[11px] text-slate-400 mt-1">{file.name}</span>
+                  {onResolveCloudMedia && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMediaLoadFailed(false);
+                        setCloudLoadProgress(0);
+                        setIsLoadingCloudMedia(true);
+                        onResolveCloudMedia(file, {
+                          priority: true,
+                          onProgress: (pct) => setCloudLoadProgress(pct),
+                        })
+                          .then((res) => {
+                            if (res) setResolvedMediaUrl(res);
+                            else setMediaLoadFailed(true);
+                          })
+                          .finally(() => setIsLoadingCloudMedia(false));
+                      }}
+                      className="mt-3 px-4 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white ai-solid-text-white text-[11px] font-semibold cursor-pointer"
+                    >
+                      ক্লাউড থেকে শুনুন
+                    </button>
+                  )}
                 </div>
               )
             ) : (

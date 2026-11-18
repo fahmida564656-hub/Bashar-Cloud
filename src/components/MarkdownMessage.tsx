@@ -351,7 +351,7 @@ export const MarkdownMessage: React.FC<MarkdownMessageProps> = ({ text, isLight 
   }
 
   return (
-    <div className="text-[13.5px] sm:text-sm break-words">
+    <div className="text-[13.5px] sm:text-sm break-words min-w-0 max-w-full">
       {segments.map((seg, idx) =>
         seg.type === 'code' ? (
           <CodeBlock key={`code-${idx}`} language={seg.language || 'code'} code={seg.content} />

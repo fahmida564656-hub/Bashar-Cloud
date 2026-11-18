@@ -47,6 +47,10 @@ interface UploadFlowModalProps {
     destinationFolderId?: string | null,
     options?: { navigateToFiles?: boolean }
   ) => Promise<void> | void;
+  onSyncFileToCloud?: (
+    file: CloudFile,
+    onProgress?: (percent: number) => void
+  ) => Promise<CloudFile>;
   onCreateFolder?: (folderName: string) => CloudFile;
 }
 
@@ -59,6 +63,7 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
   existingFolders = [],
   onClose,
   onFinishUpload,
+  onSyncFileToCloud,
   onCreateFolder,
 }) => {
   // Step state: 1 = Start Upload, 2 = Select Destination, 3 = Create Folder (bottom sheet over step 2), 4 = Upload Progress
@@ -130,7 +135,7 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
     setFolders(fresh);
   }, [existingFolders]);
 
-  // Fast Parallel Upload Engine: processes all pending files concurrently with zero artificial timer lag
+  // Fast Parallel Upload Engine: saves locally to IndexedDB then uploads verified cloud chunks with live progress
   useEffect(() => {
     if (!isOpen || currentStep !== 4 || isPaused) return;
 
@@ -151,61 +156,92 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
     setQueue((prev) =>
       prev.map((item) =>
         pendingSet.has(item.id)
-          ? { ...item, status: 'uploading', progress: 50 }
+          ? { ...item, status: 'uploading', progress: 8 }
           : item
       )
     );
 
     const baseTime = Date.now();
-    void Promise.all(
-      pendingItems.map(async (item, idx) => {
-        try {
-          const uniqueId = `uploaded-${baseTime}-${idx}-${Math.random().toString(36).slice(2, 6)}`;
-          let builtFile: CloudFile;
-          if (item.fileObj) {
-            builtFile = await buildCloudFileFromBrowserFile(item.fileObj, {
-              id: uniqueId,
-              parentFolderId: destination.id,
-              uploaderName: user.name,
-              typeOverride: item.type,
-            });
-          } else {
-            builtFile = {
-              id: uniqueId,
-              name: item.name,
-              type: item.type,
-              sizeBytes: item.sizeBytes,
-              formattedSize: item.formattedSize,
-              date: new Date().toLocaleDateString('en-US', {
-                month: 'short',
-                day: 'numeric',
-                year: 'numeric',
-              }),
-              isFavorite: false,
-              parentFolderId: destination.id,
-            };
-          }
+    const concurrency = Math.min(2, pendingItems.length);
+    let cursor = 0;
 
-          builtFilesMapRef.current.set(item.id, builtFile);
-          setQueue((prev) =>
-            prev.map((qItem) =>
-              qItem.id === item.id
-                ? { ...qItem, status: 'done', progress: 100 }
-                : qItem
-            )
-          );
-        } catch (err) {
-          console.error('Fast upload item build failed:', err);
-          setQueue((prev) =>
-            prev.map((qItem) =>
-              qItem.id === item.id
-                ? { ...qItem, status: 'failed', progress: 0 }
-                : qItem
-            )
-          );
+    const processOne = async (item: UploadQueueItem, idx: number) => {
+      try {
+        const uniqueId = `uploaded-${baseTime}-${idx}-${Math.random().toString(36).slice(2, 6)}`;
+        let builtFile: CloudFile;
+        if (item.fileObj) {
+          builtFile = await buildCloudFileFromBrowserFile(item.fileObj, {
+            id: uniqueId,
+            parentFolderId: destination.id,
+            uploaderName: user.name,
+            typeOverride: item.type,
+          });
+        } else {
+          builtFile = {
+            id: uniqueId,
+            name: item.name,
+            type: item.type,
+            sizeBytes: item.sizeBytes,
+            formattedSize: item.formattedSize,
+            date: new Date().toLocaleDateString('en-US', {
+              month: 'short',
+              day: 'numeric',
+              year: 'numeric',
+            }),
+            isFavorite: false,
+            parentFolderId: destination.id,
+          };
         }
-      })
-    );
+
+        setQueue((prev) =>
+          prev.map((qItem) =>
+            qItem.id === item.id
+              ? { ...qItem, progress: Math.max(qItem.progress, 20) }
+              : qItem
+          )
+        );
+
+        if (onSyncFileToCloud) {
+          builtFile = await onSyncFileToCloud(builtFile, (cloudPct) => {
+            const overallItemPct = Math.min(99, Math.max(20, Math.round(20 + cloudPct * 0.8)));
+            setQueue((prev) =>
+              prev.map((qItem) =>
+                qItem.id === item.id
+                  ? { ...qItem, status: 'uploading', progress: overallItemPct }
+                  : qItem
+              )
+            );
+          });
+        }
+
+        builtFilesMapRef.current.set(item.id, builtFile);
+        setQueue((prev) =>
+          prev.map((qItem) =>
+            qItem.id === item.id
+              ? { ...qItem, status: 'done', progress: 100 }
+              : qItem
+          )
+        );
+      } catch (err) {
+        console.error('Upload item failed:', err);
+        setQueue((prev) =>
+          prev.map((qItem) =>
+            qItem.id === item.id
+              ? { ...qItem, status: 'failed', progress: 0 }
+              : qItem
+          )
+        );
+      }
+    };
+
+    const worker = async () => {
+      while (cursor < pendingItems.length) {
+        const idx = cursor++;
+        await processOne(pendingItems[idx], idx);
+      }
+    };
+
+    void Promise.all(Array.from({ length: concurrency }, () => worker()));
   }, [isOpen, currentStep, isPaused, queue, destination.id, user.name]);
 
   const buildAndCommitItems = async (

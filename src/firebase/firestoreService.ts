@@ -10,7 +10,13 @@ import {
   where,
 } from 'firebase/firestore';
 import { db } from './config';
-import { handleFirestoreError, OperationType } from './errorHandler';
+import {
+  handleFirestoreError,
+  isFirestoreQuotaCooldownActive,
+  isFirestoreQuotaOrTransientError,
+  markFirestoreQuotaCooldown,
+  OperationType,
+} from './errorHandler';
 import {
   CloudFile,
   UserProfile,
@@ -36,14 +42,120 @@ import {
   PaymentOwnerTarget,
 } from '../utils/accountManagement';
 import {
+  areCloudChunksComplete,
   buildChunkDocId,
   CloudChunkRecord,
+  getMissingChunkIndices,
+  inferMediaMimeType,
   reassembleCloudChunksToBlob,
   shouldChunkFileToCloud,
   splitBinaryIntoCloudChunks,
 } from '../utils/cloudChunkSync';
 
+const withFirestoreTimeout = <T>(promise: Promise<T>, ms = 4500, label = 'Firestore'): Promise<T> =>
+  Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timeout`)), ms)
+    ),
+  ]);
+
+const fetchServerCloudUsers = async (): Promise<RegisteredUser[]> => {
+  try {
+    const res = await fetch('/api/cloud/users');
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data?.users) ? (data.users as RegisteredUser[]) : [];
+  } catch {
+    return [];
+  }
+};
+
+const fetchServerCloudFiles = async (userId: string): Promise<CloudFile[]> => {
+  try {
+    const res = await fetch(`/api/cloud/files/${encodeURIComponent(userId)}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data?.files) ? (data.files as CloudFile[]) : [];
+  } catch {
+    return [];
+  }
+};
+
 export const firestoreService = {
+  // Fast binary server transport (/api/media) for zero-quota-lag video/audio/photo sync
+  async uploadMediaBlobToServer(
+    userId: string,
+    fileId: string,
+    blob: Blob,
+    mimeType?: string,
+    fileName?: string
+  ): Promise<boolean> {
+    if (!userId || userId === 'guest_user' || !fileId || !blob || blob.size === 0) return false;
+    try {
+      const resolvedMime = inferMediaMimeType(fileName, mimeType || blob.type);
+      const res = await fetch(
+        `/api/media/${encodeURIComponent(userId)}/${encodeURIComponent(fileId)}`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': resolvedMime,
+            'x-file-mime': resolvedMime,
+            'x-file-name': encodeURIComponent(fileName || fileId),
+          },
+          body: blob,
+        }
+      );
+      return res.ok;
+    } catch {
+      return false;
+    }
+  },
+
+  async fetchMediaBlobFromServer(
+    userId: string,
+    fileId: string,
+    fileName?: string,
+    expectedMimeType?: string
+  ): Promise<Blob | null> {
+    if (!userId || userId === 'guest_user' || !fileId) return null;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15000);
+      try {
+        const res = await fetch(
+          `/api/media/${encodeURIComponent(userId)}/${encodeURIComponent(fileId)}`,
+          { signal: controller.signal }
+        );
+        if (!res.ok) return null;
+        const blob = await res.blob();
+        if (!blob || blob.size === 0) return null;
+        const finalMime = inferMediaMimeType(
+          fileName,
+          res.headers.get('content-type') || expectedMimeType || blob.type
+        );
+        return blob.type === finalMime ? blob : new Blob([blob], { type: finalMime });
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch {
+      return null;
+    }
+  },
+
+  async deleteMediaFromServer(userId: string, fileId?: string): Promise<void> {
+    if (!userId || userId === 'guest_user') return;
+    try {
+      const path = fileId
+        ? `/api/media/${encodeURIComponent(userId)}/${encodeURIComponent(fileId)}`
+        : `/api/media/${encodeURIComponent(userId)}`;
+      await fetch(path, { method: 'DELETE' });
+    } catch {}
+  },
+
+  async getMirrorUsers(): Promise<RegisteredUser[]> {
+    return fetchServerCloudUsers();
+  },
   // ==========================================
   // 1. REGISTERED USERS (CROSS-SITE & GLOBAL)
   // ==========================================
@@ -54,11 +166,23 @@ export const firestoreService = {
    */
   async saveRegisteredUser(user: RegisteredUser): Promise<void> {
     const path = `registered_users/${user.id}`;
-    try {
-      const cleanPhone = (user.phone || '').replace(/[^0-9]/g, '').slice(-10);
-      const cleanEmail = (user.email || '').trim().toLowerCase();
+    const cleanPhone = (user.phone || '').replace(/[^0-9]/g, '').slice(-10);
+    const cleanEmail = (user.email || '').trim().toLowerCase();
 
-      await setDoc(
+    const mirrorPromise = fetch('/api/cloud/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...user,
+        email: cleanEmail,
+        avatarUrl: sanitizeFirestoreMediaUrl(user.avatarUrl, 180_000),
+      }),
+    })
+      .then((r) => r.ok)
+      .catch(() => false);
+
+    const writeDoc = () =>
+      setDoc(
         doc(db, 'registered_users', user.id),
         {
           id: user.id,
@@ -79,18 +203,35 @@ export const firestoreService = {
         },
         { merge: true }
       );
+
+    const mirrorOk = await mirrorPromise;
+    if (isFirestoreQuotaCooldownActive() && mirrorOk) {
+      void writeDoc().catch(() => {});
+      return;
+    }
+
+    try {
+      await withFirestoreTimeout(writeDoc(), mirrorOk ? 1800 : 4000, 'saveRegisteredUser');
     } catch (error) {
+      if (isFirestoreQuotaOrTransientError(error)) {
+        markFirestoreQuotaCooldown();
+        if (mirrorOk) return;
+      }
       handleFirestoreError(error, OperationType.WRITE, path);
     }
   },
 
   /**
-   * Fetch all registered users from Firestore
+   * Fetch all registered users from Firestore (with server mirror fallback)
    */
   async getRegisteredUsersWithMeta(): Promise<{ users: RegisteredUser[]; fromCache: boolean } | null> {
     const path = 'registered_users';
     try {
-      const snapshot = await getDocs(collection(db, 'registered_users'));
+      const snapshot = await withFirestoreTimeout(
+        getDocs(collection(db, 'registered_users')),
+        4500,
+        'getRegisteredUsers'
+      );
       const list: RegisteredUser[] = [];
       snapshot.forEach((docSnap) => {
         const d = docSnap.data();
@@ -113,7 +254,8 @@ export const firestoreService = {
       return { users: list, fromCache: snapshot.metadata.fromCache };
     } catch (error) {
       handleFirestoreError(error, OperationType.LIST, path);
-      return null;
+      const mirrorUsers = await fetchServerCloudUsers();
+      return mirrorUsers.length > 0 ? { users: mirrorUsers, fromCache: false } : null;
     }
   },
 
@@ -123,19 +265,48 @@ export const firestoreService = {
   },
 
   /**
-   * Find a registered user in Firestore by phone, email, or user ID in real-time
-   * Guarantees login works seamlessly even if user registered on another website or domain.
+   * Find a registered user in Firestore (with fast timeout + server mirror fallback)
    */
-  async findRegisteredUser(identifier: string): Promise<RegisteredUser | null> {
+  async findRegisteredUser(identifier: string | string[]): Promise<RegisteredUser | null> {
     try {
-      if (!identifier) return null;
-      const trimmed = identifier.trim();
-      const lower = trimmed.toLowerCase();
-      const cleanDigits = trimmed.replace(/[^0-9]/g, '').slice(-10);
+      const rawInputs = Array.isArray(identifier) ? identifier : [identifier];
+      const queries = rawInputs
+        .map((val) => (val || '').trim())
+        .filter(Boolean)
+        .map((trimmed) => ({
+          trimmed,
+          lower: trimmed.toLowerCase(),
+          cleanDigits: trimmed.replace(/[^0-9]/g, '').slice(-10),
+        }));
+      if (queries.length === 0) return null;
 
-      // Fetch all registered users to guarantee resilient matching without index errors
-      const snapshot = await getDocs(collection(db, 'registered_users'));
+      const matchInList = (candidates: RegisteredUser[]): RegisteredUser | null => {
+        for (const u of candidates) {
+          const uPhone = (u.phone || '').replace(/[^0-9]/g, '').slice(-10);
+          const uEmail = (u.email || '').trim().toLowerCase();
+          for (const q of queries) {
+            if (u.id === q.trimmed) return u;
+            if (uEmail && uEmail === q.lower) return u;
+            if (q.cleanDigits.length >= 7 && uPhone === q.cleanDigits) return u;
+            if (u.name && u.name.trim().toLowerCase() === q.lower) return u;
+          }
+        }
+        return null;
+      };
+
+      const [mirrorUsers, firestoreSnap] = await Promise.all([
+        fetchServerCloudUsers(),
+        withFirestoreTimeout(getDocs(collection(db, 'registered_users')), 3000, 'findRegisteredUser').catch(
+          () => null
+        ),
+      ]);
+
+      const fromMirror = matchInList(mirrorUsers);
+      if (fromMirror) return fromMirror;
+      if (!firestoreSnap) return null;
+
       let found: RegisteredUser | null = null;
+      const snapshot = firestoreSnap;
 
       snapshot.forEach((docSnap) => {
         if (found) return;
@@ -145,84 +316,39 @@ export const firestoreService = {
         const docEmail = (d.email || '').trim().toLowerCase();
         const docId = docSnap.id;
 
-        // 1. Direct ID match
-        if (docId === trimmed || d.id === trimmed) {
-          found = {
-            id: docId,
-            name: d.name || '',
-            email: d.email || '',
-            phone: d.phone || '',
-            passwordPlain: d.passwordPlain || '',
-            avatarUrl: d.avatarUrl || '',
-            registeredAt: d.registeredAt || '',
-            registeredTimestamp: d.registeredTimestamp || Date.now(),
-            filesCount: d.filesCount || 0,
-            storageUsedMB: d.storageUsedMB || 0,
-            isLifetimeApproved: Boolean(d.isLifetimeApproved),
-            paymentStatus: d.paymentStatus || 'none',
-            lastTrxId: d.lastTrxId || '',
-          };
-          return;
-        }
+        const mapDoc = (): RegisteredUser => ({
+          id: docId,
+          name: d.name || '',
+          email: d.email || '',
+          phone: d.phone || '',
+          passwordPlain: d.passwordPlain || '',
+          avatarUrl: d.avatarUrl || '',
+          registeredAt: d.registeredAt || '',
+          registeredTimestamp: d.registeredTimestamp || Date.now(),
+          filesCount: d.filesCount || 0,
+          storageUsedMB: d.storageUsedMB || 0,
+          isLifetimeApproved: Boolean(d.isLifetimeApproved),
+          paymentStatus: d.paymentStatus || 'none',
+          lastTrxId: d.lastTrxId || '',
+        });
 
-        // 2. Email match (if input has @ or matches email exactly)
-        if (docEmail && (trimmed.includes('@') ? docEmail === lower : docEmail === lower)) {
-          found = {
-            id: docId,
-            name: d.name || '',
-            email: d.email || '',
-            phone: d.phone || '',
-            passwordPlain: d.passwordPlain || '',
-            avatarUrl: d.avatarUrl || '',
-            registeredAt: d.registeredAt || '',
-            registeredTimestamp: d.registeredTimestamp || Date.now(),
-            filesCount: d.filesCount || 0,
-            storageUsedMB: d.storageUsedMB || 0,
-            isLifetimeApproved: Boolean(d.isLifetimeApproved),
-            paymentStatus: d.paymentStatus || 'none',
-            lastTrxId: d.lastTrxId || '',
-          };
-          return;
-        }
-
-        // 3. Phone number match (10 or 11 digits)
-        if (cleanDigits.length >= 7 && (docCleanPhone === cleanDigits || docPhone === cleanDigits)) {
-          found = {
-            id: docId,
-            name: d.name || '',
-            email: d.email || '',
-            phone: d.phone || '',
-            passwordPlain: d.passwordPlain || '',
-            avatarUrl: d.avatarUrl || '',
-            registeredAt: d.registeredAt || '',
-            registeredTimestamp: d.registeredTimestamp || Date.now(),
-            filesCount: d.filesCount || 0,
-            storageUsedMB: d.storageUsedMB || 0,
-            isLifetimeApproved: Boolean(d.isLifetimeApproved),
-            paymentStatus: d.paymentStatus || 'none',
-            lastTrxId: d.lastTrxId || '',
-          };
-          return;
-        }
-
-        // 4. Exact Name match fallback
-        if (d.name && d.name.trim().toLowerCase() === lower) {
-          found = {
-            id: docId,
-            name: d.name || '',
-            email: d.email || '',
-            phone: d.phone || '',
-            passwordPlain: d.passwordPlain || '',
-            avatarUrl: d.avatarUrl || '',
-            registeredAt: d.registeredAt || '',
-            registeredTimestamp: d.registeredTimestamp || Date.now(),
-            filesCount: d.filesCount || 0,
-            storageUsedMB: d.storageUsedMB || 0,
-            isLifetimeApproved: Boolean(d.isLifetimeApproved),
-            paymentStatus: d.paymentStatus || 'none',
-            lastTrxId: d.lastTrxId || '',
-          };
-          return;
+        for (const q of queries) {
+          if (docId === q.trimmed || d.id === q.trimmed) {
+            found = mapDoc();
+            return;
+          }
+          if (docEmail && docEmail === q.lower) {
+            found = mapDoc();
+            return;
+          }
+          if (q.cleanDigits.length >= 7 && (docCleanPhone === q.cleanDigits || docPhone === q.cleanDigits)) {
+            found = mapDoc();
+            return;
+          }
+          if (d.name && d.name.trim().toLowerCase() === q.lower) {
+            found = mapDoc();
+            return;
+          }
         }
       });
 
@@ -237,7 +363,7 @@ export const firestoreService = {
    * Subscribe to real-time registered users list updates from Firestore
    */
   subscribeToRegisteredUsers(
-    onData: (users: RegisteredUser[]) => void
+    onData: (users: RegisteredUser[], meta?: { fromCache: boolean }) => void
   ): () => void {
     const path = 'registered_users';
     return onSnapshot(
@@ -262,7 +388,7 @@ export const firestoreService = {
             lastTrxId: d.lastTrxId || '',
           });
         });
-        onData(users);
+        onData(users, { fromCache: snapshot.metadata.fromCache });
       },
       (error) => {
         handleFirestoreError(error, OperationType.GET, path);
@@ -275,8 +401,13 @@ export const firestoreService = {
    */
   async deleteRegisteredUser(userId: string): Promise<void> {
     const path = `registered_users/${userId}`;
+    fetch(`/api/cloud/users/${encodeURIComponent(userId)}`, { method: 'DELETE' }).catch(() => {});
     try {
-      await deleteDoc(doc(db, 'registered_users', userId));
+      await withFirestoreTimeout(
+        deleteDoc(doc(db, 'registered_users', userId)),
+        4000,
+        'deleteRegisteredUser'
+      );
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, path);
     }
@@ -287,7 +418,11 @@ export const firestoreService = {
    */
   async deleteUserPaymentRequests(target: PaymentOwnerTarget): Promise<void> {
     try {
-      const snap = await getDocs(collection(db, 'payment_requests'));
+      const snap = await withFirestoreTimeout(
+        getDocs(collection(db, 'payment_requests')),
+        4000,
+        'getPaymentRequestsForDelete'
+      );
       const payDeletes: Promise<void>[] = [];
       snap.forEach((pDoc) => {
         const data = pDoc.data() as PaymentRequest;
@@ -296,7 +431,7 @@ export const firestoreService = {
         }
       });
       if (payDeletes.length > 0) {
-        await Promise.all(payDeletes);
+        await withFirestoreTimeout(Promise.all(payDeletes), 4000, 'deleteUserPaymentRequests');
       }
     } catch (err) {
       console.warn('Could not delete user payment requests:', err);
@@ -308,13 +443,17 @@ export const firestoreService = {
    */
   async deleteAllPaymentRequests(): Promise<void> {
     try {
-      const snap = await getDocs(collection(db, 'payment_requests'));
+      const snap = await withFirestoreTimeout(
+        getDocs(collection(db, 'payment_requests')),
+        4000,
+        'getAllPaymentRequestsForDelete'
+      );
       const deletes: Promise<void>[] = [];
       snap.forEach((pDoc) => {
         deletes.push(deleteDoc(pDoc.ref));
       });
       if (deletes.length > 0) {
-        await Promise.all(deletes);
+        await withFirestoreTimeout(Promise.all(deletes), 4000, 'deleteAllPaymentRequests');
       }
     } catch (err) {
       console.warn('Error deleting all payment requests:', err);
@@ -362,17 +501,24 @@ export const firestoreService = {
         }
       };
 
-      await Promise.all([
-        deleteDoc(doc(db, 'registered_users', userId)),
-        subcollectionCleanup(),
-        deleteDoc(doc(db, 'users', userId, 'storage', 'usage')).catch(() => {}),
-        deleteDoc(doc(db, 'users', userId)).catch(() => {}),
-        this.deleteUserPaymentRequests({
-          id: userId,
-          email: targetEmail,
-          phone: targetPhone,
-        }),
-      ]);
+      fetch(`/api/cloud/users/${encodeURIComponent(userId)}`, { method: 'DELETE' }).catch(() => {});
+      fetch(`/api/media/${encodeURIComponent(userId)}`, { method: 'DELETE' }).catch(() => {});
+
+      await withFirestoreTimeout(
+        Promise.all([
+          deleteDoc(doc(db, 'registered_users', userId)),
+          subcollectionCleanup(),
+          deleteDoc(doc(db, 'users', userId, 'storage', 'usage')).catch(() => {}),
+          deleteDoc(doc(db, 'users', userId)).catch(() => {}),
+          this.deleteUserPaymentRequests({
+            id: userId,
+            email: targetEmail,
+            phone: targetPhone,
+          }),
+        ]),
+        5000,
+        'deleteRegisteredUserAndData'
+      );
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, path);
     }
@@ -383,11 +529,17 @@ export const firestoreService = {
    */
   async clearAllUserFiles(userId: string): Promise<void> {
     try {
-      const [filesSnap, binSnap, chunksSnap] = await Promise.all([
-        getDocs(collection(db, 'users', userId, 'files')),
-        getDocs(collection(db, 'users', userId, 'recycle_bin')),
-        getDocs(collection(db, 'users', userId, 'file_chunks')),
-      ]);
+      fetch(`/api/cloud/files/${encodeURIComponent(userId)}`, { method: 'DELETE' }).catch(() => {});
+      fetch(`/api/media/${encodeURIComponent(userId)}`, { method: 'DELETE' }).catch(() => {});
+      const [filesSnap, binSnap, chunksSnap] = await withFirestoreTimeout(
+        Promise.all([
+          getDocs(collection(db, 'users', userId, 'files')),
+          getDocs(collection(db, 'users', userId, 'recycle_bin')),
+          getDocs(collection(db, 'users', userId, 'file_chunks')),
+        ]),
+        5000,
+        'clearAllUserFiles'
+      );
       const deletePromises: Promise<void>[] = [];
       filesSnap.forEach((fileDoc) => {
         deletePromises.push(deleteDoc(fileDoc.ref));
@@ -430,15 +582,19 @@ export const firestoreService = {
   async saveSiteSettings(settings: SiteSettings): Promise<void> {
     const path = 'site_settings/global';
     try {
-      await setDoc(doc(db, 'site_settings', 'global'), {
-        websiteName: settings.websiteName,
-        logoUrl: sanitizeFirestoreMediaUrl(settings.logoUrl, 240_000),
-        totalStorageGB: settings.totalStorageGB || 1000,
-        bkashNumber: settings.bkashNumber || '01734211584',
-        nagadNumber: settings.nagadNumber || '01734211584',
-        subscriptionFee: settings.subscriptionFee || 100,
-        updatedAt: new Date().toISOString(),
-      }, { merge: true });
+      await withFirestoreTimeout(
+        setDoc(doc(db, 'site_settings', 'global'), {
+          websiteName: settings.websiteName,
+          logoUrl: sanitizeFirestoreMediaUrl(settings.logoUrl, 240_000),
+          totalStorageGB: settings.totalStorageGB || 1000,
+          bkashNumber: settings.bkashNumber || '01734211584',
+          nagadNumber: settings.nagadNumber || '01734211584',
+          subscriptionFee: settings.subscriptionFee || 100,
+          updatedAt: new Date().toISOString(),
+        }, { merge: true }),
+        4000,
+        'saveSiteSettings'
+      );
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
     }
@@ -446,7 +602,11 @@ export const firestoreService = {
 
   async getSiteSettings(): Promise<Partial<SiteSettings> | null> {
     try {
-      const snap = await getDoc(doc(db, 'site_settings', 'global'));
+      const snap = await withFirestoreTimeout(
+        getDoc(doc(db, 'site_settings', 'global')),
+        4000,
+        'getSiteSettings'
+      );
       if (snap.exists()) {
         return snap.data() as Partial<SiteSettings>;
       }
@@ -475,26 +635,30 @@ export const firestoreService = {
   async savePaymentRequest(payment: PaymentRequest): Promise<void> {
     const path = `payment_requests/${payment.id}`;
     try {
-      await setDoc(
-        doc(db, 'payment_requests', payment.id),
-        {
-          id: payment.id,
-          userId: payment.userId,
-          userName: payment.userName,
-          userEmail: payment.userEmail || '',
-          userPhone: payment.userPhone || '',
-          method: payment.method,
-          senderPhone: payment.senderPhone,
-          transactionId: payment.transactionId,
-          amount: payment.amount || 100,
-          submittedAt: payment.submittedAt,
-          submittedTimestamp: payment.submittedTimestamp,
-          status: payment.status,
-          adminNote: payment.adminNote || '',
-          reviewedAt: payment.reviewedAt || '',
-          updatedAt: new Date().toISOString(),
-        },
-        { merge: true }
+      await withFirestoreTimeout(
+        setDoc(
+          doc(db, 'payment_requests', payment.id),
+          {
+            id: payment.id,
+            userId: payment.userId,
+            userName: payment.userName,
+            userEmail: payment.userEmail || '',
+            userPhone: payment.userPhone || '',
+            method: payment.method,
+            senderPhone: payment.senderPhone,
+            transactionId: payment.transactionId,
+            amount: payment.amount || 100,
+            submittedAt: payment.submittedAt,
+            submittedTimestamp: payment.submittedTimestamp,
+            status: payment.status,
+            adminNote: payment.adminNote || '',
+            reviewedAt: payment.reviewedAt || '',
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        ),
+        4000,
+        'savePaymentRequest'
       );
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
@@ -503,7 +667,11 @@ export const firestoreService = {
 
   async getPaymentRequestsWithMeta(): Promise<{ payments: PaymentRequest[]; fromCache: boolean } | null> {
     try {
-      const snapshot = await getDocs(collection(db, 'payment_requests'));
+      const snapshot = await withFirestoreTimeout(
+        getDocs(collection(db, 'payment_requests')),
+        4000,
+        'getPaymentRequests'
+      );
       const list: PaymentRequest[] = [];
       snapshot.forEach((docSnap) => {
         list.push(docSnap.data() as PaymentRequest);
@@ -542,16 +710,20 @@ export const firestoreService = {
   async saveUserProfile(userId: string, user: UserProfile): Promise<void> {
     const path = `users/${userId}`;
     try {
-      await setDoc(
-        doc(db, 'users', userId),
-        {
-          name: (user.name || '').slice(0, 200),
-          phone: (user.phone || '').slice(0, 60),
-          email: (user.email || '').slice(0, 200),
-          avatarUrl: sanitizeFirestoreMediaUrl(user.avatarUrl, 180_000),
-          updatedAt: new Date().toISOString(),
-        },
-        { merge: true }
+      await withFirestoreTimeout(
+        setDoc(
+          doc(db, 'users', userId),
+          {
+            name: (user.name || '').slice(0, 200),
+            phone: (user.phone || '').slice(0, 60),
+            email: (user.email || '').slice(0, 200),
+            avatarUrl: sanitizeFirestoreMediaUrl(user.avatarUrl, 180_000),
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        ),
+        4000,
+        'saveUserProfile'
       );
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
@@ -565,6 +737,7 @@ export const firestoreService = {
       const safe = sanitizeFileForPersistence(file);
       const boundedPayload = stripUndefinedDeep(
         fitFilePayloadToFirestoreLimit({
+          id: safe.id,
           name: safe.name,
           type: safe.type,
           sizeBytes: safe.sizeBytes,
@@ -581,63 +754,163 @@ export const firestoreService = {
           versions: safe.versions || [],
           mimeType: safe.mimeType || '',
           cloudChunkCount: safe.cloudChunkCount || 0,
+          cloudSynced: Boolean(safe.cloudSynced),
           ownerId: userId,
           updatedAt: new Date().toISOString(),
         })
       );
-      await setDoc(doc(db, 'users', userId, 'files', safe.id), boundedPayload, { merge: true });
+
+      const mirrorOk = await fetch(`/api/cloud/files/${encodeURIComponent(userId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(boundedPayload),
+      })
+        .then((r) => r.ok)
+        .catch(() => false);
+
+      const writeDoc = () =>
+        setDoc(doc(db, 'users', userId, 'files', safe.id), boundedPayload, { merge: true });
+
+      if (isFirestoreQuotaCooldownActive() && mirrorOk) {
+        void writeDoc().catch(() => {});
+        return;
+      }
+
+      await withFirestoreTimeout(
+        writeDoc(),
+        mirrorOk ? 1200 : 4000,
+        'saveFile'
+      );
     } catch (error) {
+      if (isFirestoreQuotaOrTransientError(error)) {
+        markFirestoreQuotaCooldown();
+      }
       handleFirestoreError(error, OperationType.WRITE, path);
     }
   },
 
   /**
-   * Splits large binary files (videos, audio, high-res photos, PDFs >340KB) into Base64 chunks
-   * and uploads them in parallel batches so any logged-in device/website can stream/view them seamlessly.
+   * Checks quickly whether all expected chunks already exist in Firestore for a file.
+   */
+  async verifyCloudChunksExist(
+    userId: string,
+    fileId: string,
+    expectedChunkCount?: number
+  ): Promise<{ complete: boolean; totalChunks: number; missingIndices: number[] }> {
+    if (!userId || userId === 'guest_user' || !fileId) {
+      return { complete: false, totalChunks: 0, missingIndices: [] };
+    }
+    try {
+      const q = query(
+        collection(db, 'users', userId, 'file_chunks'),
+        where('fileId', '==', fileId)
+      );
+      const snap = await getDocs(q);
+      const present: CloudChunkRecord[] = [];
+      let totalFromDoc = expectedChunkCount || 0;
+      snap.forEach((docSnap) => {
+        const d = docSnap.data();
+        if (typeof d.totalChunks === 'number' && d.totalChunks > totalFromDoc) {
+          totalFromDoc = d.totalChunks;
+        }
+        if (typeof d.index === 'number' && typeof d.data === 'string' && d.data.length > 0) {
+          present.push({ index: d.index, data: d.data });
+        }
+      });
+      if (present.length === 0 || totalFromDoc <= 0) {
+        return { complete: false, totalChunks: totalFromDoc, missingIndices: [] };
+      }
+      const missingIndices = getMissingChunkIndices(present, totalFromDoc);
+      return {
+        complete: missingIndices.length === 0,
+        totalChunks: totalFromDoc,
+        missingIndices,
+      };
+    } catch {
+      return { complete: false, totalChunks: 0, missingIndices: [] };
+    }
+  },
+
+  /**
+   * Splits binary files (videos, audio, high-res photos, PDFs >340KB) into Base64 chunks
+   * and uploads them with per-chunk retry and verified completion so every file plays across websites.
    */
   async saveFileChunks(
     userId: string,
     fileId: string,
     blob: Blob,
-    mimeType?: string
+    mimeType?: string,
+    fileName?: string,
+    onProgress?: (uploadedChunks: number, totalChunks: number) => void
   ): Promise<number> {
     if (!userId || userId === 'guest_user' || !fileId || !blob) return 0;
     if (!shouldChunkFileToCloud(blob.size)) return 0;
+    if (isFirestoreQuotaCooldownActive()) return 0;
 
     try {
       const buf = await blob.arrayBuffer();
       const chunks = splitBinaryIntoCloudChunks(new Uint8Array(buf));
       if (chunks.length === 0) return 0;
 
-      const resolvedMime = mimeType || blob.type || 'application/octet-stream';
-      const batchSize = 4;
+      const resolvedMime = inferMediaMimeType(fileName, mimeType || blob.type);
+      const writeChunkWithRetry = async (index: number, data: string): Promise<void> => {
+        let lastErr: unknown;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          if (isFirestoreQuotaCooldownActive()) {
+            throw new Error('Firestore quota cooldown active');
+          }
+          try {
+            await withFirestoreTimeout(
+              setDoc(
+                doc(db, 'users', userId, 'file_chunks', buildChunkDocId(fileId, index)),
+                {
+                  fileId,
+                  index,
+                  totalChunks: chunks.length,
+                  mimeType: resolvedMime,
+                  data,
+                }
+              ),
+              3000,
+              `saveChunk_${index}`
+            );
+            return;
+          } catch (err) {
+            lastErr = err;
+            if (isFirestoreQuotaOrTransientError(err)) {
+              markFirestoreQuotaCooldown();
+              throw err;
+            }
+            await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+          }
+        }
+        throw lastErr;
+      };
+
+      const batchSize = 6;
+      let completed = 0;
       for (let start = 0; start < chunks.length; start += batchSize) {
         const batch = chunks.slice(start, start + batchSize);
         await Promise.all(
-          batch.map((data, offsetIdx) => {
-            const index = start + offsetIdx;
-            return setDoc(
-              doc(db, 'users', userId, 'file_chunks', buildChunkDocId(fileId, index)),
-              {
-                fileId,
-                index,
-                totalChunks: chunks.length,
-                mimeType: resolvedMime,
-                data,
-              }
-            );
-          })
+          batch.map((data, offsetIdx) => writeChunkWithRetry(start + offsetIdx, data))
         );
+        completed += batch.length;
+        onProgress?.(completed, chunks.length);
       }
 
-      await setDoc(
-        doc(db, 'users', userId, 'files', fileId),
-        {
-          cloudChunkCount: chunks.length,
-          mimeType: resolvedMime,
-          updatedAt: new Date().toISOString(),
-        },
-        { merge: true }
+      await withFirestoreTimeout(
+        setDoc(
+          doc(db, 'users', userId, 'files', fileId),
+          {
+            cloudChunkCount: chunks.length,
+            cloudSynced: true,
+            mimeType: resolvedMime,
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        ),
+        4000,
+        'markChunkSynced'
       );
       return chunks.length;
     } catch (error) {
@@ -647,41 +920,92 @@ export const firestoreService = {
   },
 
   /**
-   * Downloads and reassembles chunked binary media from Firestore for cross-website video/audio/file playback.
+   * Downloads and reassembles chunked binary media from Firestore with retry, progress reporting,
+   * and completeness validation for cross-website video/audio/photo playback.
    */
   async getFileBlobFromCloudChunks(
     userId: string,
     fileId: string,
     expectedChunkCount?: number,
-    expectedMimeType?: string
+    expectedMimeType?: string,
+    fileName?: string,
+    onProgress?: (loadedChunks: number, totalChunks: number) => void
   ): Promise<Blob | null> {
     if (!userId || userId === 'guest_user' || !fileId) return null;
+
+    const getDocWithRetry = async (idx: number) => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const ref = doc(db, 'users', userId, 'file_chunks', buildChunkDocId(fileId, idx));
+          const snap = await Promise.race([
+            getDoc(ref),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('Chunk read timeout')), 15000)
+            ),
+          ]);
+          return snap;
+        } catch (err) {
+          if (attempt === 1) throw err;
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      }
+      return null;
+    };
 
     try {
       const records: CloudChunkRecord[] = [];
       let detectedMime = expectedMimeType || '';
+      let targetCount = expectedChunkCount || 0;
 
-      if (expectedChunkCount && expectedChunkCount > 0) {
-        const indices = Array.from({ length: expectedChunkCount }, (_, i) => i);
-        const batchSize = 6;
-        for (let start = 0; start < indices.length; start += batchSize) {
-          const slice = indices.slice(start, start + batchSize);
-          const docs = await Promise.all(
-            slice.map((idx) =>
-              getDoc(doc(db, 'users', userId, 'file_chunks', buildChunkDocId(fileId, idx)))
-            )
-          );
+      // If caller didn't know expectedChunkCount, peek chunk 0 to learn totalChunks + mimeType
+      if (!targetCount || targetCount <= 0) {
+        try {
+          const firstSnap = await getDocWithRetry(0);
+          if (firstSnap && firstSnap.exists()) {
+            const d = firstSnap.data();
+            if (typeof d.totalChunks === 'number' && d.totalChunks > 0) {
+              targetCount = d.totalChunks;
+            }
+            if (!detectedMime && typeof d.mimeType === 'string' && d.mimeType) {
+              detectedMime = d.mimeType;
+            }
+            if (typeof d.data === 'string' && typeof d.index === 'number') {
+              records.push({ index: d.index, data: d.data });
+            }
+          }
+        } catch {
+          // Fall through to query fallback below
+        }
+      }
+
+      if (targetCount > 0) {
+        const startIdx = records.some((r) => r.index === 0) ? 1 : 0;
+        if (startIdx === 1) {
+          onProgress?.(1, targetCount);
+        }
+        const remainingIndices = Array.from(
+          { length: Math.max(0, targetCount - startIdx) },
+          (_, i) => startIdx + i
+        );
+        const batchSize = 8;
+        for (let start = 0; start < remainingIndices.length; start += batchSize) {
+          const slice = remainingIndices.slice(start, start + batchSize);
+          const docs = await Promise.all(slice.map((idx) => getDocWithRetry(idx)));
           for (const snap of docs) {
-            if (snap.exists()) {
+            if (snap && snap.exists()) {
               const d = snap.data();
               if (!detectedMime && typeof d.mimeType === 'string' && d.mimeType) {
                 detectedMime = d.mimeType;
+              }
+              if (typeof d.totalChunks === 'number' && d.totalChunks > targetCount) {
+                targetCount = d.totalChunks;
               }
               if (typeof d.data === 'string' && typeof d.index === 'number') {
                 records.push({ index: d.index, data: d.data });
               }
             }
           }
+          onProgress?.(records.length, targetCount);
         }
       }
 
@@ -690,20 +1014,39 @@ export const firestoreService = {
           collection(db, 'users', userId, 'file_chunks'),
           where('fileId', '==', fileId)
         );
-        const snap = await getDocs(q);
+        const snap = await Promise.race([
+          getDocs(q),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Chunk query timeout')), 25000)
+          ),
+        ]);
         snap.forEach((docSnap) => {
           const d = docSnap.data();
           if (!detectedMime && typeof d.mimeType === 'string' && d.mimeType) {
             detectedMime = d.mimeType;
           }
+          if (typeof d.totalChunks === 'number' && d.totalChunks > targetCount) {
+            targetCount = d.totalChunks;
+          }
           if (typeof d.data === 'string' && typeof d.index === 'number') {
             records.push({ index: d.index, data: d.data });
           }
         });
+        if (targetCount > 0) {
+          onProgress?.(records.length, targetCount);
+        }
       }
 
       if (records.length === 0) return null;
-      return reassembleCloudChunksToBlob(records, detectedMime || 'application/octet-stream');
+      if (targetCount > 0 && !areCloudChunksComplete(records, targetCount)) {
+        console.warn(
+          `Incomplete cloud chunks for ${fileId}: got ${records.length} of ${targetCount}`
+        );
+        return null;
+      }
+
+      const finalMime = inferMediaMimeType(fileName, detectedMime || expectedMimeType);
+      return reassembleCloudChunksToBlob(records, finalMime);
     } catch (error) {
       console.warn('Error hydrating cloud file chunks:', error);
       return null;
@@ -732,8 +1075,18 @@ export const firestoreService = {
 
   async deleteFile(userId: string, fileId: string): Promise<void> {
     const path = `users/${userId}/files/${fileId}`;
+    fetch(`/api/cloud/files/${encodeURIComponent(userId)}/${encodeURIComponent(fileId)}`, {
+      method: 'DELETE',
+    }).catch(() => {});
+    fetch(`/api/media/${encodeURIComponent(userId)}/${encodeURIComponent(fileId)}`, {
+      method: 'DELETE',
+    }).catch(() => {});
     try {
-      await deleteDoc(doc(db, 'users', userId, 'files', fileId));
+      await withFirestoreTimeout(
+        deleteDoc(doc(db, 'users', userId, 'files', fileId)),
+        4000,
+        'deleteFile'
+      );
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, path);
     }
@@ -762,11 +1115,16 @@ export const firestoreService = {
           versions: safe.versions || [],
           mimeType: safe.mimeType || '',
           cloudChunkCount: safe.cloudChunkCount || 0,
+          cloudSynced: Boolean(safe.cloudSynced),
           ownerId: userId,
           deletedAt: new Date().toISOString(),
         })
       );
-      await setDoc(doc(db, 'users', userId, 'recycle_bin', safe.id), boundedPayload, { merge: true });
+      await withFirestoreTimeout(
+        setDoc(doc(db, 'users', userId, 'recycle_bin', safe.id), boundedPayload, { merge: true }),
+        4000,
+        'saveDeletedFile'
+      );
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
     }
@@ -775,7 +1133,11 @@ export const firestoreService = {
   async removeDeletedFile(userId: string, fileId: string): Promise<void> {
     const path = `users/${userId}/recycle_bin/${fileId}`;
     try {
-      await deleteDoc(doc(db, 'users', userId, 'recycle_bin', fileId));
+      await withFirestoreTimeout(
+        deleteDoc(doc(db, 'users', userId, 'recycle_bin', fileId)),
+        4000,
+        'removeDeletedFile'
+      );
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, path);
     }
@@ -784,7 +1146,11 @@ export const firestoreService = {
   async getUserDeletedFiles(userId: string): Promise<CloudFile[]> {
     try {
       if (!userId) return [];
-      const snap = await getDocs(collection(db, 'users', userId, 'recycle_bin'));
+      const snap = await withFirestoreTimeout(
+        getDocs(collection(db, 'users', userId, 'recycle_bin')),
+        4000,
+        'getUserDeletedFiles'
+      );
       const list: CloudFile[] = [];
       snap.forEach((docSnap) => {
         const data = docSnap.data();
@@ -806,6 +1172,7 @@ export const firestoreService = {
           versions: data.versions,
           mimeType: data.mimeType || undefined,
           cloudChunkCount: data.cloudChunkCount || undefined,
+          cloudSynced: data.cloudSynced !== undefined ? Boolean(data.cloudSynced) : undefined,
         });
       });
       return list;
@@ -816,12 +1183,16 @@ export const firestoreService = {
 
   async clearUserRecycleBin(userId: string): Promise<void> {
     try {
-      const binSnap = await getDocs(collection(db, 'users', userId, 'recycle_bin'));
+      const binSnap = await withFirestoreTimeout(
+        getDocs(collection(db, 'users', userId, 'recycle_bin')),
+        4000,
+        'getRecycleBinForClear'
+      );
       const deletePromises: Promise<void>[] = [];
       binSnap.forEach((binDoc) => {
         deletePromises.push(deleteDoc(binDoc.ref));
       });
-      await Promise.all(deletePromises);
+      await withFirestoreTimeout(Promise.all(deletePromises), 4000, 'clearUserRecycleBin');
     } catch (error) {
       console.warn('Error clearing recycle bin:', error);
     }
@@ -830,22 +1201,26 @@ export const firestoreService = {
   async saveStorageUsage(userId: string, usage: StorageUsage): Promise<void> {
     const path = `users/${userId}/storage/usage`;
     try {
-      await setDoc(
-        doc(db, 'users', userId, 'storage', 'usage'),
-        {
-          totalGB: usage.totalGB,
-          usedGB: usage.usedGB,
-          imagesGB: usage.imagesGB,
-          imagesCount: usage.imagesCount,
-          videosGB: usage.videosGB,
-          videosCount: usage.videosCount,
-          audiosMB: usage.audiosMB,
-          audiosCount: usage.audiosCount,
-          docsMB: usage.docsMB,
-          docsCount: usage.docsCount,
-          updatedAt: new Date().toISOString(),
-        },
-        { merge: true }
+      await withFirestoreTimeout(
+        setDoc(
+          doc(db, 'users', userId, 'storage', 'usage'),
+          {
+            totalGB: usage.totalGB,
+            usedGB: usage.usedGB,
+            imagesGB: usage.imagesGB,
+            imagesCount: usage.imagesCount,
+            videosGB: usage.videosGB,
+            videosCount: usage.videosCount,
+            audiosMB: usage.audiosMB,
+            audiosCount: usage.audiosCount,
+            docsMB: usage.docsMB,
+            docsCount: usage.docsCount,
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        ),
+        4000,
+        'saveStorageUsage'
       );
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
@@ -858,35 +1233,52 @@ export const firestoreService = {
       const userIdsToCheck = [userId, ...(fallbackIds || [])].filter(Boolean);
       const uniqueIds = Array.from(new Set(userIdsToCheck));
 
+      const mapRawFile = (docId: string, data: Record<string, any>, fallbackOwner: string): CloudFile => ({
+        id: docId,
+        name: data.name,
+        type: data.type,
+        sizeBytes: data.sizeBytes || 0,
+        formattedSize: data.formattedSize || '',
+        date: data.date,
+        isFavorite: Boolean(data.isFavorite),
+        parentFolderId: data.parentFolderId ?? null,
+        url: data.url || undefined,
+        thumbnail: data.thumbnail || undefined,
+        itemCount: data.itemCount,
+        content: data.content || undefined,
+        extension: data.extension || undefined,
+        archiveEntries: data.archiveEntries,
+        versions: data.versions,
+        mimeType: data.mimeType || undefined,
+        cloudChunkCount: data.cloudChunkCount || undefined,
+        cloudSynced: data.cloudSynced !== undefined ? Boolean(data.cloudSynced) : undefined,
+        ownerId: data.ownerId || fallbackOwner,
+      });
+
       for (const id of uniqueIds) {
-        const snap = await getDocs(collection(db, 'users', id, 'files'));
-        if (!snap.empty) {
-          const list: CloudFile[] = [];
-          snap.forEach((docSnap) => {
-            const data = docSnap.data();
-            list.push({
-              id: docSnap.id,
-              name: data.name,
-              type: data.type,
-              sizeBytes: data.sizeBytes || 0,
-              formattedSize: data.formattedSize || '',
-              date: data.date,
-              isFavorite: Boolean(data.isFavorite),
-              parentFolderId: data.parentFolderId ?? null,
-              url: data.url || undefined,
-              thumbnail: data.thumbnail || undefined,
-              itemCount: data.itemCount,
-              content: data.content || undefined,
-              extension: data.extension || undefined,
-              archiveEntries: data.archiveEntries,
-              versions: data.versions,
-              mimeType: data.mimeType || undefined,
-              cloudChunkCount: data.cloudChunkCount || undefined,
-            });
+        const [firestoreRes, serverFiles] = await Promise.all([
+          withFirestoreTimeout(
+            getDocs(collection(db, 'users', id, 'files')),
+            4500,
+            'getUserFiles'
+          ).catch(() => null),
+          fetchServerCloudFiles(id),
+        ]);
+
+        const byId = new Map<string, CloudFile>();
+        if (firestoreRes && !firestoreRes.empty) {
+          firestoreRes.forEach((docSnap) => {
+            byId.set(docSnap.id, mapRawFile(docSnap.id, docSnap.data(), id));
           });
-          if (list.length > 0) {
-            return list;
+        }
+        for (const sf of serverFiles) {
+          if (sf && sf.id) {
+            const existing = byId.get(sf.id);
+            byId.set(sf.id, existing ? { ...sf, ...existing, cloudSynced: Boolean(existing.cloudSynced || sf.cloudSynced) } : sf);
           }
+        }
+        if (byId.size > 0) {
+          return Array.from(byId.values());
         }
       }
       return [];
@@ -924,6 +1316,8 @@ export const firestoreService = {
             versions: data.versions,
             mimeType: data.mimeType || undefined,
             cloudChunkCount: data.cloudChunkCount || undefined,
+            cloudSynced: data.cloudSynced !== undefined ? Boolean(data.cloudSynced) : undefined,
+            ownerId: data.ownerId || userId,
           });
         });
         onData(files, { fromCache: snapshot.metadata.fromCache });
@@ -973,7 +1367,11 @@ export const firestoreService = {
         })
       );
 
-      await setDoc(doc(db, 'users', userId, 'ai_chats', thread.id), boundedPayload, { merge: true });
+      await withFirestoreTimeout(
+        setDoc(doc(db, 'users', userId, 'ai_chats', thread.id), boundedPayload, { merge: true }),
+        4000,
+        'saveAiChat'
+      );
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
     }
@@ -983,7 +1381,11 @@ export const firestoreService = {
     if (!userId || userId === 'guest_user' || !chatId) return;
     const path = `users/${userId}/ai_chats/${chatId}`;
     try {
-      await deleteDoc(doc(db, 'users', userId, 'ai_chats', chatId));
+      await withFirestoreTimeout(
+        deleteDoc(doc(db, 'users', userId, 'ai_chats', chatId)),
+        4000,
+        'deleteAiChat'
+      );
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, path);
     }
@@ -1039,7 +1441,11 @@ export const firestoreService = {
         createdTimestamp: Number(ad.createdTimestamp) || Date.now(),
         updatedAt: new Date().toISOString(),
       });
-      await setDoc(doc(db, 'announcements', ad.id), payload, { merge: true });
+      await withFirestoreTimeout(
+        setDoc(doc(db, 'announcements', ad.id), payload, { merge: true }),
+        4000,
+        'saveAnnouncement'
+      );
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
     }
@@ -1048,7 +1454,11 @@ export const firestoreService = {
   async getAnnouncements(): Promise<AdminAnnouncement[] | null> {
     const path = 'announcements';
     try {
-      const snap = await getDocs(collection(db, 'announcements'));
+      const snap = await withFirestoreTimeout(
+        getDocs(collection(db, 'announcements')),
+        4000,
+        'getAnnouncements'
+      );
       const list: AdminAnnouncement[] = [];
       snap.forEach((docSnap) => {
         const d = docSnap.data();
@@ -1107,7 +1517,11 @@ export const firestoreService = {
     if (!adId) return;
     const path = `announcements/${adId}`;
     try {
-      await deleteDoc(doc(db, 'announcements', adId));
+      await withFirestoreTimeout(
+        deleteDoc(doc(db, 'announcements', adId)),
+        4000,
+        'deleteAnnouncement'
+      );
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, path);
     }

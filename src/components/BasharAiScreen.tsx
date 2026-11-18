@@ -27,6 +27,10 @@ import {
   ArrowUpRight,
   Image as ImageIcon,
   Upload,
+  Mic,
+  MicOff,
+  Languages,
+  Wand2,
 } from 'lucide-react';
 import { AiAttachment, AiChatThread, AiMessage, AiMode, CloudFile } from '../types';
 import { AppTheme } from '../utils/theme';
@@ -60,6 +64,10 @@ interface BasharAiScreenProps {
   errorMsg: string | null;
   onClearError: () => void;
   onSaveAnswerToCloud?: (title: string, content: string) => void;
+  onResolveCloudMedia?: (
+    file: CloudFile,
+    options?: { priority?: boolean; onProgress?: (percent: number) => void }
+  ) => Promise<string | undefined>;
 }
 
 const STARTER_PROMPTS: Array<{
@@ -151,6 +159,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
   errorMsg,
   onClearError,
   onSaveAnswerToCloud,
+  onResolveCloudMedia,
 }) => {
   const isLight = theme === 'light';
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -164,10 +173,15 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
   const [savedCloudMsgId, setSavedCloudMsgId] = useState<string | null>(null);
   const [selectedAttachment, setSelectedAttachment] = useState<AiAttachment | null>(null);
   const [isAttachPickerOpen, setIsAttachPickerOpen] = useState(false);
+  const [isAttachingMedia, setIsAttachingMedia] = useState(false);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [isListeningVoice, setIsListeningVoice] = useState(false);
+  const [supportsSpeechInput, setSupportsSpeechInput] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const deviceFileInputRef = useRef<HTMLInputElement>(null);
+  const speechRecognitionRef = useRef<{ stop: () => void } | null>(null);
 
   const activeThread =
     threads.find((t) => t.id === activeThreadId) || threads[0] || null;
@@ -181,7 +195,7 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
   const attachableFiles = cloudFiles.filter(
     (f) =>
       f.type === 'document' ||
-      (f.type === 'image' && typeof (f.url || f.thumbnail) === 'string') ||
+      f.type === 'image' ||
       (typeof f.content === 'string' && f.content.trim().length > 0)
   );
 
@@ -205,6 +219,23 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
     el.style.height = '40px';
     el.style.height = `${Math.min(el.scrollHeight, 132)}px`;
   }, [inputText]);
+
+  // Detect optional browser speech-to-text capability and clean up on unmount
+  useEffect(() => {
+    const win = window as unknown as {
+      SpeechRecognition?: unknown;
+      webkitSpeechRecognition?: unknown;
+    };
+    setSupportsSpeechInput(Boolean(win.SpeechRecognition || win.webkitSpeechRecognition));
+    return () => {
+      try {
+        speechRecognitionRef.current?.stop();
+      } catch {
+        // Ignore cleanup errors
+      }
+      speechRecognitionRef.current = null;
+    };
+  }, []);
 
   const handleStartRename = (thread: AiChatThread) => {
     setEditingThreadId(thread.id);
@@ -300,18 +331,88 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
     }
   };
 
-  const handlePickCloudFile = (file: CloudFile) => {
-    const imgSrc = file.url || file.thumbnail;
-    if (file.type === 'image' && imgSrc && imgSrc.startsWith('data:image/')) {
+  const attachNativeFileToAi = async (file: File) => {
+    setIsAttachingMedia(true);
+    try {
+      if (file.type.startsWith('image/')) {
+        const compact = await compressImageToSafeDataUrl(file, {
+          maxDim: 1280,
+          maxChars: 1_500_000,
+          fallbackToRaw: true,
+        });
+        if (compact && compact.startsWith('data:image/')) {
+          setSelectedAttachment({
+            id: `device-${Date.now()}`,
+            name: file.name || 'image.jpg',
+            snippet: '',
+            imageDataUrl: compact,
+            mimeType: file.type || 'image/jpeg',
+          });
+          setIsAttachPickerOpen(false);
+        }
+        return;
+      }
+
+      const text = await file.text();
       setSelectedAttachment({
-        id: file.id,
+        id: `device-${Date.now()}`,
         name: file.name,
-        snippet: '',
-        imageDataUrl: imgSrc,
-        mimeType: 'image/jpeg',
+        snippet: text.slice(0, 10000),
       });
       setIsAttachPickerOpen(false);
-      return;
+    } catch {
+      // Ignore unreadable binary
+    } finally {
+      setIsAttachingMedia(false);
+    }
+  };
+
+  const handlePickCloudFile = async (file: CloudFile) => {
+    if (file.type === 'image') {
+      setIsAttachingMedia(true);
+      try {
+        let imgSrc = file.url || file.thumbnail;
+        if ((!imgSrc || imgSrc === file.thumbnail) && onResolveCloudMedia) {
+          const resolved = await onResolveCloudMedia(file, { priority: true }).catch(() => undefined);
+          if (resolved) imgSrc = resolved;
+        }
+        if (imgSrc) {
+          if (imgSrc.startsWith('data:image/')) {
+            setSelectedAttachment({
+              id: file.id,
+              name: file.name,
+              snippet: '',
+              imageDataUrl: imgSrc,
+              mimeType: file.mimeType || 'image/jpeg',
+            });
+            setIsAttachPickerOpen(false);
+            return;
+          }
+
+          const res = await fetch(imgSrc);
+          const blob = await res.blob();
+          const compact = await compressImageToSafeDataUrl(blob, {
+            maxDim: 1280,
+            maxChars: 1_500_000,
+            fallbackToRaw: true,
+          });
+          if (compact && compact.startsWith('data:image/')) {
+            setSelectedAttachment({
+              id: file.id,
+              name: file.name,
+              snippet: '',
+              imageDataUrl: compact,
+              mimeType: file.mimeType || blob.type || 'image/jpeg',
+            });
+            setIsAttachPickerOpen(false);
+            return;
+          }
+        }
+      } catch {
+        // Fallback to snippet metadata if blob read fails
+      } finally {
+        setIsAttachingMedia(false);
+      }
     }
 
     const snippet =
@@ -329,36 +430,147 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
+    await attachNativeFileToAi(file);
+  };
 
-    if (file.type.startsWith('image/')) {
-      const compact = await compressImageToSafeDataUrl(file, {
-        maxDim: 1280,
-        maxChars: 1_500_000,
-        fallbackToRaw: true,
-      });
-      if (compact && compact.startsWith('data:image/')) {
-        setSelectedAttachment({
-          id: `device-${Date.now()}`,
-          name: file.name,
-          snippet: '',
-          imageDataUrl: compact,
-          mimeType: file.type,
-        });
-        setIsAttachPickerOpen(false);
+  const handlePasteInComposer = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = Array.from(e.clipboardData?.items || []);
+    const imageItem = items.find((item) => item.type.startsWith('image/'));
+    if (!imageItem) return;
+    const pastedFile = imageItem.getAsFile();
+    if (pastedFile) {
+      e.preventDefault();
+      await attachNativeFileToAi(pastedFile);
+    }
+  };
+
+  const handleToggleVoiceInput = () => {
+    if (isListeningVoice) {
+      try {
+        speechRecognitionRef.current?.stop();
+      } catch {
+        // Ignore stop errors
+      }
+      speechRecognitionRef.current = null;
+      setIsListeningVoice(false);
+      return;
+    }
+
+    const win = window as unknown as {
+      SpeechRecognition?: new () => {
+        lang: string;
+        interimResults: boolean;
+        continuous: boolean;
+        onresult: ((ev: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
+        onerror: (() => void) | null;
+        onend: (() => void) | null;
+        start: () => void;
+        stop: () => void;
+      };
+      webkitSpeechRecognition?: new () => {
+        lang: string;
+        interimResults: boolean;
+        continuous: boolean;
+        onresult: ((ev: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
+        onerror: (() => void) | null;
+        onend: (() => void) | null;
+        start: () => void;
+        stop: () => void;
+      };
+    };
+
+    const SpeechCtor = win.SpeechRecognition || win.webkitSpeechRecognition;
+    if (!SpeechCtor) return;
+
+    try {
+      const recognition = new SpeechCtor();
+      recognition.lang = 'bn-BD';
+      recognition.interimResults = false;
+      recognition.continuous = false;
+
+      recognition.onresult = (event) => {
+        const parts: string[] = [];
+        for (let i = 0; i < event.results.length; i++) {
+          const transcript = event.results[i]?.[0]?.transcript;
+          if (transcript) parts.push(transcript);
+        }
+        const spoken = parts.join(' ').trim();
+        if (spoken) {
+          setInputText((prev) => (prev.trim() ? `${prev.trim()} ${spoken}` : spoken));
+          textareaRef.current?.focus();
+        }
+      };
+
+      recognition.onerror = () => {
+        setIsListeningVoice(false);
+        speechRecognitionRef.current = null;
+      };
+      recognition.onend = () => {
+        setIsListeningVoice(false);
+        speechRecognitionRef.current = null;
+      };
+
+      speechRecognitionRef.current = recognition;
+      setIsListeningVoice(true);
+      recognition.start();
+    } catch {
+      setIsListeningVoice(false);
+      speechRecognitionRef.current = null;
+    }
+  };
+
+  const handleQuickHelper = (type: 'explain' | 'summarize' | 'translate' | 'drive') => {
+    if (isStreaming) return;
+    const draft = inputText.trim();
+    if (type === 'drive') {
+      void handleSubmitPrompt(
+        'আমার ক্লাউড ড্রাইভের বর্তমান ফাইল ও স্টোরেজ অবস্থা বিশ্লেষণ করে কীভাবে সুন্দর করে সাজাবো?',
+        'fast'
+      );
+      return;
+    }
+
+    if (type === 'translate') {
+      if (draft) {
+        setInputText('');
+        void handleSubmitPrompt(
+          `নিচের লেখাটি প্রফেশনাল ও প্রাঞ্জলভাবে বাংলা এবং ইংরেজি দুই ভাষায় রূপান্তর করে দাও:\n\n${draft}`,
+          'general'
+        );
+      } else {
+        setInputText('এই লেখাটি প্রফেশনালভাবে ইংরেজি/বাংলায় অনুবাদ করে দাও: ');
+        textareaRef.current?.focus();
       }
       return;
     }
 
-    try {
-      const text = await file.text();
-      setSelectedAttachment({
-        id: `device-${Date.now()}`,
-        name: file.name,
-        snippet: text.slice(0, 10000),
-      });
-      setIsAttachPickerOpen(false);
-    } catch {
-      // Ignore unreadable binary
+    if (type === 'summarize') {
+      if (draft || selectedAttachment) {
+        setInputText('');
+        void handleSubmitPrompt(
+          draft
+            ? `নিচের বিষয়টির মূল পয়েন্ট ও সারসংক্ষেপ সুন্দরভাবে সাজিয়ে দাও:\n\n${draft}`
+            : 'সংযুক্ত ফাইল/ছবির মূল পয়েন্ট ও সারসংক্ষেপ সহজভাবে লিখে দাও।',
+          'fast'
+        );
+      } else {
+        setInputText('এর মূল সারসংক্ষেপ পয়েন্ট আকারে লিখে দাও: ');
+        textareaRef.current?.focus();
+      }
+      return;
+    }
+
+    if (draft || selectedAttachment) {
+      setInputText('');
+      void handleSubmitPrompt(
+        draft
+          ? `বিষয়টি সহজ বাংলায় উদাহরণসহ ধাপে ধাপে বুঝিয়ে দাও:\n\n${draft}`
+          : 'সংযুক্ত ছবি বা ফাইলটি সহজ বাংলায় বিস্তারিত বুঝিয়ে দাও।',
+        'general'
+      );
+    } else {
+      setInputText('সহজ বাংলায় উদাহরণসহ বুঝিয়ে দাও: ');
+      textareaRef.current?.focus();
     }
   };
 
@@ -489,10 +701,34 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
 
   return (
     <div
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes('Files')) {
+          e.preventDefault();
+          setIsDraggingFile(true);
+        }
+      }}
+      onDragLeave={(e) => {
+        if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+        setIsDraggingFile(false);
+      }}
+      onDrop={async (e) => {
+        e.preventDefault();
+        setIsDraggingFile(false);
+        const dropped = e.dataTransfer.files?.[0];
+        if (dropped) {
+          await attachNativeFileToAi(dropped);
+        }
+      }}
       className={`flex-1 min-h-0 flex flex-col relative overflow-hidden ${
         isLight ? 'bg-white text-slate-900' : 'bg-[#0b111c] text-white'
       }`}
     >
+      {isDraggingFile && (
+        <div className="absolute inset-3 z-50 rounded-3xl border-2 border-dashed border-blue-500 bg-blue-600/15 backdrop-blur-xs flex flex-col items-center justify-center gap-2 pointer-events-none">
+          <Upload className="w-8 h-8 text-blue-400" />
+          <p className="text-sm font-bold text-blue-400">ছবি বা ডকুমেন্ট এখানে ছেড়ে দিন</p>
+        </div>
+      )}
       {/* Hidden device file input for AI image/text attachment */}
       <input
         ref={deviceFileInputRef}
@@ -1151,28 +1387,90 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
           isLight ? 'bg-white border-slate-200' : 'bg-[#0b111c] border-[#192842]'
         }`}
       >
-        {selectedAttachment && (
+        {/* 1-Tap Quick Helper Bar */}
+        {!isStreaming && (
+          <div className="mb-1.5 flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar">
+            <button
+              type="button"
+              onClick={() => handleQuickHelper('explain')}
+              className={`shrink-0 px-2.5 py-1 rounded-lg border text-[11px] font-medium flex items-center gap-1 transition-colors cursor-pointer ${
+                isLight
+                  ? 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-blue-50 hover:text-blue-700'
+                  : 'bg-[#111b2d] border-[#1f3150] text-slate-300 hover:bg-[#172844] hover:text-sky-300'
+              }`}
+            >
+              <Wand2 className="w-3 h-3 text-sky-400" />
+              <span>সহজ ব্যাখ্যা</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleQuickHelper('summarize')}
+              className={`shrink-0 px-2.5 py-1 rounded-lg border text-[11px] font-medium flex items-center gap-1 transition-colors cursor-pointer ${
+                isLight
+                  ? 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-blue-50 hover:text-blue-700'
+                  : 'bg-[#111b2d] border-[#1f3150] text-slate-300 hover:bg-[#172844] hover:text-emerald-300'
+              }`}
+            >
+              <FileText className="w-3 h-3 text-emerald-400" />
+              <span>সারসংক্ষেপ</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleQuickHelper('translate')}
+              className={`shrink-0 px-2.5 py-1 rounded-lg border text-[11px] font-medium flex items-center gap-1 transition-colors cursor-pointer ${
+                isLight
+                  ? 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-blue-50 hover:text-blue-700'
+                  : 'bg-[#111b2d] border-[#1f3150] text-slate-300 hover:bg-[#172844] hover:text-amber-300'
+              }`}
+            >
+              <Languages className="w-3 h-3 text-amber-400" />
+              <span>বাংলা ↔ English</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleQuickHelper('drive')}
+              className={`shrink-0 px-2.5 py-1 rounded-lg border text-[11px] font-medium flex items-center gap-1 transition-colors cursor-pointer ${
+                isLight
+                  ? 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-blue-50 hover:text-blue-700'
+                  : 'bg-[#111b2d] border-[#1f3150] text-slate-300 hover:bg-[#172844] hover:text-purple-300'
+              }`}
+            >
+              <Sparkles className="w-3 h-3 text-purple-400" />
+              <span>ড্রাইভ গাইড</span>
+            </button>
+          </div>
+        )}
+
+        {(selectedAttachment || isAttachingMedia) && (
           <div className="mb-1.5 flex items-center gap-2">
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-600/15 border border-blue-500/30 text-blue-500 dark:text-blue-400 text-[11px] font-medium">
-              {selectedAttachment.imageDataUrl ? (
-                <img
-                  src={selectedAttachment.imageDataUrl}
-                  alt={selectedAttachment.name}
-                  className="w-4 h-4 rounded object-cover"
-                />
-              ) : (
-                <Paperclip className="w-3 h-3" />
-              )}
-              <span className="truncate max-w-[200px]">{selectedAttachment.name}</span>
-              <button
-                type="button"
-                onClick={() => setSelectedAttachment(null)}
-                aria-label="Remove attached file"
-                className="ml-0.5 hover:text-rose-400 cursor-pointer"
-              >
-                <X className="w-3 h-3" />
-              </button>
-            </span>
+            {isAttachingMedia ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-600/15 border border-blue-500/30 text-blue-400 text-[11px] font-medium">
+                ফাইল প্রস্তুত হচ্ছে...
+              </span>
+            ) : (
+              selectedAttachment && (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-600/15 border border-blue-500/30 text-blue-500 dark:text-blue-400 text-[11px] font-medium">
+                  {selectedAttachment.imageDataUrl ? (
+                    <img
+                      src={selectedAttachment.imageDataUrl}
+                      alt={selectedAttachment.name}
+                      className="w-4 h-4 rounded object-cover"
+                    />
+                  ) : (
+                    <Paperclip className="w-3 h-3" />
+                  )}
+                  <span className="truncate max-w-[200px]">{selectedAttachment.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedAttachment(null)}
+                    aria-label="Remove attached file"
+                    className="ml-0.5 hover:text-rose-400 cursor-pointer"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              )
+            )}
           </div>
         )}
 
@@ -1200,10 +1498,15 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             onKeyDown={handleKeyDown}
+            onPaste={handlePasteInComposer}
             enterKeyHint="send"
             autoComplete="off"
             rows={1}
-            placeholder="যেকোনো প্রশ্ন লিখুন... (Enter = পাঠান)"
+            placeholder={
+              isListeningVoice
+                ? 'কথা বলুন... (শুনছি)'
+                : 'যেকোনো প্রশ্ন লিখুন বা ছবি পেস্ট করুন...'
+            }
             aria-label="Ask Bashar Cloud AI"
             className={`flex-1 min-w-0 resize-none bg-transparent border-0! outline-none py-2.5 px-1 text-[13.5px] leading-snug max-h-[132px] ${
               isLight
@@ -1211,6 +1514,22 @@ export const BasharAiScreen: React.FC<BasharAiScreenProps> = ({
                 : 'text-white placeholder:text-slate-400'
             }`}
           />
+
+          {supportsSpeechInput && !isStreaming && (
+            <button
+              type="button"
+              onClick={handleToggleVoiceInput}
+              aria-label={isListeningVoice ? 'Stop voice input' : 'Start voice input'}
+              title={isListeningVoice ? 'ভয়েস বন্ধ করুন' : 'ভয়েস দিয়ে লিখুন'}
+              className={`min-w-[42px] min-h-[44px] rounded-xl flex items-center justify-center shrink-0 transition-colors cursor-pointer ${
+                isListeningVoice
+                  ? 'bg-rose-500/20 text-rose-400 animate-pulse'
+                  : 'text-slate-400 hover:text-blue-400'
+              }`}
+            >
+              {isListeningVoice ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+            </button>
+          )}
 
           {isStreaming ? (
             <button

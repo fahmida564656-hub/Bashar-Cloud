@@ -20,12 +20,17 @@ import { CloudFile, FileType } from '../types';
 import {
   loadRecentSearches,
   saveRecentSearches,
+  clearRecentSearches,
+  getRecentSearchesStorageKey,
   addTermToList,
   removeTermFromList,
+  filterMatchingRecentTerms,
+  normalizeSearchTerm,
 } from '../utils/recentSearches';
 
 interface SearchScreenProps {
   files: CloudFile[];
+  userId?: string;
   isLocked?: boolean;
   onOpenPayment?: () => void;
   onBack: () => void;
@@ -34,6 +39,7 @@ interface SearchScreenProps {
 
 export const SearchScreen: React.FC<SearchScreenProps> = ({
   files,
+  userId,
   isLocked = false,
   onOpenPayment,
   onBack,
@@ -42,19 +48,20 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const [query, setQuery] = useState('');
   const [selectedQuickFilter, setSelectedQuickFilter] = useState<FileType | null>(null);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
+  const storageKey = getRecentSearchesStorageKey(userId);
 
-  // Load persisted recent searches from localStorage on mount
+  // Load persisted recent searches for the active user on mount / user switch
   useEffect(() => {
-    const saved = loadRecentSearches();
+    const saved = loadRecentSearches(storageKey);
     setRecentSearches(saved);
-  }, []);
+  }, [storageKey]);
 
   const commitSearch = (term: string) => {
-    const trimmed = term.trim();
-    if (!trimmed) return;
+    const normalized = normalizeSearchTerm(term);
+    if (!normalized) return;
     setRecentSearches((prev) => {
-      const updated = addTermToList(prev, trimmed);
-      saveRecentSearches(updated);
+      const updated = addTermToList(prev, normalized);
+      saveRecentSearches(updated, storageKey);
       return updated;
     });
   };
@@ -68,14 +75,14 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     e.stopPropagation();
     setRecentSearches((prev) => {
       const updated = removeTermFromList(prev, termToRemove);
-      saveRecentSearches(updated);
+      saveRecentSearches(updated, storageKey);
       return updated;
     });
   };
 
   const handleClearAllRecent = () => {
     setRecentSearches([]);
-    saveRecentSearches([]);
+    clearRecentSearches(storageKey);
   };
 
   const handleSearchSubmit = (e: React.FormEvent) => {
@@ -86,6 +93,9 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   };
 
   const toggleQuickFilter = (type: FileType) => {
+    if (query.trim()) {
+      commitSearch(query);
+    }
     if (selectedQuickFilter === type) {
       setSelectedQuickFilter(null);
     } else {
@@ -93,13 +103,19 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     }
   };
 
+  const normalizedQuery = normalizeSearchTerm(query).toLowerCase();
+  const displayedRecentSearches = normalizedQuery
+    ? filterMatchingRecentTerms(recentSearches, query)
+    : recentSearches;
+
   const results = files.filter((f) => {
-    const matchesQuery = query.trim() === '' || f.name.toLowerCase().includes(query.toLowerCase());
+    const matchesQuery =
+      normalizedQuery === '' || f.name.toLowerCase().includes(normalizedQuery);
     const matchesFilter = !selectedQuickFilter || f.type === selectedQuickFilter;
     return matchesQuery && matchesFilter;
   });
 
-  const showTips = query.trim() === '' && !selectedQuickFilter;
+  const showTips = normalizedQuery === '' && !selectedQuickFilter;
 
   const renderFileIcon = (type: FileType) => {
     switch (type) {
@@ -128,7 +144,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
           type="button"
           onClick={onBack}
           aria-label="Go back"
-          className="w-10 h-10 rounded-xl bg-[#142033] border border-[#233552] flex items-center justify-center text-slate-300 hover:text-white shrink-0 transition-colors shadow-sm"
+          className="w-10 h-10 rounded-xl bg-[#142033] border border-[#233552] flex items-center justify-center text-slate-300 hover:text-white shrink-0 transition-colors shadow-sm cursor-pointer"
         >
           <ChevronLeft className="w-5 h-5" />
         </button>
@@ -140,6 +156,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search files, folders..."
+            aria-label="Search files and folders"
             autoFocus
             className="w-full bg-transparent text-white placeholder-slate-500 focus:outline-none text-sm"
           />
@@ -148,7 +165,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
               <button
                 type="submit"
                 title="Search (Enter)"
-                className="text-blue-400 hover:text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 px-2 py-0.5 rounded text-xs flex items-center gap-1 font-medium transition-colors"
+                className="text-blue-400 hover:text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 px-2.5 py-1 rounded-lg text-xs flex items-center gap-1 font-medium transition-colors cursor-pointer"
               >
                 <span>Search</span>
                 <CornerDownLeft className="w-3 h-3" />
@@ -156,7 +173,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
               <button
                 type="button"
                 onClick={() => setQuery('')}
-                className="text-slate-400 hover:text-white p-1 rounded-md transition-colors"
+                className="text-slate-400 hover:text-white p-1.5 rounded-md transition-colors cursor-pointer"
                 aria-label="Clear search query"
               >
                 <X className="w-4 h-4" />
@@ -166,21 +183,24 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         </div>
       </form>
 
-      {/* RECENT SEARCH TERMS SECTION (Persistent in localStorage) */}
-      {recentSearches.length > 0 && (
-        <div className="orbit-card mb-4 bg-[#121c2c]/90 border border-[#1f3049] rounded-2xl p-3.5 shadow-sm">
+      {/* RECENT SEARCH TERMS SECTION (Per-User Persistent History) */}
+      {displayedRecentSearches.length > 0 && (
+        <div
+          aria-label="Recent searches"
+          className="orbit-card mb-4 bg-[#121c2c]/90 border border-[#1f3049] rounded-2xl p-3.5 shadow-sm"
+        >
           <div className="flex items-center justify-between mb-2.5">
             <div className="flex items-center gap-1.5 text-xs font-semibold tracking-wider uppercase text-slate-400">
               <History className="w-3.5 h-3.5 text-blue-400" />
-              <span>Recent Searches</span>
+              <span>{normalizedQuery ? 'Matching Recent Searches' : 'Recent Searches'}</span>
               <span className="text-[10px] lowercase font-normal px-1.5 py-0.2 bg-[#182740] text-blue-400 rounded-full border border-blue-500/20">
-                {recentSearches.length}
+                {displayedRecentSearches.length}
               </span>
             </div>
             <button
               type="button"
               onClick={handleClearAllRecent}
-              className="text-[11px] text-slate-400 hover:text-rose-400 transition-colors flex items-center gap-1 py-0.5 px-1.5 rounded hover:bg-rose-500/10"
+              className="text-[11px] text-slate-400 hover:text-rose-400 transition-colors flex items-center gap-1 py-1 px-2 rounded-lg hover:bg-rose-500/10 cursor-pointer"
               title="Clear all recent searches"
             >
               <Trash2 className="w-3 h-3" />
@@ -189,28 +209,26 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
           </div>
 
           <div className="flex flex-wrap gap-2">
-            {recentSearches.map((term, idx) => (
+            {displayedRecentSearches.map((term, idx) => (
               <div
                 key={`${term}-${idx}`}
-                onClick={() => handleSelectRecentTerm(term)}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    handleSelectRecentTerm(term);
-                  }
-                }}
-                className="group inline-flex items-center gap-1.5 pl-2.5 pr-1.5 py-1.5 bg-[#182740] hover:bg-[#203456] border border-[#233857] hover:border-blue-500/50 rounded-xl text-xs text-slate-200 hover:text-white cursor-pointer transition-all shadow-xs"
-                title={`Search for "${term}"`}
+                className="group inline-flex items-center bg-[#182740] hover:bg-[#203456] border border-[#233857] hover:border-blue-500/50 rounded-xl text-xs text-slate-200 transition-all shadow-xs overflow-hidden"
               >
-                <Clock className="w-3 h-3 text-slate-400 group-hover:text-blue-400 shrink-0" />
-                <span className="max-w-[130px] truncate font-medium">{term}</span>
+                <button
+                  type="button"
+                  onClick={() => handleSelectRecentTerm(term)}
+                  className="inline-flex items-center gap-1.5 pl-2.5 pr-1.5 py-1.5 text-left hover:text-white cursor-pointer"
+                  title={`Search for "${term}"`}
+                >
+                  <Clock className="w-3 h-3 text-slate-400 group-hover:text-blue-400 shrink-0" />
+                  <span className="max-w-[140px] truncate font-medium">{term}</span>
+                </button>
                 <button
                   type="button"
                   onClick={(e) => handleRemoveRecentTerm(term, e)}
-                  className="p-1 text-slate-400 hover:text-rose-400 rounded-md transition-colors"
+                  className="p-1.5 pr-2 text-slate-400 hover:text-rose-400 transition-colors cursor-pointer"
                   title={`Remove "${term}" from recent searches`}
-                  aria-label={`Remove "${term}"`}
+                  aria-label={`Remove ${term}`}
                 >
                   <X className="w-3 h-3" />
                 </button>
@@ -225,14 +243,14 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         <h4 className="text-xs font-semibold tracking-wider uppercase text-slate-400 mb-2.5">
           QUICK FILTERS
         </h4>
-        <div className="flex items-center gap-2.5 overflow-x-auto no-scrollbar">
+        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
           {/* Images */}
           <button
             type="button"
             onClick={() => toggleQuickFilter('image')}
-            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-medium transition-all ${
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-medium transition-all shrink-0 cursor-pointer ${
               selectedQuickFilter === 'image'
-                ? 'bg-blue-600 text-white shadow-md'
+                ? 'bg-blue-600 text-white ai-solid-text-white shadow-md'
                 : 'bg-[#121c2c] border border-[#1f3049] text-blue-400 hover:bg-[#182740]'
             }`}
           >
@@ -244,9 +262,9 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
           <button
             type="button"
             onClick={() => toggleQuickFilter('video')}
-            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-medium transition-all ${
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-medium transition-all shrink-0 cursor-pointer ${
               selectedQuickFilter === 'video'
-                ? 'bg-cyan-600 text-white shadow-md'
+                ? 'bg-cyan-600 text-white ai-solid-text-white shadow-md'
                 : 'bg-[#121c2c] border border-[#1f3049] text-cyan-400 hover:bg-[#182740]'
             }`}
           >
@@ -254,13 +272,27 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
             <span>Videos</span>
           </button>
 
+          {/* Audio */}
+          <button
+            type="button"
+            onClick={() => toggleQuickFilter('audio')}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-medium transition-all shrink-0 cursor-pointer ${
+              selectedQuickFilter === 'audio'
+                ? 'bg-amber-600 text-white ai-solid-text-white shadow-md'
+                : 'bg-[#121c2c] border border-[#1f3049] text-amber-400 hover:bg-[#182740]'
+            }`}
+          >
+            <Music className="w-4 h-4" />
+            <span>Audios</span>
+          </button>
+
           {/* Docs */}
           <button
             type="button"
             onClick={() => toggleQuickFilter('document')}
-            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-medium transition-all ${
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-medium transition-all shrink-0 cursor-pointer ${
               selectedQuickFilter === 'document'
-                ? 'bg-purple-600 text-white shadow-md'
+                ? 'bg-purple-600 text-white ai-solid-text-white shadow-md'
                 : 'bg-[#121c2c] border border-[#1f3049] text-purple-400 hover:bg-[#182740]'
             }`}
           >
@@ -319,8 +351,9 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
             </div>
           ) : (
             results.map((f) => (
-              <div
+              <button
                 key={f.id}
+                type="button"
                 onClick={() => {
                   if (isLocked) {
                     onOpenPayment?.();
@@ -331,20 +364,20 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                   }
                   if (onSelectFile) onSelectFile(f);
                 }}
-                className="orbit-card bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] rounded-xl p-3 flex items-center justify-between cursor-pointer transition-colors"
+                className="w-full text-left orbit-card bg-[#121c2c] hover:bg-[#162338] border border-[#1f3049] rounded-xl p-3 flex items-center justify-between cursor-pointer transition-colors"
               >
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-lg bg-[#182740] flex items-center justify-center">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-9 h-9 rounded-lg bg-[#182740] flex items-center justify-center shrink-0">
                     {isLocked ? <Lock className="w-4 h-4 text-rose-400" /> : renderFileIcon(f.type)}
                   </div>
-                  <div>
-                    <h5 className="text-xs font-semibold text-white">{f.name}</h5>
+                  <div className="min-w-0">
+                    <h5 className="text-xs font-semibold text-white truncate">{f.name}</h5>
                     <p className="text-[10px] text-slate-400">
                       {f.formattedSize} • {f.date}
                     </p>
                   </div>
                 </div>
-              </div>
+              </button>
             ))
           )}
         </div>

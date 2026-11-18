@@ -75,6 +75,9 @@ import { filterOutUserPayments } from './utils/accountManagement';
 import { formatBytes } from './utils/uploadFlow';
 import {
   shouldChunkFileToCloud,
+  needsCloudChunkUpload,
+  inferMediaMimeType,
+  INLINE_CLOUD_FILE_THRESHOLD_BYTES,
   MAX_CLOUD_CHUNK_FILE_BYTES,
 } from './utils/cloudChunkSync';
 import {
@@ -100,6 +103,10 @@ import {
   saveLastReadNotificationTs,
   sortAnnouncementsNewestFirst,
 } from './utils/announcements';
+import {
+  clearRecentSearches,
+  getRecentSearchesStorageKey,
+} from './utils/recentSearches';
 import {
   MainTab,
   ScreenMode,
@@ -234,6 +241,7 @@ export default function App() {
   const mediaResolvingRef = useRef<Map<string, Promise<string | undefined>>>(new Map());
   const liveObjectUrlsRef = useRef<Map<string, string>>(new Map());
   const chunkUploadingIdsRef = useRef<Set<string>>(new Set());
+  const foregroundMediaIdsRef = useRef<Set<string>>(new Set());
   filesRef.current = files;
   recycleBinRef.current = recycleBin;
 
@@ -328,53 +336,111 @@ export default function App() {
     );
   };
 
+  const ensurePlayableBlob = (blob: Blob, file: CloudFile): Blob => {
+    const playableMime = inferMediaMimeType(file.name, blob.type || file.mimeType);
+    if (!playableMime || blob.type === playableMime) return blob;
+    return new Blob([blob], { type: playableMime });
+  };
+
   const resolveCloudMediaUrl = async (
     targetFile: CloudFile,
-    overrideUid?: string
+    overrideUid?: string,
+    options?: { priority?: boolean; onProgress?: (percent: number) => void }
   ): Promise<string | undefined> => {
     if (!targetFile || targetFile.type === 'folder') return undefined;
+
+    const isThumbnailOnlyImage =
+      targetFile.type === 'image' &&
+      Boolean(targetFile.thumbnail) &&
+      targetFile.url === targetFile.thumbnail &&
+      (targetFile.cloudChunkCount || 0) > 0;
 
     const cachedLive = liveObjectUrlsRef.current.get(targetFile.id);
     if (cachedLive) {
       if (!targetFile.url || targetFile.url !== cachedLive) {
         patchResolvedFileUrl(targetFile.id, cachedLive);
       }
+      options?.onProgress?.(100);
       return cachedLive;
     }
 
     if (
       targetFile.url &&
-      (targetFile.url.startsWith('data:') || targetFile.url.startsWith('http'))
+      (targetFile.url.startsWith('data:') || targetFile.url.startsWith('http')) &&
+      !(options?.priority && isThumbnailOnlyImage)
     ) {
+      options?.onProgress?.(100);
       return targetFile.url;
     }
 
+    if (options?.priority) {
+      foregroundMediaIdsRef.current.add(targetFile.id);
+    }
+
     const inFlight = mediaResolvingRef.current.get(targetFile.id);
-    if (inFlight) return inFlight;
+    if (inFlight) {
+      try {
+        return await inFlight;
+      } finally {
+        if (options?.priority) {
+          foregroundMediaIdsRef.current.delete(targetFile.id);
+        }
+      }
+    }
 
     const resolvePromise = (async (): Promise<string | undefined> => {
       try {
         const localBlob = await getFileBlob(targetFile.id);
-        if (localBlob) {
-          const objUrl = URL.createObjectURL(localBlob);
+        if (localBlob && localBlob.size > 0) {
+          const playable = ensurePlayableBlob(localBlob, targetFile);
+          const objUrl = URL.createObjectURL(playable);
           liveObjectUrlsRef.current.set(targetFile.id, objUrl);
           patchResolvedFileUrl(targetFile.id, objUrl);
+          options?.onProgress?.(100);
           return objUrl;
         }
 
         const candidateUids = getCandidateOwnerIds(overrideUid || targetFile.ownerId);
+        // 1. Fast binary server transport (/api/media) - zero Firestore quota burn
+        for (const uid of candidateUids) {
+          const serverBlob = await firestoreService.fetchMediaBlobFromServer(
+            uid,
+            targetFile.id,
+            targetFile.name,
+            targetFile.mimeType
+          );
+          if (serverBlob && serverBlob.size > 0) {
+            const playable = ensurePlayableBlob(serverBlob, targetFile);
+            await saveFileBlob(targetFile.id, playable).catch(() => {});
+            const objUrl = URL.createObjectURL(playable);
+            liveObjectUrlsRef.current.set(targetFile.id, objUrl);
+            patchResolvedFileUrl(targetFile.id, objUrl);
+            options?.onProgress?.(100);
+            return objUrl;
+          }
+        }
+
+        // 2. Fallback to cross-origin Firestore chunked storage
         for (const uid of candidateUids) {
           const cloudBlob = await firestoreService.getFileBlobFromCloudChunks(
             uid,
             targetFile.id,
             targetFile.cloudChunkCount,
-            targetFile.mimeType
+            targetFile.mimeType,
+            targetFile.name,
+            (loaded, total) => {
+              if (total > 0) {
+                options?.onProgress?.(Math.min(99, Math.round((loaded / total) * 100)));
+              }
+            }
           );
-          if (cloudBlob) {
-            await saveFileBlob(targetFile.id, cloudBlob).catch(() => {});
-            const objUrl = URL.createObjectURL(cloudBlob);
+          if (cloudBlob && cloudBlob.size > 0) {
+            const playable = ensurePlayableBlob(cloudBlob, targetFile);
+            await saveFileBlob(targetFile.id, playable).catch(() => {});
+            const objUrl = URL.createObjectURL(playable);
             liveObjectUrlsRef.current.set(targetFile.id, objUrl);
             patchResolvedFileUrl(targetFile.id, objUrl);
+            options?.onProgress?.(100);
             return objUrl;
           }
         }
@@ -382,6 +448,9 @@ export default function App() {
         console.warn('Cloud media resolution error:', err);
       } finally {
         mediaResolvingRef.current.delete(targetFile.id);
+        if (options?.priority) {
+          foregroundMediaIdsRef.current.delete(targetFile.id);
+        }
       }
 
       if (targetFile.type === 'image' && targetFile.thumbnail) {
@@ -394,30 +463,162 @@ export default function App() {
     return resolvePromise;
   };
 
+  const syncSingleFileToCloud = async (
+    file: CloudFile,
+    onProgress?: (percent: number) => void
+  ): Promise<CloudFile> => {
+    if (!canonicalUserId || canonicalUserId === 'guest_user') {
+      onProgress?.(100);
+      return file;
+    }
+
+    const baseFile: CloudFile = {
+      ...file,
+      ownerId: canonicalUserId,
+      mimeType: inferMediaMimeType(file.name, file.mimeType),
+    };
+
+    if (!shouldChunkFileToCloud(baseFile.sizeBytes)) {
+      const syncedInline: CloudFile = {
+        ...baseFile,
+        cloudSynced: baseFile.sizeBytes <= INLINE_CLOUD_FILE_THRESHOLD_BYTES || Boolean(baseFile.content),
+      };
+      await firestoreService.saveFile(canonicalUserId, syncedInline).catch(() => {});
+      onProgress?.(100);
+      return syncedInline;
+    }
+
+    chunkUploadingIdsRef.current.add(baseFile.id);
+    try {
+      const metadataPromise = firestoreService.saveFile(canonicalUserId, baseFile).catch(() => {});
+      const blob = await getFileBlob(baseFile.id);
+      if (blob && blob.size > 0) {
+        onProgress?.(20);
+        const serverSaved = await firestoreService.uploadMediaBlobToServer(
+          canonicalUserId,
+          baseFile.id,
+          blob,
+          baseFile.mimeType || blob.type,
+          baseFile.name
+        );
+
+        if (serverSaved) {
+          onProgress?.(85);
+          const syncedFile: CloudFile = {
+            ...baseFile,
+            cloudSynced: true,
+          };
+          await metadataPromise;
+          await firestoreService.saveFile(canonicalUserId, syncedFile).catch(() => {});
+          onProgress?.(100);
+          // Populate Firestore chunk backup asynchronously without blocking upload progress UI
+          void firestoreService.saveFileChunks(
+            canonicalUserId,
+            baseFile.id,
+            blob,
+            baseFile.mimeType || blob.type,
+            baseFile.name
+          ).catch(() => {});
+          return syncedFile;
+        }
+
+        const uploadedCount = await firestoreService.saveFileChunks(
+          canonicalUserId,
+          baseFile.id,
+          blob,
+          baseFile.mimeType || blob.type,
+          baseFile.name,
+          (done, total) => {
+            if (total > 0) {
+              const pct = Math.min(100, Math.round(20 + (done / total) * 80));
+              onProgress?.(pct);
+            }
+          }
+        );
+
+        await metadataPromise;
+        if (uploadedCount > 0) {
+          const syncedFile: CloudFile = {
+            ...baseFile,
+            cloudChunkCount: uploadedCount,
+            cloudSynced: true,
+          };
+          await firestoreService.saveFile(canonicalUserId, syncedFile).catch(() => {});
+          onProgress?.(100);
+          return syncedFile;
+        }
+      }
+      await metadataPromise;
+    } catch (err) {
+      console.warn('Direct chunk upload warning:', err);
+    } finally {
+      chunkUploadingIdsRef.current.delete(baseFile.id);
+    }
+
+    return baseFile;
+  };
+
   const syncFileChunksInBackground = async (targetUid: string, targetFiles: CloudFile[]) => {
     if (!targetUid || targetUid === 'guest_user' || !targetFiles.length) return;
 
     for (const f of targetFiles) {
       if (!f || f.type === 'folder' || chunkUploadingIdsRef.current.has(f.id)) continue;
+      if (!needsCloudChunkUpload(f)) continue;
+
       chunkUploadingIdsRef.current.add(f.id);
       try {
         const blob = await getFileBlob(f.id);
-        if (blob && shouldChunkFileToCloud(blob.size)) {
+        if (blob && blob.size > 0) {
+          const serverSaved = await firestoreService.uploadMediaBlobToServer(
+            targetUid,
+            f.id,
+            blob,
+            f.mimeType || blob.type,
+            f.name
+          );
           const uploadedCount = await firestoreService.saveFileChunks(
             targetUid,
             f.id,
             blob,
-            f.mimeType || blob.type
+            f.mimeType || blob.type,
+            f.name
           );
-          if (uploadedCount > 0) {
+          if (serverSaved || uploadedCount > 0) {
+            const resolvedMime = inferMediaMimeType(f.name, f.mimeType || blob.type);
+            const repaired: CloudFile = {
+              ...f,
+              ...(uploadedCount > 0 ? { cloudChunkCount: uploadedCount } : {}),
+              cloudSynced: true,
+              mimeType: resolvedMime,
+            };
+            await firestoreService.saveFile(targetUid, repaired).catch(() => {});
+            setFiles((prev) =>
+              prev.map((item) =>
+                item.id === f.id ? repaired : item
+              )
+            );
+            continue;
+          }
+        }
+
+        // Verify if legacy chunks already exist completely in Firestore before giving up
+        if ((f.cloudChunkCount || 0) > 0 && !f.cloudSynced) {
+          const check = await firestoreService.verifyCloudChunksExist(
+            targetUid,
+            f.id,
+            f.cloudChunkCount
+          );
+          if (check.complete && check.totalChunks > 0) {
+            const repaired: CloudFile = {
+              ...f,
+              cloudChunkCount: check.totalChunks,
+              cloudSynced: true,
+            };
+            await firestoreService.saveFile(targetUid, repaired).catch(() => {});
             setFiles((prev) =>
               prev.map((item) =>
                 item.id === f.id
-                  ? {
-                      ...item,
-                      cloudChunkCount: uploadedCount,
-                      mimeType: item.mimeType || blob.type || item.mimeType,
-                    }
+                  ? { ...item, cloudChunkCount: check.totalChunks, cloudSynced: true }
                   : item
               )
             );
@@ -432,13 +633,14 @@ export default function App() {
   };
 
   const hydrateMissingCloudMedia = async (targetFiles: CloudFile[], overrideUid?: string) => {
+    const PREHYDRATE_MAX_BYTES = 8 * 1024 * 1024;
     const queue = targetFiles.filter((f) => {
       if (f.type === 'folder') return false;
       const isMedia = f.type === 'video' || f.type === 'audio' || f.type === 'image';
       if (!isMedia) return false;
-      const needsResolution =
-        !f.url || (f.type === 'image' && f.url === f.thumbnail && (f.cloudChunkCount || 0) > 0);
+      const needsResolution = !f.url;
       if (!needsResolution) return false;
+      if (f.sizeBytes > PREHYDRATE_MAX_BYTES) return false;
       return (
         (f.cloudChunkCount && f.cloudChunkCount > 0) ||
         (f.sizeBytes > 0 && f.sizeBytes <= MAX_CLOUD_CHUNK_FILE_BYTES)
@@ -447,16 +649,12 @@ export default function App() {
 
     if (queue.length === 0) return;
 
-    const concurrency = 2;
-    let cursor = 0;
-    const worker = async () => {
-      while (cursor < queue.length) {
-        const idx = cursor++;
-        const item = queue[idx];
-        await resolveCloudMediaUrl(item, overrideUid).catch(() => undefined);
+    for (const item of queue) {
+      while (foregroundMediaIdsRef.current.size > 0) {
+        await new Promise((r) => setTimeout(r, 250));
       }
-    };
-    await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, () => worker()));
+      await resolveCloudMediaUrl(item, overrideUid).catch(() => undefined);
+    }
   };
 
   // Hydrate IndexedDB blobs & user's saved orbit preset on boot and whenever active user changes
@@ -534,6 +732,19 @@ export default function App() {
     if (!canonicalUserId || canonicalUserId === 'guest_user') return;
     let active = true;
 
+    firestoreService.getUserFiles(canonicalUserId).then(async (fetchedFiles) => {
+      if (!active || !fetchedFiles || fetchedFiles.length === 0) return;
+      const deletedIds = loadDeletedFileIds(canonicalUserId);
+      const merged = mergeCloudAndLocalFiles(fetchedFiles, filesRef.current, deletedIds);
+      const hydrated = await hydrateCloudFiles(merged);
+      if (!active) return;
+      setFiles(hydrated);
+      const nextStorage = computeStorageBreakdown(hydrated, siteSettings.totalStorageGB || 1000);
+      setStorage(nextStorage);
+      storageProviderMock.saveMetadataState(hydrated, user, nextStorage, recycleBinRef.current, canonicalUserId);
+      void hydrateMissingCloudMedia(hydrated, canonicalUserId);
+    });
+
     firestoreService.getUserDeletedFiles(canonicalUserId).then(async (cloudBin) => {
       if (!active) return;
       if (cloudBin && cloudBin.length > 0) {
@@ -561,10 +772,11 @@ export default function App() {
       const cloudIdSet = new Set(cloudFiles.map((f) => f.id));
       const filesToSyncChunks: CloudFile[] = [];
       hydrated.forEach((f) => {
-        if (!cloudIdSet.has(f.id) && !deletedIds.has(f.id)) {
+        if (deletedIds.has(f.id)) return;
+        if (!cloudIdSet.has(f.id) && !f.cloudSynced) {
           firestoreService.saveFile(canonicalUserId, f).catch(() => {});
           filesToSyncChunks.push(f);
-        } else if (shouldChunkFileToCloud(f.sizeBytes) && !f.cloudChunkCount && !deletedIds.has(f.id)) {
+        } else if (needsCloudChunkUpload(f)) {
           filesToSyncChunks.push(f);
         }
       });
@@ -745,16 +957,23 @@ export default function App() {
     }
   };
 
-  // Periodic synchronization effect
+  // Periodic local persistence (zero idle Firestore write quota burn)
   useEffect(() => {
     if (!cloudSyncEnabled || screen !== 'main') return;
 
     const interval = setInterval(() => {
-      performSync(true);
-    }, 20000);
+      storageProviderMock.saveMetadataState(
+        filesRef.current,
+        user,
+        storage,
+        recycleBinRef.current,
+        canonicalUserId
+      );
+      setLastSyncTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    }, 60000);
 
     return () => clearInterval(interval);
-  }, [cloudSyncEnabled, screen, files, recycleBin, user, storage, canonicalUserId]);
+  }, [cloudSyncEnabled, screen, user, storage, canonicalUserId]);
 
   // Verify Firebase Firestore & establish real-time cross-website data synchronization
   useEffect(() => {
@@ -764,7 +983,7 @@ export default function App() {
       }
     });
 
-    // 1. Synchronize Registered Users across all websites/domains in real-time
+    // 1. Synchronize Registered Users across all websites/domains in real-time (single listener + mirror fallback)
     const dedupeUserList = (list: RegisteredUser[]): RegisteredUser[] => {
       const seen = new Set<string>();
       const res: RegisteredUser[] = [];
@@ -776,62 +995,47 @@ export default function App() {
       return res;
     };
 
-    firestoreService.getRegisteredUsersWithMeta().then((metaResult) => {
-      if (metaResult) {
-        const unique = dedupeUserList(metaResult.users);
-        setRegisteredUsers(unique);
-        try {
-          localStorage.setItem('bashar_cloud_registered_users', JSON.stringify(unique));
-        } catch {}
+    firestoreService.getMirrorUsers().then((mirrorUsers) => {
+      if (mirrorUsers.length > 0) {
+        setRegisteredUsers((prev) => dedupeUserList([...mirrorUsers, ...prev]));
+      }
+    });
 
-        // If server confirms registered_users was wiped/empty (or current cached account was deleted)
-        // and user did not just sign up/in during this session, clear stale local session cleanly
-        if (!metaResult.fromCache && !sessionAuthenticatedRef.current && hasExistingUser) {
-          const cachedEmail = (savedState.user?.email || '').trim().toLowerCase();
-          const cachedPhone = cleanPhone(savedState.user?.phone);
-          const stillExistsOnServer = unique.some(
-            (u) =>
-              (cachedEmail && u.email.toLowerCase() === cachedEmail) ||
-              (cachedPhone && cleanPhone(u.phone) === cachedPhone)
-          );
-          if (!stillExistsOnServer) {
-            storageProviderMock.saveMetadataState([], initialUserProfile, initialStorageUsage, []);
-            clearAiThreadsFromStorage(canonicalUserId);
-            setUser(initialUserProfile);
-            setFiles([]);
-            setRecycleBin([]);
-            setStorage(initialStorageUsage);
-            const resetChat = createAiThread();
-            setAiThreads([resetChat]);
-            setActiveAiThreadId(resetChat.id);
-            setScreen('welcome-email');
-            clearAllFileBlobs().catch(() => {});
-          }
+    const unsubscribeUsers = firestoreService.subscribeToRegisteredUsers((users, meta) => {
+      const safeUsers = dedupeUserList(users || []);
+      setRegisteredUsers((prev) => {
+        const merged = safeUsers.length > 0 ? safeUsers : prev;
+        try {
+          localStorage.setItem('bashar_cloud_registered_users', JSON.stringify(merged));
+        } catch {}
+        return merged;
+      });
+
+      if (meta && !meta.fromCache && !sessionAuthenticatedRef.current && hasExistingUser && safeUsers.length > 0) {
+        const cachedEmail = (savedState.user?.email || '').trim().toLowerCase();
+        const cachedPhone = cleanPhone(savedState.user?.phone);
+        const stillExistsOnServer = safeUsers.some(
+          (u) =>
+            (cachedEmail && u.email.toLowerCase() === cachedEmail) ||
+            (cachedPhone && cleanPhone(u.phone) === cachedPhone)
+        );
+        if (!stillExistsOnServer) {
+          storageProviderMock.saveMetadataState([], initialUserProfile, initialStorageUsage, []);
+          clearAiThreadsFromStorage(canonicalUserId);
+          setUser(initialUserProfile);
+          setFiles([]);
+          setRecycleBin([]);
+          setStorage(initialStorageUsage);
+          const resetChat = createAiThread();
+          setAiThreads([resetChat]);
+          setActiveAiThreadId(resetChat.id);
+          setScreen('welcome-email');
+          clearAllFileBlobs().catch(() => {});
         }
       }
     });
 
-    const unsubscribeUsers = firestoreService.subscribeToRegisteredUsers((users) => {
-      const safeUsers = dedupeUserList(users || []);
-      setRegisteredUsers(safeUsers);
-      try {
-        localStorage.setItem('bashar_cloud_registered_users', JSON.stringify(safeUsers));
-      } catch {}
-    });
-
-    // 2. Synchronize Site Settings (logo, bKash & Nagad numbers) across all websites
-    firestoreService.getSiteSettings().then((cloudSettings) => {
-      if (cloudSettings) {
-        setSiteSettings((prev) => ({
-          ...prev,
-          ...cloudSettings,
-          logoUrl: cloudSettings.logoUrl || prev.logoUrl || defaultSiteSettings.logoUrl,
-          bkashNumber: cloudSettings.bkashNumber || prev.bkashNumber || '01734211584',
-          nagadNumber: cloudSettings.nagadNumber || prev.nagadNumber || '01734211584',
-        }));
-      }
-    });
-
+    // 2. Synchronize Site Settings (single listener)
     const unsubscribeSettings = firestoreService.subscribeToSiteSettings((cloudSettings) => {
       if (cloudSettings) {
         setSiteSettings((prev) => ({
@@ -844,16 +1048,7 @@ export default function App() {
       }
     });
 
-    // 3. Synchronize Payment Requests across all websites
-    firestoreService.getPaymentRequestsWithMeta().then((metaRes) => {
-      if (metaRes && (!metaRes.fromCache || metaRes.payments.length > 0)) {
-        setPaymentRequests(metaRes.payments);
-        try {
-          localStorage.setItem('bashar_cloud_payment_requests', JSON.stringify(metaRes.payments));
-        } catch {}
-      }
-    });
-
+    // 3. Synchronize Payment Requests (single listener)
     const unsubscribePayments = firestoreService.subscribeToPaymentRequests(
       (cloudPayments, meta) => {
         if (!meta?.fromCache || cloudPayments.length > 0) {
@@ -865,15 +1060,7 @@ export default function App() {
       }
     );
 
-    // 4. Synchronize Admin Advertisements / Announcements across all devices & users
-    firestoreService.getAnnouncements().then((cloudAds) => {
-      if (cloudAds !== null) {
-        const sorted = sortAnnouncementsNewestFirst(cloudAds);
-        setAnnouncements(sorted);
-        saveAnnouncementsToStorage(sorted);
-      }
-    });
-
+    // 4. Synchronize Admin Advertisements / Announcements (single listener)
     const unsubscribeAnnouncements = firestoreService.subscribeToAnnouncements(
       (cloudAds, meta) => {
         if (!meta?.fromCache || cloudAds.length > 0) {
@@ -1569,6 +1756,7 @@ export default function App() {
     });
 
     storageProviderMock.clearUserLocalVault(userId);
+    clearRecentSearches(getRecentSearchesStorageKey(userId));
     try {
       localStorage.removeItem(`bashar_cloud_trial_start_${userId}`);
     } catch {}
@@ -1581,6 +1769,7 @@ export default function App() {
       setStorage(initialStorageUsage);
       storageProviderMock.saveMetadataState([], initialUserProfile, initialStorageUsage, []);
       clearAiThreadsFromStorage(canonicalUserId);
+      clearRecentSearches(getRecentSearchesStorageKey(canonicalUserId));
       const resetChat = createAiThread();
       setAiThreads([resetChat]);
       setActiveAiThreadId(resetChat.id);
@@ -1610,7 +1799,12 @@ export default function App() {
 
   // Delete all accounts, payment requests, and data completely
   const handleDeleteAllUsers = async () => {
-    registeredUsers.forEach((u) => storageProviderMock.clearUserLocalVault(u.id));
+    registeredUsers.forEach((u) => {
+      storageProviderMock.clearUserLocalVault(u.id);
+      clearRecentSearches(getRecentSearchesStorageKey(u.id));
+    });
+    clearRecentSearches(getRecentSearchesStorageKey(canonicalUserId));
+    clearRecentSearches();
     setRegisteredUsers([]);
     setPaymentRequests([]);
     try {
@@ -1823,9 +2017,12 @@ export default function App() {
         userRecord.id
       );
 
-      hydratedFiles.forEach((cf) => {
-        firestoreService.saveFile(userRecord.id, cf).catch(() => {});
-      });
+      const cloudIdSet = new Set((cloudFiles || []).map((f) => f.id));
+      hydratedFiles
+        .filter((cf) => !cloudIdSet.has(cf.id))
+        .forEach((cf) => {
+          firestoreService.saveFile(userRecord.id, cf).catch(() => {});
+        });
       void hydrateMissingCloudMedia(hydratedFiles, userRecord.id);
     } catch {
       const hydratedLocal = await hydrateCloudFiles(localFiles);
@@ -2415,16 +2612,23 @@ export default function App() {
           onBack={() => setScreen('main')}
         />
       ) : screen === 'search' ? (
-        /* 4. Search Screen with Persistent Recent Searches */
+        /* 4. Search Screen with Per-User Persistent Recent Searches */
         <SearchScreen
           files={files}
+          userId={canonicalUserId}
           isLocked={isAccountLocked}
           onOpenPayment={() => setScreen('payment')}
           onBack={() => setScreen('main')}
           onSelectFile={(f) => {
             if (!checkActionAllowed()) return;
-            if (f.type === 'audio') setSelectedAudioFile(f);
-            else setPreviewFile(f);
+            if (f.type === 'archive') {
+              setSelectedZipFile(f);
+              setIsZipModalOpen(true);
+            } else if (f.type === 'audio') {
+              setSelectedAudioFile(f);
+            } else {
+              setPreviewFile(f);
+            }
           }}
         />
       ) : screen === 'notifications' ? (
@@ -2548,6 +2752,7 @@ export default function App() {
                 onSaveAnswerToCloud={(fileName, content) => {
                   handleCreateNewFile(fileName, 'document', content);
                 }}
+                onResolveCloudMedia={(f, opts) => resolveCloudMediaUrl(f, undefined, opts)}
               />
             )}
 
@@ -2584,7 +2789,7 @@ export default function App() {
                 onClearAllFiles={handleClearAllFiles}
                 onRestoreVersion={handleRestoreFileVersion}
                 onUploadNewVersion={handleUploadNewVersion}
-                onResolveCloudMedia={(f) => resolveCloudMediaUrl(f)}
+                onResolveCloudMedia={(f, opts) => resolveCloudMediaUrl(f, undefined, opts)}
                 initialFilter={initialFilesFilter}
                 initialFolderId={initialFilesFolderId}
                 onSelectionStateChange={setIsFilesBulkActive}
@@ -2686,7 +2891,7 @@ export default function App() {
         onRenameFile={handleRenameFile}
         onCopyFile={handleCopyFile}
         onMoveFile={handleMoveFile}
-        onResolveCloudMedia={(f) => resolveCloudMediaUrl(f)}
+        onResolveCloudMedia={(f, opts) => resolveCloudMediaUrl(f, undefined, opts)}
         availableFolders={files.filter((f) => f.type === 'folder')}
       />
 
@@ -2702,7 +2907,7 @@ export default function App() {
       <AudioPlayerModal
         file={selectedAudioFile}
         onClose={() => setSelectedAudioFile(null)}
-        onResolveCloudMedia={(f) => resolveCloudMediaUrl(f)}
+        onResolveCloudMedia={(f, opts) => resolveCloudMediaUrl(f, undefined, opts)}
       />
 
       <NewFolderModal
@@ -2756,6 +2961,7 @@ export default function App() {
           setPendingUploadFiles([]);
         }}
         onFinishUpload={handleCommitUploadFlow}
+        onSyncFileToCloud={syncSingleFileToCloud}
         onCreateFolder={handleCreateFolderFromUpload}
       />
 

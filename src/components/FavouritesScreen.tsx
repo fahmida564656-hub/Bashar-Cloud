@@ -219,12 +219,26 @@ export const FavouritesScreen: React.FC<FavouritesScreenProps> = ({
                         <Music className="w-6 h-6" />
                       </div>
                     )}
-                    {file.type === 'image' && (
+                    {file.type === 'image' && (file.url || file.thumbnail) ? (
+                      <img
+                        src={file.url || file.thumbnail}
+                        alt={file.name}
+                        className="w-full h-20 rounded-xl object-cover border border-[#234277]"
+                        loading="lazy"
+                      />
+                    ) : file.type === 'image' && (
                       <div className="w-12 h-12 rounded-xl bg-[#13223d] border border-[#234277] flex items-center justify-center text-[#3b82f6]">
                         <ImageIcon className="w-6 h-6" />
                       </div>
                     )}
-                    {file.type === 'video' && (
+                    {file.type === 'video' && file.thumbnail ? (
+                      <img
+                        src={file.thumbnail}
+                        alt={file.name}
+                        className="w-full h-20 rounded-xl object-cover border border-[#18486b]"
+                        loading="lazy"
+                      />
+                    ) : file.type === 'video' && (
                       <div className="w-12 h-12 rounded-xl bg-[#10293d] border border-[#18486b] flex items-center justify-center text-[#06b6d4]">
                         <Video className="w-6 h-6" />
                       </div>

@@ -113,16 +113,14 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
             u.email.toLowerCase() === normalizedEmail
         );
 
-        // 2. Also check directly in Cloud Firestore to prevent duplicates across websites
+        // 2. Also check directly in Cloud Firestore / Server Mirror to prevent duplicates across websites
         if (!existing) {
-          const cloudCheck = await firestoreService.findRegisteredUser(normalizedPhone);
+          const cloudCheck = await firestoreService.findRegisteredUser([
+            normalizedPhone,
+            normalizedEmail,
+          ]);
           if (cloudCheck) {
             existing = cloudCheck;
-          } else {
-            const cloudEmailCheck = await firestoreService.findRegisteredUser(normalizedEmail);
-            if (cloudEmailCheck) {
-              existing = cloudEmailCheck;
-            }
           }
         }
 

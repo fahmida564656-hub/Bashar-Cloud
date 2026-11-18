@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addTermToList, removeTermFromList, MAX_RECENT_SEARCHES } from './recentSearches.js';
+import {
+  addTermToList,
+  removeTermFromList,
+  getRecentSearchesStorageKey,
+  normalizeSearchTerm,
+  filterMatchingRecentTerms,
+  MAX_RECENT_SEARCHES,
+  RECENT_SEARCHES_STORAGE_KEY,
+} from './recentSearches.js';
 
 test('addTermToList adds a new search term to the beginning', () => {
   const initial = ['documents', 'invoices'];
@@ -8,10 +16,10 @@ test('addTermToList adds a new search term to the beginning', () => {
   assert.deepEqual(updated, ['photos', 'documents', 'invoices']);
 });
 
-test('addTermToList ignores empty or whitespace-only terms', () => {
+test('addTermToList ignores empty or whitespace-only terms and collapses extra spaces', () => {
   const initial = ['photos'];
-  const updated = addTermToList(initial, '   ');
-  assert.deepEqual(updated, ['photos']);
+  assert.deepEqual(addTermToList(initial, '   '), ['photos']);
+  assert.deepEqual(addTermToList(initial, '  vacation   video  '), ['vacation video', 'photos']);
 });
 
 test('addTermToList moves existing term to the front without duplicates (case-insensitive)', () => {
@@ -32,4 +40,20 @@ test('removeTermFromList removes term case-insensitively', () => {
   const initial = ['photos', 'documents', 'videos'];
   const updated = removeTermFromList(initial, 'PHOTOS');
   assert.deepEqual(updated, ['documents', 'videos']);
+});
+
+test('getRecentSearchesStorageKey isolates history per authenticated user', () => {
+  assert.equal(getRecentSearchesStorageKey(), RECENT_SEARCHES_STORAGE_KEY);
+  assert.equal(getRecentSearchesStorageKey('guest_user'), RECENT_SEARCHES_STORAGE_KEY);
+  assert.equal(
+    getRecentSearchesStorageKey('user-123'),
+    `${RECENT_SEARCHES_STORAGE_KEY}_user-123`
+  );
+});
+
+test('filterMatchingRecentTerms returns matching history items excluding exact match', () => {
+  const history = ['video1.mp4', 'Vacation Video', 'photo1.png', 'audio1.wav'];
+  assert.deepEqual(filterMatchingRecentTerms(history, 'vid'), ['video1.mp4', 'Vacation Video']);
+  assert.deepEqual(filterMatchingRecentTerms(history, 'video1.mp4'), []);
+  assert.equal(normalizeSearchTerm('  hello   world  '), 'hello world');
 });

@@ -1,10 +1,73 @@
 export const CLOUD_CHUNK_RAW_BYTES = 420 * 1024;
-export const MAX_CLOUD_CHUNK_FILE_BYTES = 35 * 1024 * 1024;
+export const MAX_CLOUD_CHUNK_FILE_BYTES = 100 * 1024 * 1024;
 export const INLINE_CLOUD_FILE_THRESHOLD_BYTES = 340 * 1024;
 
 export interface CloudChunkRecord {
   index: number;
   data: string;
+}
+
+const EXTENSION_MIME_MAP: Record<string, string> = {
+  // Video
+  '.mp4': 'video/mp4',
+  '.m4v': 'video/mp4',
+  '.mov': 'video/quicktime',
+  '.webm': 'video/webm',
+  '.mkv': 'video/x-matroska',
+  '.3gp': 'video/3gpp',
+  '.avi': 'video/x-msvideo',
+  '.ogv': 'video/ogg',
+  // Audio
+  '.mp3': 'audio/mpeg',
+  '.m4a': 'audio/mp4',
+  '.aac': 'audio/aac',
+  '.wav': 'audio/wav',
+  '.ogg': 'audio/ogg',
+  '.opus': 'audio/ogg',
+  '.flac': 'audio/flac',
+  // Image
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.bmp': 'image/bmp',
+  '.svg': 'image/svg+xml',
+  // Documents / Archives
+  '.pdf': 'application/pdf',
+  '.txt': 'text/plain',
+  '.json': 'application/json',
+  '.csv': 'text/csv',
+  '.zip': 'application/zip',
+};
+
+/**
+ * Infers a browser-playable MIME type from explicit MIME metadata or filename extension.
+ * Prevents `<video>` / `<audio>` playback failures when browsers omit `File.type`.
+ */
+export function inferMediaMimeType(
+  fileName?: string,
+  explicitMimeType?: string
+): string {
+  const cleanedExplicit = (explicitMimeType || '').trim().toLowerCase();
+  if (
+    cleanedExplicit &&
+    cleanedExplicit !== 'application/octet-stream' &&
+    cleanedExplicit !== 'binary/octet-stream'
+  ) {
+    return cleanedExplicit;
+  }
+
+  const lowerName = (fileName || '').trim().toLowerCase();
+  const dotIdx = lowerName.lastIndexOf('.');
+  if (dotIdx >= 0) {
+    const ext = lowerName.slice(dotIdx);
+    if (EXTENSION_MIME_MAP[ext]) {
+      return EXTENSION_MIME_MAP[ext];
+    }
+  }
+
+  return cleanedExplicit || 'application/octet-stream';
 }
 
 export function shouldChunkFileToCloud(sizeBytes: number): boolean {
@@ -13,6 +76,18 @@ export function shouldChunkFileToCloud(sizeBytes: number): boolean {
     sizeBytes > INLINE_CLOUD_FILE_THRESHOLD_BYTES &&
     sizeBytes <= MAX_CLOUD_CHUNK_FILE_BYTES
   );
+}
+
+/**
+ * Determines if a file still requires cloud chunk upload/verification.
+ * Unlike trusting an optimistic chunk count, requires confirmed `cloudSynced === true`.
+ */
+export function needsCloudChunkUpload(file: {
+  sizeBytes: number;
+  cloudSynced?: boolean;
+}): boolean {
+  if (!shouldChunkFileToCloud(file.sizeBytes)) return false;
+  return file.cloudSynced !== true;
 }
 
 export function estimateChunkCount(
@@ -25,6 +100,33 @@ export function estimateChunkCount(
 
 export function buildChunkDocId(fileId: string, index: number): string {
   return `${fileId}__chunk_${index}`;
+}
+
+export function getMissingChunkIndices(
+  chunks: CloudChunkRecord[],
+  expectedChunkCount: number
+): number[] {
+  if (!Number.isFinite(expectedChunkCount) || expectedChunkCount <= 0) return [];
+  const present = new Set<number>();
+  for (const c of chunks) {
+    if (c && typeof c.index === 'number' && typeof c.data === 'string' && c.data.length > 0) {
+      present.add(c.index);
+    }
+  }
+  const missing: number[] = [];
+  for (let i = 0; i < expectedChunkCount; i++) {
+    if (!present.has(i)) missing.push(i);
+  }
+  return missing;
+}
+
+export function areCloudChunksComplete(
+  chunks: CloudChunkRecord[],
+  expectedChunkCount?: number
+): boolean {
+  if (!Array.isArray(chunks) || chunks.length === 0) return false;
+  if (!expectedChunkCount || expectedChunkCount <= 0) return true;
+  return getMissingChunkIndices(chunks, expectedChunkCount).length === 0;
 }
 
 export function uint8ArrayToBase64(bytes: Uint8Array): string {
@@ -74,10 +176,15 @@ export function reassembleCloudChunksToUint8Array(chunks: CloudChunkRecord[]): U
     return new Uint8Array(0);
   }
 
-  const ordered = [...chunks]
-    .filter((c) => c && typeof c.data === 'string' && c.data.length > 0)
-    .sort((a, b) => a.index - b.index);
+  // Deduplicate by index and sort ascending
+  const byIndex = new Map<number, CloudChunkRecord>();
+  for (const c of chunks) {
+    if (c && typeof c.index === 'number' && typeof c.data === 'string' && c.data.length > 0) {
+      byIndex.set(c.index, c);
+    }
+  }
 
+  const ordered = Array.from(byIndex.values()).sort((a, b) => a.index - b.index);
   if (ordered.length === 0) {
     return new Uint8Array(0);
   }
