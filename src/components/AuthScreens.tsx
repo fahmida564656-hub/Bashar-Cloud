@@ -3,11 +3,18 @@ import { Mail, Phone, Lock, Eye, EyeOff, User, ArrowRight, Upload, Camera, Shiel
 import { UserProfile, RegisteredUser } from '../types';
 import { firestoreService } from '../firebase/firestoreService';
 import { compressImageToSafeDataUrl } from '../utils/fileVault';
+import {
+  buildDeterministicAccountId,
+  findMatchingUserRecords,
+  mergeRegisteredUserRecords,
+} from '../utils/accountManagement';
 
 interface AuthScreenProps {
   websiteName?: string;
   logoUrl?: string;
   registeredUsers: RegisteredUser[];
+  hasRemoteUsers?: boolean;
+  onAccountIdsResolved?: (ids: string[]) => void;
   onSuccess: (
     user: UserProfile,
     passwordPlain?: string,
@@ -21,20 +28,22 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
   websiteName = 'Bashar Cloud',
   logoUrl,
   registeredUsers,
+  hasRemoteUsers = false,
+  onAccountIdsResolved,
   onSuccess,
   onUserRegistered,
 }) => {
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>(() =>
-    registeredUsers.length === 0 ? 'signup' : 'signin'
+    registeredUsers.length === 0 && !hasRemoteUsers ? 'signup' : 'signin'
   );
   const [userToggledMode, setUserToggledMode] = useState(false);
   const [loginMethod, setLoginMethod] = useState<'phone' | 'email'>('phone');
 
   React.useEffect(() => {
     if (!userToggledMode) {
-      setAuthMode(registeredUsers.length === 0 ? 'signup' : 'signin');
+      setAuthMode(registeredUsers.length === 0 && !hasRemoteUsers ? 'signup' : 'signin');
     }
-  }, [registeredUsers.length, userToggledMode]);
+  }, [registeredUsers.length, hasRemoteUsers, userToggledMode]);
 
   // Form Fields - starts clean with NO demo values
   const [fullName, setFullName] = useState('');
@@ -107,30 +116,53 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
         const normalizedEmail = email.trim().toLowerCase();
 
         // 1. Check local list first
-        let existing = registeredUsers.find(
+        let existing: RegisteredUser | undefined = registeredUsers.find(
           (u) =>
-            cleanPhone(u.phone) === normalizedPhone ||
-            u.email.toLowerCase() === normalizedEmail
+            (normalizedPhone && cleanPhone(u.phone) === normalizedPhone) ||
+            (normalizedEmail && u.email.toLowerCase() === normalizedEmail)
         );
+        let resolvedIds: string[] = existing ? [existing.id] : [];
+        let quotaExceeded = false;
 
-        // 2. Also check directly in Cloud Firestore / Server Mirror to prevent duplicates across websites
+        // 2. Also check directly in Cloud Firestore / Server Mirror (O(1) indexed) to prevent duplicates across websites
         if (!existing) {
-          const cloudCheck = await firestoreService.findRegisteredUser([
+          const cloudCheck = await firestoreService.lookupRegisteredAccount([
             normalizedPhone,
             normalizedEmail,
           ]);
-          if (cloudCheck) {
-            existing = cloudCheck;
+          quotaExceeded = cloudCheck.quotaExceeded;
+          if (cloudCheck.user) {
+            existing = cloudCheck.user;
+            resolvedIds = cloudCheck.matchingIds;
           }
         }
 
-        if (existing) {
-          setErrorMessage('এই মোবাইল নম্বর বা ইমেইল দিয়ে ইতিমধ্যে অ্যাকাউন্ট খোলা আছে। অনুগ্রহ করে লগইন করুন।');
+        if (!existing && quotaExceeded) {
+          setErrorMessage(
+            'ক্লাউড ডাটাবেস (Firestore) এর দৈনিক ফ্রি রিড লিমিট শেষ হয়েছে। অনুগ্রহ করে কোটা রিসেট হওয়ার পর অথবা সার্ভিস আপগ্রেড করে পুনরায় চেষ্টা করুন।'
+          );
           setIsLoading(false);
           return;
         }
 
-        const newId = `user-${Date.now()}`;
+        if (existing) {
+          if (onUserRegistered) {
+            onUserRegistered(existing);
+          }
+          if (onAccountIdsResolved && resolvedIds.length > 0) {
+            onAccountIdsResolved(resolvedIds);
+          }
+          setUserToggledMode(true);
+          setAuthMode('signin');
+          setLoginMethod(normalizedEmail ? 'email' : 'phone');
+          setErrorMessage(
+            'এই মোবাইল নম্বর বা ইমেইল দিয়ে ইতিমধ্যে অ্যাকাউন্ট খোলা আছে। অনুগ্রহ করে নিচে পাসওয়ার্ড দিয়ে লগইন করুন।'
+          );
+          setIsLoading(false);
+          return;
+        }
+
+        const newId = buildDeterministicAccountId(normalizedEmail, normalizedPhone);
         const newUserProfile: UserProfile = {
           name: fullName.trim(),
           email: normalizedEmail,
@@ -162,6 +194,9 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
           console.warn('Firestore cloud user sync warning:', err);
         });
 
+        if (onAccountIdsResolved) {
+          onAccountIdsResolved([newId]);
+        }
         if (onUserRegistered) {
           onUserRegistered(newRecord);
         }
@@ -206,23 +241,30 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
           return;
         }
 
-        // Step A: Search in local state
-        let foundUser: RegisteredUser | undefined = registeredUsers.find((u) => {
-          if (isPhoneMode) {
-            return cleanPhone(u.phone) === searchIdentifier;
-          } else {
-            return u.email.toLowerCase() === searchIdentifier;
-          }
-        });
+        // Step A: Search local state (and consolidate any duplicate local records)
+        const localMatches = findMatchingUserRecords(
+          registeredUsers,
+          isPhoneMode ? { phone: searchIdentifier } : { email: searchIdentifier }
+        );
+        let foundUser: RegisteredUser | undefined = localMatches[0];
+        for (let i = 1; i < localMatches.length; i++) {
+          foundUser = mergeRegisteredUserRecords(foundUser!, localMatches[i]);
+        }
+        const collectedIds = new Set<string>(localMatches.map((u) => u.id));
+        let lookupQuotaExceeded = false;
 
-        // Step B: If not found locally (or local password differs), query directly from Cloud Firestore!
+        // Step B: If not found locally (or local password differs), query directly from Cloud Firestore (O(1) indexed)!
         if (!foundUser || (foundUser.passwordPlain && foundUser.passwordPlain !== password)) {
           try {
-            const cloudUser = await firestoreService.findRegisteredUser(searchIdentifier);
-            if (cloudUser) {
-              foundUser = cloudUser;
+            const lookupRes = await firestoreService.lookupRegisteredAccount(searchIdentifier);
+            lookupQuotaExceeded = lookupRes.quotaExceeded;
+            lookupRes.matchingIds.forEach((id) => collectedIds.add(id));
+            if (lookupRes.user) {
+              foundUser = foundUser
+                ? mergeRegisteredUserRecords(lookupRes.user, foundUser)
+                : lookupRes.user;
               if (onUserRegistered) {
-                onUserRegistered(cloudUser);
+                onUserRegistered(foundUser);
               }
             }
           } catch (cloudErr) {
@@ -232,7 +274,15 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
 
         // If user STILL not found anywhere
         if (!foundUser) {
-          setErrorMessage('কোনো অ্যাকাউন্ট পাওয়া যায়নি! লগইন করতে প্রথমে সাইন আপ করুন। (No account found! Please sign up first.)');
+          if (lookupQuotaExceeded) {
+            setErrorMessage(
+              'ক্লাউড ডাটাবেস (Firestore) এর দৈনিক ফ্রি রিড লিমিট শেষ হয়েছে। অনুগ্রহ করে কোটা রিসেট হওয়ার পর অথবা সার্ভিস আপগ্রেড করে পুনরায় চেষ্টা করুন।'
+            );
+          } else {
+            setErrorMessage(
+              'কোনো অ্যাকাউন্ট পাওয়া যায়নি! লগইন করতে প্রথমে সাইন আপ করুন। (No account found! Please sign up first.)'
+            );
+          }
           setIsLoading(false);
           return;
         }
@@ -242,6 +292,10 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
           setErrorMessage('ভুল পাসওয়ার্ড! সঠিক পাসওয়ার্ড দিন। (Incorrect password! Please try again.)');
           setIsLoading(false);
           return;
+        }
+
+        if (onAccountIdsResolved) {
+          onAccountIdsResolved(Array.from(collectedIds));
         }
 
         const loggedInUser: UserProfile = {
@@ -518,6 +572,7 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
               />
               <button
                 type="button"
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
                 onClick={() => setShowPassword(!showPassword)}
                 className="text-slate-400 hover:text-white p-1 ml-1"
               >

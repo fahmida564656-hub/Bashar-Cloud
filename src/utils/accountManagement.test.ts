@@ -6,6 +6,10 @@ import {
   normalizeAccountPhone,
   doesPaymentBelongToUser,
   filterOutUserPayments,
+  buildDeterministicAccountId,
+  findMatchingUserRecords,
+  mergeRegisteredUserRecords,
+  collectCandidateOwnerIds,
 } from './accountManagement';
 import { RegisteredUser, CloudFile, StorageUsage, PaymentRequest } from '../types';
 import { initialFiles, initialRecycleBin, initialStorageUsage, defaultSiteSettings } from '../data/initialData';
@@ -172,4 +176,74 @@ test('filterOutUserPayments deletes all payment records matching deleted user ID
   assert.equal(remaining.length, 1);
   assert.equal(remaining[0].id, 'pay-other-user');
 });
+
+test('buildDeterministicAccountId generates consistent cross-site IDs from email or phone', () => {
+  assert.equal(
+    buildDeterministicAccountId('  Fahmida564656@Gmail.com ', '01711223344'),
+    'acct_fahmida564656_gmail_com'
+  );
+  assert.equal(buildDeterministicAccountId('', '+8801711223344'), 'phone_1711223344');
+});
+
+test('findMatchingUserRecords, mergeRegisteredUserRecords, and collectCandidateOwnerIds unify cross-website accounts', () => {
+  const site1User: RegisteredUser = {
+    id: 'user-111',
+    name: 'Fahmida',
+    email: 'fahmida564656@gmail.com',
+    phone: '(+880) 1711223344',
+    passwordPlain: 'secret123',
+    registeredAt: 'Mar 1, 2026',
+    registeredTimestamp: 1770000000000,
+    filesCount: 4,
+    storageUsedMB: 12,
+    isLifetimeApproved: true,
+    paymentStatus: 'approved',
+  };
+  const site2User: RegisteredUser = {
+    id: 'user-222',
+    name: 'Fahmida',
+    email: 'fahmida564656@gmail.com',
+    phone: '01711223344',
+    passwordPlain: 'secret123',
+    registeredAt: 'Mar 5, 2026',
+    registeredTimestamp: 1770400000000,
+    filesCount: 2,
+    storageUsedMB: 6,
+    isLifetimeApproved: false,
+    paymentStatus: 'none',
+  };
+  const unrelated: RegisteredUser = {
+    id: 'user-999',
+    name: 'Other',
+    email: 'other@example.com',
+    phone: '01899999999',
+    registeredAt: 'Mar 5, 2026',
+    registeredTimestamp: 1770400000000,
+    filesCount: 0,
+    storageUsedMB: 0,
+  };
+
+  const matched = findMatchingUserRecords([site1User, site2User, unrelated], {
+    email: 'FAHMIDA564656@GMAIL.COM',
+  });
+  assert.equal(matched.length, 2);
+
+  const merged = mergeRegisteredUserRecords(site2User, site1User);
+  assert.equal(merged.isLifetimeApproved, true);
+  assert.equal(merged.paymentStatus, 'approved');
+  assert.equal(merged.registeredTimestamp, 1770000000000);
+  assert.equal(merged.filesCount, 4);
+
+  const candidateIds = collectCandidateOwnerIds({
+    canonicalUserId: 'user-222',
+    matchedRecords: matched,
+    email: 'fahmida564656@gmail.com',
+    phone: '(+880) 1711223344',
+  });
+  assert.ok(candidateIds.includes('user-222'));
+  assert.ok(candidateIds.includes('user-111'));
+  assert.ok(candidateIds.includes('acct_fahmida564656_gmail_com'));
+  assert.ok(candidateIds.includes('phone_1711223344'));
+});
+
 

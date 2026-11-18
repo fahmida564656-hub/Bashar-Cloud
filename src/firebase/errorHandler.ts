@@ -28,7 +28,7 @@ export interface FirestoreErrorInfo {
 
 let firestoreQuotaCooldownUntil = 0;
 
-export function markFirestoreQuotaCooldown(durationMs = 180_000): void {
+export function markFirestoreQuotaCooldown(durationMs = 45_000): void {
   firestoreQuotaCooldownUntil = Math.max(firestoreQuotaCooldownUntil, Date.now() + durationMs);
 }
 
@@ -36,12 +36,19 @@ export function isFirestoreQuotaCooldownActive(): boolean {
   return Date.now() < firestoreQuotaCooldownUntil;
 }
 
-export function isFirestoreQuotaOrTransientError(error: unknown): boolean {
+export function isFirestoreHardQuotaError(error: unknown): boolean {
   const msg = (error instanceof Error ? error.message : String(error || '')).toLowerCase();
   return (
     msg.includes('resource-exhausted') ||
     msg.includes('quota limit exceeded') ||
-    msg.includes('quota exceeded') ||
+    msg.includes('quota exceeded')
+  );
+}
+
+export function isFirestoreQuotaOrTransientError(error: unknown): boolean {
+  if (isFirestoreHardQuotaError(error)) return true;
+  const msg = (error instanceof Error ? error.message : String(error || '')).toLowerCase();
+  return (
     msg.includes('unavailable') ||
     msg.includes('deadline-exceeded') ||
     msg.includes('timeout')
@@ -54,9 +61,13 @@ export function handleFirestoreError(
   path: string | null
 ): void {
   const rawMessage = error instanceof Error ? error.message : String(error);
-  if (isFirestoreQuotaOrTransientError(error)) {
+  if (isFirestoreHardQuotaError(error)) {
     markFirestoreQuotaCooldown();
-    console.warn(`Firestore transient/quota note (${operationType} ${path}):`, rawMessage);
+    console.warn(`Firestore quota exceeded (${operationType} ${path}):`, rawMessage);
+    return;
+  }
+  if (isFirestoreQuotaOrTransientError(error)) {
+    console.warn(`Firestore transient note (${operationType} ${path}):`, rawMessage);
     return;
   }
 

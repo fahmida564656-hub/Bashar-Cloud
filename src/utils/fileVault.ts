@@ -271,7 +271,8 @@ export function clearDeletedFileIds(userId?: string): void {
 export function mergeCloudAndLocalFiles(
   cloudFiles: CloudFile[],
   localFiles: CloudFile[],
-  deletedIds?: Set<string>
+  deletedIds?: Set<string>,
+  options?: { pruneSyncedMissingFromCloud?: boolean; activeOwnerId?: string }
 ): CloudFile[] {
   const localById = new Map<string, CloudFile>();
   for (const lf of localFiles) {
@@ -339,9 +340,21 @@ export function mergeCloudAndLocalFiles(
     });
   }
 
+  const pruneSynced = Boolean(options?.pruneSyncedMissingFromCloud);
+  const activeOwnerId = options?.activeOwnerId;
+
   const localOnly: CloudFile[] = [];
   for (const lf of localFiles) {
     if (deletedIds?.has(lf.id) || seenIds.has(lf.id)) continue;
+    // If authoritative server cloud snapshot confirmed file list and this file was already synced under activeOwnerId,
+    // its absence means it was deleted on another website. Keep un-synced local uploads & secondary-owner files.
+    if (
+      pruneSynced &&
+      lf.cloudSynced === true &&
+      (!activeOwnerId || !lf.ownerId || lf.ownerId === activeOwnerId)
+    ) {
+      continue;
+    }
     seenIds.add(lf.id);
     localOnly.push(lf);
   }

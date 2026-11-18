@@ -8,10 +8,14 @@ import {
   getDoc,
   query,
   where,
+  limit,
+  type QuerySnapshot,
+  type DocumentData,
 } from 'firebase/firestore';
 import { db } from './config';
 import {
   handleFirestoreError,
+  isFirestoreHardQuotaError,
   isFirestoreQuotaCooldownActive,
   isFirestoreQuotaOrTransientError,
   markFirestoreQuotaCooldown,
@@ -38,7 +42,10 @@ import {
   sortAnnouncementsNewestFirst,
 } from '../utils/announcements';
 import {
+  buildDeterministicAccountId,
   doesPaymentBelongToUser,
+  mergeRegisteredUserRecords,
+  normalizeAccountPhone,
   PaymentOwnerTarget,
 } from '../utils/accountManagement';
 import {
@@ -164,9 +171,9 @@ export const firestoreService = {
    * Save or update registered user credentials in Firestore
    * Ensures instant sync across all websites, domains, and devices.
    */
-  async saveRegisteredUser(user: RegisteredUser): Promise<void> {
+  async saveRegisteredUser(user: RegisteredUser): Promise<boolean> {
     const path = `registered_users/${user.id}`;
-    const cleanPhone = (user.phone || '').replace(/[^0-9]/g, '').slice(-10);
+    const cleanPhone = normalizeAccountPhone(user.phone);
     const cleanEmail = (user.email || '').trim().toLowerCase();
 
     const mirrorPromise = fetch('/api/cloud/users', {
@@ -204,32 +211,56 @@ export const firestoreService = {
         { merge: true }
       );
 
-    const mirrorOk = await mirrorPromise;
-    if (isFirestoreQuotaCooldownActive() && mirrorOk) {
-      void writeDoc().catch(() => {});
-      return;
+    if (isFirestoreQuotaCooldownActive()) {
+      await mirrorPromise;
+      return false;
     }
 
     try {
-      await withFirestoreTimeout(writeDoc(), mirrorOk ? 1800 : 4000, 'saveRegisteredUser');
+      await withFirestoreTimeout(writeDoc(), 9000, 'saveRegisteredUser');
+      void mirrorPromise;
+      return true;
     } catch (error) {
-      if (isFirestoreQuotaOrTransientError(error)) {
+      if (isFirestoreHardQuotaError(error)) {
         markFirestoreQuotaCooldown();
-        if (mirrorOk) return;
+      }
+      await mirrorPromise;
+      if (isFirestoreQuotaOrTransientError(error)) {
+        handleFirestoreError(error, OperationType.WRITE, path);
+        return false;
       }
       handleFirestoreError(error, OperationType.WRITE, path);
+      return false;
     }
   },
 
   /**
-   * Fetch all registered users from Firestore (with server mirror fallback)
+   * Lightweight check (reads at most 1 doc) to know whether any registered account exists in cloud.
+   */
+  async hasAnyRegisteredUsers(): Promise<boolean> {
+    try {
+      const snap = await withFirestoreTimeout(
+        getDocs(query(collection(db, 'registered_users'), limit(1))),
+        4500,
+        'hasAnyRegisteredUsers'
+      );
+      if (!snap.empty) return true;
+    } catch {
+      // Fall through to mirror check
+    }
+    const mirror = await fetchServerCloudUsers();
+    return mirror.length > 0;
+  },
+
+  /**
+   * Fetch all registered users from Firestore (Admin Panel usage) with server mirror fallback.
    */
   async getRegisteredUsersWithMeta(): Promise<{ users: RegisteredUser[]; fromCache: boolean } | null> {
     const path = 'registered_users';
     try {
       const snapshot = await withFirestoreTimeout(
         getDocs(collection(db, 'registered_users')),
-        4500,
+        7500,
         'getRegisteredUsers'
       );
       const list: RegisteredUser[] = [];
@@ -265,98 +296,214 @@ export const firestoreService = {
   },
 
   /**
-   * Find a registered user in Firestore (with fast timeout + server mirror fallback)
+   * Cross-website O(1) indexed lookup for a registered user by email, phone, or ID.
+   * Consolidates duplicate legacy records across websites and surfaces quota exhaustion cleanly.
+   */
+  async lookupRegisteredAccount(identifier: string | string[]): Promise<{
+    user: RegisteredUser | null;
+    matchingIds: string[];
+    quotaExceeded: boolean;
+  }> {
+    const rawInputs = Array.isArray(identifier) ? identifier : [identifier];
+    const queries = rawInputs
+      .map((val) => (val || '').trim())
+      .filter(Boolean)
+      .map((trimmed) => ({
+        trimmed,
+        lower: trimmed.toLowerCase(),
+        cleanDigits: normalizeAccountPhone(trimmed),
+      }));
+    if (queries.length === 0) {
+      return { user: null, matchingIds: [], quotaExceeded: false };
+    }
+
+    const mapDoc = (docId: string, d: DocumentData): RegisteredUser => ({
+      id: docId,
+      name: d.name || '',
+      email: d.email || '',
+      phone: d.phone || '',
+      passwordPlain: d.passwordPlain || '',
+      avatarUrl: d.avatarUrl || '',
+      registeredAt: d.registeredAt || '',
+      registeredTimestamp: d.registeredTimestamp || Date.now(),
+      filesCount: d.filesCount || 0,
+      storageUsedMB: d.storageUsedMB || 0,
+      isLifetimeApproved: Boolean(d.isLifetimeApproved),
+      paymentStatus: d.paymentStatus || 'none',
+      lastTrxId: d.lastTrxId || '',
+    });
+
+    const matchesList = (candidates: RegisteredUser[]): RegisteredUser[] => {
+      const found: RegisteredUser[] = [];
+      const seen = new Set<string>();
+      for (const u of candidates) {
+        if (!u || !u.id || seen.has(u.id)) continue;
+        const uPhone = normalizeAccountPhone(u.phone);
+        const uEmail = (u.email || '').trim().toLowerCase();
+        for (const q of queries) {
+          if (
+            u.id === q.trimmed ||
+            (uEmail && uEmail === q.lower) ||
+            (q.cleanDigits.length >= 7 && uPhone === q.cleanDigits)
+          ) {
+            seen.add(u.id);
+            found.push(u);
+            break;
+          }
+        }
+      }
+      return found;
+    };
+
+    const collected = new Map<string, RegisteredUser>();
+    let quotaExceeded = false;
+
+    const addMatch = (u: RegisteredUser | null) => {
+      if (u && u.id) {
+        const existing = collected.get(u.id);
+        collected.set(u.id, existing ? mergeRegisteredUserRecords(u, existing) : u);
+      }
+    };
+
+    // 1. Check same-origin mirror + targeted Firestore O(1) indexed queries in parallel
+    const indexedTasks: Promise<void>[] = [
+      fetchServerCloudUsers().then((list) => {
+        matchesList(list).forEach(addMatch);
+      }),
+    ];
+
+    for (const q of queries) {
+      if (q.lower.includes('@')) {
+        indexedTasks.push(
+          withFirestoreTimeout(
+            getDocs(query(collection(db, 'registered_users'), where('email', '==', q.lower))),
+            7500,
+            'findUserByEmail'
+          )
+            .then((snap) => {
+              snap.forEach((ds) => addMatch(mapDoc(ds.id, ds.data())));
+            })
+            .catch((err) => {
+              if (isFirestoreHardQuotaError(err)) quotaExceeded = true;
+            })
+        );
+        const detId = buildDeterministicAccountId(q.lower, undefined);
+        indexedTasks.push(
+          withFirestoreTimeout(getDoc(doc(db, 'registered_users', detId)), 6500, 'getUserDetEmail')
+            .then((ds) => {
+              if (ds.exists()) addMatch(mapDoc(ds.id, ds.data()));
+            })
+            .catch((err) => {
+              if (isFirestoreHardQuotaError(err)) quotaExceeded = true;
+            })
+        );
+      }
+      if (q.cleanDigits.length >= 7) {
+        indexedTasks.push(
+          withFirestoreTimeout(
+            getDocs(query(collection(db, 'registered_users'), where('cleanPhone', '==', q.cleanDigits))),
+            7500,
+            'findUserByPhone'
+          )
+            .then((snap) => {
+              snap.forEach((ds) => addMatch(mapDoc(ds.id, ds.data())));
+            })
+            .catch((err) => {
+              if (isFirestoreHardQuotaError(err)) quotaExceeded = true;
+            })
+        );
+      }
+    }
+
+    await Promise.all(indexedTasks);
+
+    // 2. Fallback scan only if indexed queries returned 0 matches and quota wasn't exhausted
+    if (collected.size === 0 && !quotaExceeded) {
+      try {
+        const fullSnap: QuerySnapshot<DocumentData> = await withFirestoreTimeout(
+          getDocs(collection(db, 'registered_users')),
+          7500,
+          'findRegisteredUserFallback'
+        );
+        const allDocs: RegisteredUser[] = [];
+        fullSnap.forEach((ds) => allDocs.push(mapDoc(ds.id, ds.data())));
+        matchesList(allDocs).forEach(addMatch);
+      } catch (err) {
+        if (isFirestoreHardQuotaError(err)) {
+          quotaExceeded = true;
+        }
+      }
+    }
+
+    if (quotaExceeded) {
+      markFirestoreQuotaCooldown();
+    }
+
+    const records = Array.from(collected.values()).sort(
+      (a, b) => (a.registeredTimestamp || 0) - (b.registeredTimestamp || 0)
+    );
+    if (records.length === 0) {
+      return { user: null, matchingIds: [], quotaExceeded };
+    }
+
+    let unified = records[0];
+    for (let i = 1; i < records.length; i++) {
+      unified = mergeRegisteredUserRecords(unified, records[i]);
+    }
+    return {
+      user: unified,
+      matchingIds: records.map((r) => r.id),
+      quotaExceeded,
+    };
+  },
+
+  /**
+   * Backward-compatible single-record wrapper around lookupRegisteredAccount.
    */
   async findRegisteredUser(identifier: string | string[]): Promise<RegisteredUser | null> {
-    try {
-      const rawInputs = Array.isArray(identifier) ? identifier : [identifier];
-      const queries = rawInputs
-        .map((val) => (val || '').trim())
-        .filter(Boolean)
-        .map((trimmed) => ({
-          trimmed,
-          lower: trimmed.toLowerCase(),
-          cleanDigits: trimmed.replace(/[^0-9]/g, '').slice(-10),
-        }));
-      if (queries.length === 0) return null;
+    const res = await this.lookupRegisteredAccount(identifier);
+    return res.user;
+  },
 
-      const matchInList = (candidates: RegisteredUser[]): RegisteredUser | null => {
-        for (const u of candidates) {
-          const uPhone = (u.phone || '').replace(/[^0-9]/g, '').slice(-10);
-          const uEmail = (u.email || '').trim().toLowerCase();
-          for (const q of queries) {
-            if (u.id === q.trimmed) return u;
-            if (uEmail && uEmail === q.lower) return u;
-            if (q.cleanDigits.length >= 7 && uPhone === q.cleanDigits) return u;
-            if (u.name && u.name.trim().toLowerCase() === q.lower) return u;
-          }
+  /**
+   * Subscribe to ONLY the active user's registered_users document (1 doc instead of entire collection).
+   */
+  subscribeToUserRecord(
+    userId: string,
+    onData: (user: RegisteredUser | null, meta?: { fromCache: boolean }) => void
+  ): () => void {
+    if (!userId || userId === 'guest_user') return () => {};
+    return onSnapshot(
+      doc(db, 'registered_users', userId),
+      (docSnap) => {
+        if (!docSnap.exists()) {
+          onData(null, { fromCache: docSnap.metadata.fromCache });
+          return;
         }
-        return null;
-      };
-
-      const [mirrorUsers, firestoreSnap] = await Promise.all([
-        fetchServerCloudUsers(),
-        withFirestoreTimeout(getDocs(collection(db, 'registered_users')), 3000, 'findRegisteredUser').catch(
-          () => null
-        ),
-      ]);
-
-      const fromMirror = matchInList(mirrorUsers);
-      if (fromMirror) return fromMirror;
-      if (!firestoreSnap) return null;
-
-      let found: RegisteredUser | null = null;
-      const snapshot = firestoreSnap;
-
-      snapshot.forEach((docSnap) => {
-        if (found) return;
         const d = docSnap.data();
-        const docPhone = (d.phone || '').replace(/[^0-9]/g, '').slice(-10);
-        const docCleanPhone = (d.cleanPhone || docPhone).replace(/[^0-9]/g, '').slice(-10);
-        const docEmail = (d.email || '').trim().toLowerCase();
-        const docId = docSnap.id;
-
-        const mapDoc = (): RegisteredUser => ({
-          id: docId,
-          name: d.name || '',
-          email: d.email || '',
-          phone: d.phone || '',
-          passwordPlain: d.passwordPlain || '',
-          avatarUrl: d.avatarUrl || '',
-          registeredAt: d.registeredAt || '',
-          registeredTimestamp: d.registeredTimestamp || Date.now(),
-          filesCount: d.filesCount || 0,
-          storageUsedMB: d.storageUsedMB || 0,
-          isLifetimeApproved: Boolean(d.isLifetimeApproved),
-          paymentStatus: d.paymentStatus || 'none',
-          lastTrxId: d.lastTrxId || '',
-        });
-
-        for (const q of queries) {
-          if (docId === q.trimmed || d.id === q.trimmed) {
-            found = mapDoc();
-            return;
-          }
-          if (docEmail && docEmail === q.lower) {
-            found = mapDoc();
-            return;
-          }
-          if (q.cleanDigits.length >= 7 && (docCleanPhone === q.cleanDigits || docPhone === q.cleanDigits)) {
-            found = mapDoc();
-            return;
-          }
-          if (d.name && d.name.trim().toLowerCase() === q.lower) {
-            found = mapDoc();
-            return;
-          }
-        }
-      });
-
-      return found;
-    } catch (error) {
-      console.warn('findRegisteredUser cloud query error:', error);
-      return null;
-    }
+        onData(
+          {
+            id: docSnap.id,
+            name: d.name || '',
+            email: d.email || '',
+            phone: d.phone || '',
+            passwordPlain: d.passwordPlain || '',
+            avatarUrl: d.avatarUrl || '',
+            registeredAt: d.registeredAt || '',
+            registeredTimestamp: d.registeredTimestamp || Date.now(),
+            filesCount: d.filesCount || 0,
+            storageUsedMB: d.storageUsedMB || 0,
+            isLifetimeApproved: Boolean(d.isLifetimeApproved),
+            paymentStatus: d.paymentStatus || 'none',
+            lastTrxId: d.lastTrxId || '',
+          },
+          { fromCache: docSnap.metadata.fromCache }
+        );
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.GET, `registered_users/${userId}`);
+      }
+    );
   },
 
   /**
@@ -703,6 +850,24 @@ export const firestoreService = {
     );
   },
 
+  subscribeToUserPayments(
+    userId: string,
+    onData: (list: PaymentRequest[], meta?: { fromCache: boolean }) => void
+  ): () => void {
+    if (!userId || userId === 'guest_user') return () => {};
+    return onSnapshot(
+      query(collection(db, 'payment_requests'), where('userId', '==', userId)),
+      (snapshot) => {
+        const list: PaymentRequest[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push(docSnap.data() as PaymentRequest);
+        });
+        onData(list, { fromCache: snapshot.metadata.fromCache });
+      },
+      () => {}
+    );
+  },
+
   // ==========================================
   // 4. USER PROFILES & FILES
   // ==========================================
@@ -722,7 +887,7 @@ export const firestoreService = {
           },
           { merge: true }
         ),
-        4000,
+        6000,
         'saveUserProfile'
       );
     } catch (error) {
@@ -730,8 +895,8 @@ export const firestoreService = {
     }
   },
 
-  async saveFile(userId: string, file: CloudFile): Promise<void> {
-    if (!userId || userId === 'guest_user') return;
+  async saveFile(userId: string, file: CloudFile): Promise<boolean> {
+    if (!userId || userId === 'guest_user') return false;
     const path = `users/${userId}/files/${file.id}`;
     try {
       const safe = sanitizeFileForPersistence(file);
@@ -760,32 +925,30 @@ export const firestoreService = {
         })
       );
 
-      const mirrorOk = await fetch(`/api/cloud/files/${encodeURIComponent(userId)}`, {
+      const mirrorPromise = fetch(`/api/cloud/files/${encodeURIComponent(userId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(boundedPayload),
-      })
-        .then((r) => r.ok)
-        .catch(() => false);
+      }).catch(() => {});
 
-      const writeDoc = () =>
-        setDoc(doc(db, 'users', userId, 'files', safe.id), boundedPayload, { merge: true });
-
-      if (isFirestoreQuotaCooldownActive() && mirrorOk) {
-        void writeDoc().catch(() => {});
-        return;
+      if (isFirestoreQuotaCooldownActive()) {
+        await mirrorPromise;
+        return false;
       }
 
       await withFirestoreTimeout(
-        writeDoc(),
-        mirrorOk ? 1200 : 4000,
+        setDoc(doc(db, 'users', userId, 'files', safe.id), boundedPayload, { merge: true }),
+        10_000,
         'saveFile'
       );
+      void mirrorPromise;
+      return true;
     } catch (error) {
-      if (isFirestoreQuotaOrTransientError(error)) {
+      if (isFirestoreHardQuotaError(error)) {
         markFirestoreQuotaCooldown();
       }
       handleFirestoreError(error, OperationType.WRITE, path);
+      return false;
     }
   },
 
@@ -871,13 +1034,13 @@ export const firestoreService = {
                   data,
                 }
               ),
-              3000,
+              8000,
               `saveChunk_${index}`
             );
             return;
           } catch (err) {
             lastErr = err;
-            if (isFirestoreQuotaOrTransientError(err)) {
+            if (isFirestoreHardQuotaError(err)) {
               markFirestoreQuotaCooldown();
               throw err;
             }
@@ -887,7 +1050,7 @@ export const firestoreService = {
         throw lastErr;
       };
 
-      const batchSize = 6;
+      const batchSize = 8;
       let completed = 0;
       for (let start = 0; start < chunks.length; start += batchSize) {
         const batch = chunks.slice(start, start + batchSize);
@@ -909,7 +1072,7 @@ export const firestoreService = {
           },
           { merge: true }
         ),
-        4000,
+        8000,
         'markChunkSynced'
       );
       return chunks.length;
@@ -1255,33 +1418,62 @@ export const firestoreService = {
         ownerId: data.ownerId || fallbackOwner,
       });
 
-      for (const id of uniqueIds) {
-        const [firestoreRes, serverFiles] = await Promise.all([
-          withFirestoreTimeout(
-            getDocs(collection(db, 'users', id, 'files')),
-            4500,
-            'getUserFiles'
-          ).catch(() => null),
-          fetchServerCloudFiles(id),
-        ]);
+      const mergedById = new Map<string, CloudFile>();
+      await Promise.all(
+        uniqueIds.map(async (id) => {
+          const [firestoreRes, serverFiles] = await Promise.all([
+            withFirestoreTimeout(
+              getDocs(collection(db, 'users', id, 'files')),
+              7500,
+              'getUserFiles'
+            ).catch(() => null),
+            fetchServerCloudFiles(id),
+          ]);
 
-        const byId = new Map<string, CloudFile>();
-        if (firestoreRes && !firestoreRes.empty) {
-          firestoreRes.forEach((docSnap) => {
-            byId.set(docSnap.id, mapRawFile(docSnap.id, docSnap.data(), id));
-          });
-        }
-        for (const sf of serverFiles) {
-          if (sf && sf.id) {
-            const existing = byId.get(sf.id);
-            byId.set(sf.id, existing ? { ...sf, ...existing, cloudSynced: Boolean(existing.cloudSynced || sf.cloudSynced) } : sf);
+          if (firestoreRes && !firestoreRes.empty) {
+            firestoreRes.forEach((docSnap) => {
+              const mapped = mapRawFile(docSnap.id, docSnap.data(), id);
+              const existing = mergedById.get(docSnap.id);
+              mergedById.set(
+                docSnap.id,
+                existing
+                  ? {
+                      ...existing,
+                      ...mapped,
+                      cloudSynced: Boolean(existing.cloudSynced || mapped.cloudSynced),
+                      cloudChunkCount: Math.max(
+                        existing.cloudChunkCount || 0,
+                        mapped.cloudChunkCount || 0
+                      ) || undefined,
+                    }
+                  : mapped
+              );
+            });
           }
-        }
-        if (byId.size > 0) {
-          return Array.from(byId.values());
-        }
-      }
-      return [];
+
+          for (const sf of serverFiles) {
+            if (sf && sf.id) {
+              const existing = mergedById.get(sf.id);
+              mergedById.set(
+                sf.id,
+                existing
+                  ? {
+                      ...sf,
+                      ...existing,
+                      cloudSynced: Boolean(existing.cloudSynced || sf.cloudSynced),
+                      cloudChunkCount: Math.max(
+                        existing.cloudChunkCount || 0,
+                        sf.cloudChunkCount || 0
+                      ) || undefined,
+                    }
+                  : { ...sf, ownerId: sf.ownerId || id }
+              );
+            }
+          }
+        })
+      );
+
+      return Array.from(mergedById.values());
     } catch {
       return [];
     }
@@ -1292,7 +1484,15 @@ export const firestoreService = {
     onData: (files: CloudFile[], meta?: { fromCache: boolean }) => void
   ): () => void {
     const path = `users/${userId}/files`;
-    return onSnapshot(
+    let unsubscribed = false;
+
+    void fetchServerCloudFiles(userId).then((mirrorFiles) => {
+      if (!unsubscribed && mirrorFiles.length > 0) {
+        onData(mirrorFiles, { fromCache: true });
+      }
+    });
+
+    const unsubSnapshot = onSnapshot(
       collection(db, 'users', userId, 'files'),
       (snapshot) => {
         const files: CloudFile[] = [];
@@ -1324,8 +1524,18 @@ export const firestoreService = {
       },
       (error) => {
         handleFirestoreError(error, OperationType.GET, path);
+        void fetchServerCloudFiles(userId).then((mirrorFiles) => {
+          if (!unsubscribed && mirrorFiles.length > 0) {
+            onData(mirrorFiles, { fromCache: true });
+          }
+        });
       }
     );
+
+    return () => {
+      unsubscribed = true;
+      unsubSnapshot();
+    };
   },
 
   // ==========================================

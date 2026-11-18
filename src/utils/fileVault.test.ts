@@ -227,3 +227,36 @@ test('sanitizeFileForPersistence and mergeCloudAndLocalFiles preserve verified c
   assert.equal(merged[0].cloudChunkCount, 8);
   assert.equal(merged[0].url, 'blob:http://localhost:3000/v2');
 });
+
+test('mergeCloudAndLocalFiles prunes previously synced files deleted on another website while keeping unsynced local uploads', () => {
+  const syncedDeletedRemotely: CloudFile = {
+    id: 'remote-deleted-1',
+    name: 'old-synced.mp4',
+    type: 'video',
+    sizeBytes: 2_000_000,
+    formattedSize: '1.9 MB',
+    date: 'Today',
+    isFavorite: false,
+    ownerId: 'acct_user1',
+    cloudSynced: true,
+  };
+  const unsyncedLocal: CloudFile = {
+    id: 'local-pending-1',
+    name: 'new-local.jpg',
+    type: 'image',
+    sizeBytes: 500_000,
+    formattedSize: '488 KB',
+    date: 'Today',
+    isFavorite: false,
+    ownerId: 'acct_user1',
+    cloudSynced: false,
+  };
+
+  const merged = mergeCloudAndLocalFiles([], [syncedDeletedRemotely, unsyncedLocal], undefined, {
+    pruneSyncedMissingFromCloud: true,
+    activeOwnerId: 'acct_user1',
+  });
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].id, 'local-pending-1');
+});
+

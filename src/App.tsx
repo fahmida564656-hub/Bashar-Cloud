@@ -71,7 +71,14 @@ import {
   removeDeletedFileIds,
   clearDeletedFileIds,
 } from './utils/fileVault';
-import { filterOutUserPayments } from './utils/accountManagement';
+import {
+  buildDeterministicAccountId,
+  collectCandidateOwnerIds,
+  filterOutUserPayments,
+  findMatchingUserRecords,
+  mergeRegisteredUserRecords,
+} from './utils/accountManagement';
+import { isFirestoreQuotaCooldownActive } from './firebase/errorHandler';
 import { formatBytes } from './utils/uploadFlow';
 import {
   shouldChunkFileToCloud,
@@ -247,6 +254,11 @@ export default function App() {
 
   // Cloud Synchronization state
   const [cloudSyncEnabled, setCloudSyncEnabled] = useState<boolean>(true);
+  const [hasRemoteUsers, setHasRemoteUsers] = useState<boolean>(false);
+  const [extraOwnerIds, setExtraOwnerIds] = useState<string[]>([]);
+  const lastSyncedMetaRef = useRef<{ uid: string; filesCount: number; usedMB: number } | null>(null);
+  const syncedAccountOnSessionRef = useRef<Set<string>>(new Set());
+  const confirmedServerAccountRef = useRef<Set<string>>(new Set());
   const [lastSyncTime, setLastSyncTime] = useState<string | null>(
     savedState.lastSync
       ? new Date(savedState.lastSync).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
@@ -293,36 +305,30 @@ export default function App() {
   // Helper to clean phone numbers
   const cleanPhone = (p?: string) => (p || '').replace(/[^0-9]/g, '').slice(-10);
 
-  // Find active registered user record for subscription computation & cross-site file sync
-  const currentUserRecord = registeredUsers.find(
-    (u) =>
-      (user.email && u.email.toLowerCase() === user.email.toLowerCase()) ||
-      (user.phone && cleanPhone(u.phone) === cleanPhone(user.phone))
-  );
+  // Find active registered user records (consolidated across websites) & deterministic canonical ID
+  const matchedUserRecords = findMatchingUserRecords(registeredUsers, {
+    email: user.email,
+    phone: user.phone,
+  });
+  const currentUserRecord =
+    matchedUserRecords.length > 0
+      ? matchedUserRecords.reduce((acc, rec) => mergeRegisteredUserRecords(acc, rec))
+      : undefined;
 
   const canonicalUserId =
     currentUserRecord?.id ||
-    (user.email ? user.email.toLowerCase().replace(/[^a-z0-9]/g, '_') : '') ||
-    (cleanPhone(user.phone) ? `phone_${cleanPhone(user.phone)}` : '') ||
-    'guest_user';
+    (user.email || cleanPhone(user.phone)
+      ? buildDeterministicAccountId(user.email, user.phone)
+      : 'guest_user');
 
-  const getCandidateOwnerIds = (overrideUid?: string): string[] => {
-    const emailSanitized = user.email ? user.email.toLowerCase().replace(/[^a-z0-9]/g, '_') : '';
-    const phoneSuffix = cleanPhone(user.phone);
-    const phonePrefixed = phoneSuffix ? `phone_${phoneSuffix}` : '';
-    const rawList = [
-      overrideUid,
+  const getCandidateOwnerIds = (overrideUid?: string): string[] =>
+    collectCandidateOwnerIds({
       canonicalUserId,
-      currentUserRecord?.id,
-      emailSanitized,
-      user.email?.trim().toLowerCase(),
-      phonePrefixed,
-      phoneSuffix,
-    ];
-    return Array.from(
-      new Set(rawList.filter((id): id is string => Boolean(id && id !== 'guest_user')))
-    );
-  };
+      matchedRecords: matchedUserRecords,
+      email: user.email,
+      phone: user.phone,
+      extraIds: overrideUid ? [...extraOwnerIds, overrideUid] : extraOwnerIds,
+    });
 
   const patchResolvedFileUrl = (fileId: string, resolvedUrl: string) => {
     setFiles((prev) =>
@@ -479,49 +485,33 @@ export default function App() {
     };
 
     if (!shouldChunkFileToCloud(baseFile.sizeBytes)) {
-      const syncedInline: CloudFile = {
-        ...baseFile,
-        cloudSynced: baseFile.sizeBytes <= INLINE_CLOUD_FILE_THRESHOLD_BYTES || Boolean(baseFile.content),
-      };
-      await firestoreService.saveFile(canonicalUserId, syncedInline).catch(() => {});
+      const canInline = baseFile.sizeBytes <= INLINE_CLOUD_FILE_THRESHOLD_BYTES || Boolean(baseFile.content);
+      const savedOk = await firestoreService
+        .saveFile(canonicalUserId, { ...baseFile, cloudSynced: canInline })
+        .catch(() => false);
       onProgress?.(100);
-      return syncedInline;
+      return {
+        ...baseFile,
+        cloudSynced: Boolean(canInline && savedOk),
+      };
     }
 
     chunkUploadingIdsRef.current.add(baseFile.id);
     try {
-      const metadataPromise = firestoreService.saveFile(canonicalUserId, baseFile).catch(() => {});
       const blob = await getFileBlob(baseFile.id);
       if (blob && blob.size > 0) {
-        onProgress?.(20);
-        const serverSaved = await firestoreService.uploadMediaBlobToServer(
-          canonicalUserId,
-          baseFile.id,
-          blob,
-          baseFile.mimeType || blob.type,
-          baseFile.name
-        );
-
-        if (serverSaved) {
-          onProgress?.(85);
-          const syncedFile: CloudFile = {
-            ...baseFile,
-            cloudSynced: true,
-          };
-          await metadataPromise;
-          await firestoreService.saveFile(canonicalUserId, syncedFile).catch(() => {});
-          onProgress?.(100);
-          // Populate Firestore chunk backup asynchronously without blocking upload progress UI
-          void firestoreService.saveFileChunks(
+        onProgress?.(15);
+        await firestoreService
+          .uploadMediaBlobToServer(
             canonicalUserId,
             baseFile.id,
             blob,
             baseFile.mimeType || blob.type,
             baseFile.name
-          ).catch(() => {});
-          return syncedFile;
-        }
+          )
+          .catch(() => false);
 
+        onProgress?.(25);
         const uploadedCount = await firestoreService.saveFileChunks(
           canonicalUserId,
           baseFile.id,
@@ -530,52 +520,58 @@ export default function App() {
           baseFile.name,
           (done, total) => {
             if (total > 0) {
-              const pct = Math.min(100, Math.round(20 + (done / total) * 80));
+              const pct = Math.min(95, Math.round(25 + (done / total) * 70));
               onProgress?.(pct);
             }
           }
         );
 
-        await metadataPromise;
-        if (uploadedCount > 0) {
-          const syncedFile: CloudFile = {
-            ...baseFile,
-            cloudChunkCount: uploadedCount,
-            cloudSynced: true,
-          };
-          await firestoreService.saveFile(canonicalUserId, syncedFile).catch(() => {});
-          onProgress?.(100);
-          return syncedFile;
-        }
+        const syncedFile: CloudFile = {
+          ...baseFile,
+          ...(uploadedCount > 0 ? { cloudChunkCount: uploadedCount } : {}),
+          cloudSynced: uploadedCount > 0,
+        };
+        const metaSaved = await firestoreService
+          .saveFile(canonicalUserId, syncedFile)
+          .catch(() => false);
+        onProgress?.(100);
+        return {
+          ...syncedFile,
+          cloudSynced: Boolean(uploadedCount > 0 && metaSaved),
+        };
       }
-      await metadataPromise;
+      await firestoreService.saveFile(canonicalUserId, { ...baseFile, cloudSynced: false }).catch(() => false);
     } catch (err) {
       console.warn('Direct chunk upload warning:', err);
     } finally {
       chunkUploadingIdsRef.current.delete(baseFile.id);
     }
 
-    return baseFile;
+    return { ...baseFile, cloudSynced: false };
   };
 
   const syncFileChunksInBackground = async (targetUid: string, targetFiles: CloudFile[]) => {
     if (!targetUid || targetUid === 'guest_user' || !targetFiles.length) return;
+    if (isFirestoreQuotaCooldownActive()) return;
 
     for (const f of targetFiles) {
       if (!f || f.type === 'folder' || chunkUploadingIdsRef.current.has(f.id)) continue;
       if (!needsCloudChunkUpload(f)) continue;
+      if (isFirestoreQuotaCooldownActive()) break;
 
       chunkUploadingIdsRef.current.add(f.id);
       try {
         const blob = await getFileBlob(f.id);
         if (blob && blob.size > 0) {
-          const serverSaved = await firestoreService.uploadMediaBlobToServer(
-            targetUid,
-            f.id,
-            blob,
-            f.mimeType || blob.type,
-            f.name
-          );
+          await firestoreService
+            .uploadMediaBlobToServer(
+              targetUid,
+              f.id,
+              blob,
+              f.mimeType || blob.type,
+              f.name
+            )
+            .catch(() => false);
           const uploadedCount = await firestoreService.saveFileChunks(
             targetUid,
             f.id,
@@ -583,15 +579,15 @@ export default function App() {
             f.mimeType || blob.type,
             f.name
           );
-          if (serverSaved || uploadedCount > 0) {
+          if (uploadedCount > 0) {
             const resolvedMime = inferMediaMimeType(f.name, f.mimeType || blob.type);
             const repaired: CloudFile = {
               ...f,
-              ...(uploadedCount > 0 ? { cloudChunkCount: uploadedCount } : {}),
+              cloudChunkCount: uploadedCount,
               cloudSynced: true,
               mimeType: resolvedMime,
             };
-            await firestoreService.saveFile(targetUid, repaired).catch(() => {});
+            await firestoreService.saveFile(targetUid, repaired).catch(() => false);
             setFiles((prev) =>
               prev.map((item) =>
                 item.id === f.id ? repaired : item
@@ -614,7 +610,7 @@ export default function App() {
               cloudChunkCount: check.totalChunks,
               cloudSynced: true,
             };
-            await firestoreService.saveFile(targetUid, repaired).catch(() => {});
+            await firestoreService.saveFile(targetUid, repaired).catch(() => false);
             setFiles((prev) =>
               prev.map((item) =>
                 item.id === f.id
@@ -633,14 +629,11 @@ export default function App() {
   };
 
   const hydrateMissingCloudMedia = async (targetFiles: CloudFile[], overrideUid?: string) => {
-    const PREHYDRATE_MAX_BYTES = 8 * 1024 * 1024;
+    const PREHYDRATE_IMAGE_MAX_BYTES = 1.5 * 1024 * 1024;
     const queue = targetFiles.filter((f) => {
-      if (f.type === 'folder') return false;
-      const isMedia = f.type === 'video' || f.type === 'audio' || f.type === 'image';
-      if (!isMedia) return false;
-      const needsResolution = !f.url;
-      if (!needsResolution) return false;
-      if (f.sizeBytes > PREHYDRATE_MAX_BYTES) return false;
+      if (f.type !== 'image') return false;
+      if (f.url) return false;
+      if (f.sizeBytes > PREHYDRATE_IMAGE_MAX_BYTES) return false;
       return (
         (f.cloudChunkCount && f.cloudChunkCount > 0) ||
         (f.sizeBytes > 0 && f.sizeBytes <= MAX_CLOUD_CHUNK_FILE_BYTES)
@@ -727,24 +720,38 @@ export default function App() {
     };
   }, [user.avatarUrl, canonicalUserId]);
 
-  // Real-time synchronization of files & recycle bin for active user across websites
+  // Real-time scoped synchronization of active user account, payments, files & recycle bin across websites
   useEffect(() => {
     if (!canonicalUserId || canonicalUserId === 'guest_user') return;
     let active = true;
 
-    firestoreService.getUserFiles(canonicalUserId).then(async (fetchedFiles) => {
-      if (!active || !fetchedFiles || fetchedFiles.length === 0) return;
-      const deletedIds = loadDeletedFileIds(canonicalUserId);
-      const merged = mergeCloudAndLocalFiles(fetchedFiles, filesRef.current, deletedIds);
-      const hydrated = await hydrateCloudFiles(merged);
-      if (!active) return;
-      setFiles(hydrated);
-      const nextStorage = computeStorageBreakdown(hydrated, siteSettings.totalStorageGB || 1000);
-      setStorage(nextStorage);
-      storageProviderMock.saveMetadataState(hydrated, user, nextStorage, recycleBinRef.current, canonicalUserId);
-      void hydrateMissingCloudMedia(hydrated, canonicalUserId);
-    });
+    // 1. Ensure current account is published to Firestore once per session (bridges legacy local accounts)
+    if (currentUserRecord && !syncedAccountOnSessionRef.current.has(canonicalUserId)) {
+      syncedAccountOnSessionRef.current.add(canonicalUserId);
+      firestoreService.saveRegisteredUser(currentUserRecord).catch(() => {});
+    }
 
+    // 2. One-time merge of any legacy / secondary owner IDs without duplicating primary canonicalUserId read
+    const secondaryIds = getCandidateOwnerIds().filter((id) => id !== canonicalUserId);
+    if (secondaryIds.length > 0) {
+      firestoreService
+        .getUserFiles(secondaryIds[0], secondaryIds.slice(1))
+        .then(async (legacyFiles) => {
+          if (!active || !legacyFiles || legacyFiles.length === 0) return;
+          const deletedIds = loadDeletedFileIds(canonicalUserId);
+          const merged = mergeCloudAndLocalFiles(legacyFiles, filesRef.current, deletedIds);
+          const hydrated = await hydrateCloudFiles(merged);
+          if (!active) return;
+          setFiles(hydrated);
+          const nextStorage = computeStorageBreakdown(hydrated, siteSettings.totalStorageGB || 1000);
+          setStorage(nextStorage);
+          storageProviderMock.saveMetadataState(hydrated, user, nextStorage, recycleBinRef.current, canonicalUserId);
+          void hydrateMissingCloudMedia(hydrated, canonicalUserId);
+        })
+        .catch(() => {});
+    }
+
+    // 3. Load recycle bin once for active user
     firestoreService.getUserDeletedFiles(canonicalUserId).then(async (cloudBin) => {
       if (!active) return;
       if (cloudBin && cloudBin.length > 0) {
@@ -756,10 +763,76 @@ export default function App() {
       }
     });
 
-    const unsub = firestoreService.subscribeToFiles(canonicalUserId, async (cloudFiles) => {
+    // 4. Scoped 1-doc listener for active user's account record & lifetime status
+    const unsubUserDoc = firestoreService.subscribeToUserRecord(canonicalUserId, (cloudUser, meta) => {
+      if (!active) return;
+      if (cloudUser) {
+        confirmedServerAccountRef.current.add(canonicalUserId);
+        setRegisteredUsers((prev) => {
+          const idx = prev.findIndex((u) => u.id === cloudUser.id);
+          const mergedRec = idx >= 0 ? mergeRegisteredUserRecords(cloudUser, prev[idx]) : cloudUser;
+          const next = idx >= 0 ? prev.map((u, i) => (i === idx ? mergedRec : u)) : [mergedRec, ...prev];
+          try {
+            localStorage.setItem('bashar_cloud_registered_users', JSON.stringify(next));
+          } catch {}
+          return next;
+        });
+      } else if (
+        meta &&
+        !meta.fromCache &&
+        confirmedServerAccountRef.current.has(canonicalUserId) &&
+        !sessionAuthenticatedRef.current &&
+        hasExistingUser &&
+        !isFirestoreQuotaCooldownActive()
+      ) {
+        storageProviderMock.saveMetadataState([], initialUserProfile, initialStorageUsage, []);
+        clearAiThreadsFromStorage(canonicalUserId);
+        setUser(initialUserProfile);
+        setFiles([]);
+        setRecycleBin([]);
+        setStorage(initialStorageUsage);
+        const resetChat = createAiThread();
+        setAiThreads([resetChat]);
+        setActiveAiThreadId(resetChat.id);
+        setScreen('welcome-email');
+        clearAllFileBlobs().catch(() => {});
+      }
+    });
+
+    // 5. Scoped user payment listener (only reads active user's payment requests)
+    const unsubUserPayments = firestoreService.subscribeToUserPayments(
+      canonicalUserId,
+      (userPayments, meta) => {
+        if (!active) return;
+        if (!meta?.fromCache || userPayments.length > 0) {
+          setPaymentRequests((prev) => {
+            const byId = new Map<string, PaymentRequest>();
+            prev.forEach((p) => {
+              if (p.userId !== canonicalUserId) {
+                byId.set(p.id, p);
+              }
+            });
+            userPayments.forEach((p) => {
+              byId.set(p.id, p);
+            });
+            const next = Array.from(byId.values());
+            try {
+              localStorage.setItem('bashar_cloud_payment_requests', JSON.stringify(next));
+            } catch {}
+            return next;
+          });
+        }
+      }
+    );
+
+    // 6. Live files collection listener (single source for active user's files)
+    const unsubFiles = firestoreService.subscribeToFiles(canonicalUserId, async (cloudFiles, meta) => {
       if (!active) return;
       const deletedIds = loadDeletedFileIds(canonicalUserId);
-      const merged = mergeCloudAndLocalFiles(cloudFiles, filesRef.current, deletedIds);
+      const merged = mergeCloudAndLocalFiles(cloudFiles, filesRef.current, deletedIds, {
+        pruneSyncedMissingFromCloud: Boolean(meta && !meta.fromCache),
+        activeOwnerId: canonicalUserId,
+      });
       const hydrated = await hydrateCloudFiles(merged);
       if (!active) return;
 
@@ -773,6 +846,7 @@ export default function App() {
       const filesToSyncChunks: CloudFile[] = [];
       hydrated.forEach((f) => {
         if (deletedIds.has(f.id)) return;
+        if (f.ownerId && f.ownerId !== canonicalUserId) return;
         if (!cloudIdSet.has(f.id) && !f.cloudSynced) {
           firestoreService.saveFile(canonicalUserId, f).catch(() => {});
           filesToSyncChunks.push(f);
@@ -788,9 +862,11 @@ export default function App() {
 
     return () => {
       active = false;
-      unsub();
+      unsubUserDoc();
+      unsubUserPayments();
+      unsubFiles();
     };
-  }, [canonicalUserId]);
+  }, [canonicalUserId, extraOwnerIds.join('|')]);
 
   // Load & synchronize Bashar Cloud AI threads per user across localStorage & Firestore
   useEffect(() => {
@@ -975,7 +1051,7 @@ export default function App() {
     return () => clearInterval(interval);
   }, [cloudSyncEnabled, screen, user, storage, canonicalUserId]);
 
-  // Verify Firebase Firestore & establish real-time cross-website data synchronization
+  // Verify Firebase Firestore & establish lightweight global listeners (full user/payment collections load ONLY in Admin Panel)
   useEffect(() => {
     testFirestoreConnection().then((connected) => {
       if (connected) {
@@ -983,7 +1059,6 @@ export default function App() {
       }
     });
 
-    // 1. Synchronize Registered Users across all websites/domains in real-time (single listener + mirror fallback)
     const dedupeUserList = (list: RegisteredUser[]): RegisteredUser[] => {
       const seen = new Set<string>();
       const res: RegisteredUser[] = [];
@@ -997,45 +1072,18 @@ export default function App() {
 
     firestoreService.getMirrorUsers().then((mirrorUsers) => {
       if (mirrorUsers.length > 0) {
+        setHasRemoteUsers(true);
         setRegisteredUsers((prev) => dedupeUserList([...mirrorUsers, ...prev]));
       }
     });
 
-    const unsubscribeUsers = firestoreService.subscribeToRegisteredUsers((users, meta) => {
-      const safeUsers = dedupeUserList(users || []);
-      setRegisteredUsers((prev) => {
-        const merged = safeUsers.length > 0 ? safeUsers : prev;
-        try {
-          localStorage.setItem('bashar_cloud_registered_users', JSON.stringify(merged));
-        } catch {}
-        return merged;
-      });
-
-      if (meta && !meta.fromCache && !sessionAuthenticatedRef.current && hasExistingUser && safeUsers.length > 0) {
-        const cachedEmail = (savedState.user?.email || '').trim().toLowerCase();
-        const cachedPhone = cleanPhone(savedState.user?.phone);
-        const stillExistsOnServer = safeUsers.some(
-          (u) =>
-            (cachedEmail && u.email.toLowerCase() === cachedEmail) ||
-            (cachedPhone && cleanPhone(u.phone) === cachedPhone)
-        );
-        if (!stillExistsOnServer) {
-          storageProviderMock.saveMetadataState([], initialUserProfile, initialStorageUsage, []);
-          clearAiThreadsFromStorage(canonicalUserId);
-          setUser(initialUserProfile);
-          setFiles([]);
-          setRecycleBin([]);
-          setStorage(initialStorageUsage);
-          const resetChat = createAiThread();
-          setAiThreads([resetChat]);
-          setActiveAiThreadId(resetChat.id);
-          setScreen('welcome-email');
-          clearAllFileBlobs().catch(() => {});
-        }
+    firestoreService.hasAnyRegisteredUsers().then((exists) => {
+      if (exists) {
+        setHasRemoteUsers(true);
       }
     });
 
-    // 2. Synchronize Site Settings (single listener)
+    // Synchronize Site Settings (1 global doc)
     const unsubscribeSettings = firestoreService.subscribeToSiteSettings((cloudSettings) => {
       if (cloudSettings) {
         setSiteSettings((prev) => ({
@@ -1048,19 +1096,7 @@ export default function App() {
       }
     });
 
-    // 3. Synchronize Payment Requests (single listener)
-    const unsubscribePayments = firestoreService.subscribeToPaymentRequests(
-      (cloudPayments, meta) => {
-        if (!meta?.fromCache || cloudPayments.length > 0) {
-          setPaymentRequests(cloudPayments);
-          try {
-            localStorage.setItem('bashar_cloud_payment_requests', JSON.stringify(cloudPayments));
-          } catch {}
-        }
-      }
-    );
-
-    // 4. Synchronize Admin Advertisements / Announcements (single listener)
+    // Synchronize Admin Advertisements / Announcements
     const unsubscribeAnnouncements = firestoreService.subscribeToAnnouncements(
       (cloudAds, meta) => {
         if (!meta?.fromCache || cloudAds.length > 0) {
@@ -1082,15 +1118,56 @@ export default function App() {
     });
 
     return () => {
-      unsubscribeUsers();
       unsubscribeSettings();
-      unsubscribePayments();
       unsubscribeAnnouncements();
       unsubscribeAuth();
     };
   }, []);
 
-  // Recalculate storage breakdown & persist across localStorage + scoped user vault + Firestore
+  // Load full registered_users & payment_requests listeners ONLY while Admin Panel is open
+  useEffect(() => {
+    if (screen !== 'admin-panel') return;
+
+    const dedupeUserList = (list: RegisteredUser[]): RegisteredUser[] => {
+      const seen = new Set<string>();
+      const res: RegisteredUser[] = [];
+      for (const u of list) {
+        if (!u || !u.id || seen.has(u.id)) continue;
+        seen.add(u.id);
+        res.push(u);
+      }
+      return res;
+    };
+
+    const unsubUsers = firestoreService.subscribeToRegisteredUsers((users, meta) => {
+      if (!meta?.fromCache) {
+        const safeUsers = dedupeUserList(users || []);
+        setRegisteredUsers(safeUsers);
+        try {
+          localStorage.setItem('bashar_cloud_registered_users', JSON.stringify(safeUsers));
+        } catch {}
+      } else if (users && users.length > 0) {
+        const safeUsers = dedupeUserList(users);
+        setRegisteredUsers((prev) => (prev.length > 0 ? prev : safeUsers));
+      }
+    });
+
+    const unsubPayments = firestoreService.subscribeToPaymentRequests((cloudPayments, meta) => {
+      if (!meta?.fromCache || cloudPayments.length > 0) {
+        setPaymentRequests(cloudPayments);
+        try {
+          localStorage.setItem('bashar_cloud_payment_requests', JSON.stringify(cloudPayments));
+        } catch {}
+      }
+    });
+
+    return () => {
+      unsubUsers();
+      unsubPayments();
+    };
+  }, [screen]);
+
+  // Recalculate storage breakdown & persist locally + sync usage to Firestore only when counts/size change
   const persistVaultState = (
     updatedFiles: CloudFile[],
     updatedBin: CloudFile[] = recycleBinRef.current,
@@ -1104,27 +1181,42 @@ export default function App() {
     setStorage(newStorage);
     storageProviderMock.saveMetadataState(updatedFiles, user, newStorage, updatedBin, targetUid);
 
-    setRegisteredUsers((prev) =>
-      prev.map((u) => {
-        if (
-          u.id === targetUid ||
-          (user.email && u.email.toLowerCase() === user.email.toLowerCase()) ||
-          (user.phone && cleanPhone(u.phone) === cleanPhone(user.phone))
-        ) {
-          const updatedRecord = {
-            ...u,
-            filesCount: updatedFiles.length,
-            storageUsedMB: usedMB,
-          };
-          firestoreService.saveRegisteredUser(updatedRecord).catch(() => {});
-          return updatedRecord;
-        }
-        return u;
-      })
-    );
+    const metaChanged =
+      !lastSyncedMetaRef.current ||
+      lastSyncedMetaRef.current.uid !== targetUid ||
+      lastSyncedMetaRef.current.filesCount !== updatedFiles.length ||
+      lastSyncedMetaRef.current.usedMB !== usedMB;
 
-    if (cloudSyncEnabled && targetUid && targetUid !== 'guest_user') {
-      firestoreService.saveStorageUsage(targetUid, newStorage).catch(() => {});
+    if (metaChanged) {
+      lastSyncedMetaRef.current = {
+        uid: targetUid,
+        filesCount: updatedFiles.length,
+        usedMB,
+      };
+      setRegisteredUsers((prev) =>
+        prev.map((u) => {
+          if (
+            u.id === targetUid ||
+            (user.email && u.email.toLowerCase() === user.email.toLowerCase()) ||
+            (user.phone && cleanPhone(u.phone) === cleanPhone(user.phone))
+          ) {
+            const updatedRecord = {
+              ...u,
+              filesCount: updatedFiles.length,
+              storageUsedMB: usedMB,
+            };
+            if (cloudSyncEnabled && targetUid && targetUid !== 'guest_user') {
+              firestoreService.saveRegisteredUser(updatedRecord).catch(() => {});
+            }
+            return updatedRecord;
+          }
+          return u;
+        })
+      );
+
+      if (cloudSyncEnabled && targetUid && targetUid !== 'guest_user') {
+        firestoreService.saveStorageUsage(targetUid, newStorage).catch(() => {});
+      }
     }
   };
 
@@ -1187,15 +1279,26 @@ export default function App() {
       persistVaultState(updated);
 
       if (canonicalUserId && canonicalUserId !== 'guest_user') {
-        void Promise.all(
-          finalizedFiles.map((f) =>
-            firestoreService.saveFile(canonicalUserId, f).catch(() => {})
-          )
-        );
-        void syncFileChunksInBackground(canonicalUserId, finalizedFiles);
+        const pendingMetadata = finalizedFiles.filter((f) => !f.cloudSynced);
+        if (pendingMetadata.length > 0) {
+          void Promise.all(
+            pendingMetadata.map((f) =>
+              firestoreService.saveFile(canonicalUserId, f).catch(() => {})
+            )
+          );
+        }
+        const pendingChunks = finalizedFiles.filter((f) => needsCloudChunkUpload(f));
+        if (pendingChunks.length > 0) {
+          void syncFileChunksInBackground(canonicalUserId, pendingChunks);
+        }
       }
 
-      setSyncToast(`সফলভাবে ${finalizedFiles.length}টি ফাইল দ্রুত সেভ হয়েছে!`);
+      const syncedCount = finalizedFiles.filter((f) => f.cloudSynced).length;
+      setSyncToast(
+        syncedCount === finalizedFiles.length
+          ? `সফলভাবে ${finalizedFiles.length}টি ফাইল ক্লাউডে সংরক্ষিত হয়েছে!`
+          : `${finalizedFiles.length}টি ফাইল সেভ হয়েছে (ক্লাউড সিঙ্ক চলছে)`
+      );
       setTimeout(() => setSyncToast(null), 3000);
     }
 
@@ -1901,18 +2004,25 @@ export default function App() {
     isNewSignup = false
   ) => {
     sessionAuthenticatedRef.current = true;
-    const existingIndex = registeredUsers.findIndex(
-      (u) =>
-        (cloudRecord && u.id === cloudRecord.id) ||
-        (authenticatedUser.email && u.email.toLowerCase() === authenticatedUser.email.toLowerCase()) ||
-        (authenticatedUser.phone && cleanPhone(u.phone) === cleanPhone(authenticatedUser.phone))
-    );
+    const localMatches = findMatchingUserRecords(registeredUsers, {
+      id: cloudRecord?.id,
+      email: authenticatedUser.email,
+      phone: authenticatedUser.phone,
+    });
+    const prevUser =
+      localMatches.length > 0
+        ? localMatches.reduce((acc, rec) => mergeRegisteredUserRecords(acc, rec))
+        : cloudRecord;
+    const unifiedSource =
+      prevUser && cloudRecord
+        ? mergeRegisteredUserRecords(cloudRecord, prevUser)
+        : prevUser || cloudRecord;
 
-    const prevUser = existingIndex >= 0 ? registeredUsers[existingIndex] : cloudRecord;
-    const resolvedId = prevUser?.id || cloudRecord?.id || `user-${Date.now()}`;
+    const resolvedId =
+      unifiedSource?.id ||
+      buildDeterministicAccountId(authenticatedUser.email, authenticatedUser.phone);
     const resolvedTimestamp =
-      prevUser?.registeredTimestamp ||
-      cloudRecord?.registeredTimestamp ||
+      unifiedSource?.registeredTimestamp ||
       loadTrialStartTimestamp(resolvedId) ||
       Date.now();
     const persistedTs = saveTrialStartTimestamp(resolvedId, resolvedTimestamp);
@@ -1926,34 +2036,43 @@ export default function App() {
     const userRecord: RegisteredUser = {
       id: resolvedId,
       name: authenticatedUser.name || (authenticatedUser.email ? authenticatedUser.email.split('@')[0] : 'User'),
-      email: authenticatedUser.email,
+      email: authenticatedUser.email.trim().toLowerCase(),
       phone: authenticatedUser.phone,
-      passwordPlain: passwordPlain || prevUser?.passwordPlain || cloudRecord?.passwordPlain || '••••••••',
-      avatarUrl: authenticatedUser.avatarUrl || prevUser?.avatarUrl || cloudRecord?.avatarUrl,
+      passwordPlain: passwordPlain || unifiedSource?.passwordPlain || '••••••••',
+      avatarUrl: authenticatedUser.avatarUrl || unifiedSource?.avatarUrl,
       registeredAt:
-        prevUser?.registeredAt ||
-        cloudRecord?.registeredAt ||
+        unifiedSource?.registeredAt ||
         new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
       registeredTimestamp: persistedTs,
-      filesCount: isNewSignup ? 0 : prevUser?.filesCount || (existingIndex >= 0 ? filesRef.current.length : 0),
-      storageUsedMB: isNewSignup ? 0 : prevUser?.storageUsedMB || (existingIndex >= 0 ? Math.round(storage.usedGB * 1024) : 0),
-      isLifetimeApproved: prevUser?.isLifetimeApproved ?? cloudRecord?.isLifetimeApproved ?? false,
-      paymentStatus: prevUser?.paymentStatus || cloudRecord?.paymentStatus || 'none',
-      lastTrxId: prevUser?.lastTrxId || cloudRecord?.lastTrxId || '',
+      filesCount: isNewSignup ? 0 : unifiedSource?.filesCount || (localMatches.length > 0 ? filesRef.current.length : 0),
+      storageUsedMB: isNewSignup ? 0 : unifiedSource?.storageUsedMB || (localMatches.length > 0 ? Math.round(storage.usedGB * 1024) : 0),
+      isLifetimeApproved: unifiedSource?.isLifetimeApproved ?? false,
+      paymentStatus: unifiedSource?.paymentStatus || 'none',
+      lastTrxId: unifiedSource?.lastTrxId || '',
     };
 
-    // Save to Firestore so user is available across all websites instantly
-    await firestoreService.saveRegisteredUser(userRecord).catch(() => {});
+    const candidateIds = collectCandidateOwnerIds({
+      canonicalUserId: resolvedId,
+      matchedRecords: localMatches,
+      email: userRecord.email,
+      phone: userRecord.phone,
+      extraIds: extraOwnerIds,
+    });
+    setExtraOwnerIds(candidateIds);
+    syncedAccountOnSessionRef.current.add(resolvedId);
 
-    if (existingIndex >= 0) {
-      setRegisteredUsers((prev) => prev.map((u, i) => (i === existingIndex ? userRecord : u)));
+    // Save to Firestore so user is available across all websites instantly
+    if (isNewSignup || !cloudRecord) {
+      await firestoreService.saveRegisteredUser(userRecord).catch(() => {});
     } else {
-      setRegisteredUsers((prev) =>
-        prev.some((u) => u.id === userRecord.id)
-          ? prev.map((u) => (u.id === userRecord.id ? userRecord : u))
-          : [userRecord, ...prev]
-      );
+      void firestoreService.saveRegisteredUser(userRecord).catch(() => {});
     }
+
+    setRegisteredUsers((prev) =>
+      prev.some((u) => u.id === userRecord.id)
+        ? prev.map((u) => (u.id === userRecord.id ? userRecord : u))
+        : [userRecord, ...prev]
+    );
 
     if (isNewSignup) {
       // Strictly clean empty cloud vault for a fresh Sign Up
@@ -1975,70 +2094,25 @@ export default function App() {
       return;
     }
 
-    // Load scoped local vault & Firestore cloud files + recycle bin for returning users
+    // Immediately hydrate scoped local cache; useEffect([canonicalUserId]) handles live Firestore sync without duplicate reads
     const scopedLocal = storageProviderMock.loadMetadataState(userRecord.id);
     const localFiles = scopedLocal.files || [];
     const localBin = scopedLocal.recycleBin || [];
-
-    const fallbackIds = [
-      userRecord.email ? userRecord.email.toLowerCase().replace(/[^a-z0-9]/g, '_') : '',
-      userRecord.email || '',
-      cleanPhone(userRecord.phone) ? `phone_${cleanPhone(userRecord.phone)}` : '',
-      cleanPhone(userRecord.phone) || '',
-    ].filter(Boolean);
-
-    try {
-      const [cloudFiles, cloudBin] = await Promise.all([
-        firestoreService.getUserFiles(userRecord.id, fallbackIds),
-        firestoreService.getUserDeletedFiles(userRecord.id),
-      ]);
-
-      const deletedIds = loadDeletedFileIds(userRecord.id);
-      const mergedFiles = mergeCloudAndLocalFiles(cloudFiles || [], localFiles, deletedIds);
-      const mergedBin =
-        cloudBin && cloudBin.length > 0
-          ? mergeCloudAndLocalFiles(cloudBin, localBin)
-          : localBin;
-
-      const [hydratedFiles, hydratedBin] = await Promise.all([
-        hydrateCloudFiles(mergedFiles),
-        hydrateCloudFiles(mergedBin),
-      ]);
-
-      setFiles(hydratedFiles);
-      setRecycleBin(hydratedBin);
-      const nextStorage = computeStorageBreakdown(hydratedFiles, siteSettings.totalStorageGB || 1000);
-      setStorage(nextStorage);
-      storageProviderMock.saveMetadataState(
-        hydratedFiles,
-        userWithTimestamp,
-        nextStorage,
-        hydratedBin,
-        userRecord.id
-      );
-
-      const cloudIdSet = new Set((cloudFiles || []).map((f) => f.id));
-      hydratedFiles
-        .filter((cf) => !cloudIdSet.has(cf.id))
-        .forEach((cf) => {
-          firestoreService.saveFile(userRecord.id, cf).catch(() => {});
-        });
-      void hydrateMissingCloudMedia(hydratedFiles, userRecord.id);
-    } catch {
-      const hydratedLocal = await hydrateCloudFiles(localFiles);
-      const hydratedBin = await hydrateCloudFiles(localBin);
-      setFiles(hydratedLocal);
-      setRecycleBin(hydratedBin);
-      const nextStorage = computeStorageBreakdown(hydratedLocal, siteSettings.totalStorageGB || 1000);
-      setStorage(nextStorage);
-      storageProviderMock.saveMetadataState(
-        hydratedLocal,
-        userWithTimestamp,
-        nextStorage,
-        hydratedBin,
-        userRecord.id
-      );
-    }
+    const [hydratedLocal, hydratedBin] = await Promise.all([
+      hydrateCloudFiles(localFiles),
+      hydrateCloudFiles(localBin),
+    ]);
+    setFiles(hydratedLocal);
+    setRecycleBin(hydratedBin);
+    const nextStorage = computeStorageBreakdown(hydratedLocal, siteSettings.totalStorageGB || 1000);
+    setStorage(nextStorage);
+    storageProviderMock.saveMetadataState(
+      hydratedLocal,
+      userWithTimestamp,
+      nextStorage,
+      hydratedBin,
+      userRecord.id
+    );
 
     setInitialFilesFilter('all');
     setInitialFilesFolderId(null);
@@ -2564,8 +2638,15 @@ export default function App() {
           websiteName={siteSettings.websiteName}
           logoUrl={siteSettings.logoUrl}
           registeredUsers={registeredUsers}
+          hasRemoteUsers={hasRemoteUsers}
+          onAccountIdsResolved={(ids) => {
+            if (ids && ids.length > 0) {
+              setExtraOwnerIds((prev) => Array.from(new Set([...prev, ...ids])));
+            }
+          }}
           onSuccess={handleAuthSuccess}
           onUserRegistered={(newU) => {
+            setHasRemoteUsers(true);
             setRegisteredUsers((prev) => {
               if (prev.some((u) => u.id === newU.id)) return prev;
               return [newU, ...prev];
@@ -2823,6 +2904,9 @@ export default function App() {
                 onOpenAdminPanel={() => setScreen('admin-panel')}
                 onOpenPayment={() => setScreen('payment')}
                 onSignOut={() => {
+                  sessionAuthenticatedRef.current = false;
+                  lastSyncedMetaRef.current = null;
+                  setExtraOwnerIds([]);
                   setUser(initialUserProfile);
                   setFiles([]);
                   setRecycleBin([]);
