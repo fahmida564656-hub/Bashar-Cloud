@@ -27,8 +27,9 @@ export interface FirestoreErrorInfo {
 }
 
 let firestoreQuotaCooldownUntil = 0;
+let firestoreWriteQuotaCooldownUntil = 0;
 
-export function markFirestoreQuotaCooldown(durationMs = 45_000): void {
+export function markFirestoreQuotaCooldown(durationMs = 120_000): void {
   firestoreQuotaCooldownUntil = Math.max(firestoreQuotaCooldownUntil, Date.now() + durationMs);
 }
 
@@ -36,12 +37,21 @@ export function isFirestoreQuotaCooldownActive(): boolean {
   return Date.now() < firestoreQuotaCooldownUntil;
 }
 
+export function markFirestoreWriteQuotaCooldown(durationMs = 120_000): void {
+  firestoreWriteQuotaCooldownUntil = Math.max(firestoreWriteQuotaCooldownUntil, Date.now() + durationMs);
+}
+
+export function isFirestoreWriteQuotaCooldownActive(): boolean {
+  return Date.now() < firestoreWriteQuotaCooldownUntil;
+}
+
 export function isFirestoreHardQuotaError(error: unknown): boolean {
   const msg = (error instanceof Error ? error.message : String(error || '')).toLowerCase();
   return (
     msg.includes('resource-exhausted') ||
     msg.includes('quota limit exceeded') ||
-    msg.includes('quota exceeded')
+    msg.includes('quota exceeded') ||
+    msg.includes('free daily read units')
   );
 }
 
@@ -62,7 +72,16 @@ export function handleFirestoreError(
 ): void {
   const rawMessage = error instanceof Error ? error.message : String(error);
   if (isFirestoreHardQuotaError(error)) {
-    markFirestoreQuotaCooldown();
+    if (
+      operationType === OperationType.WRITE ||
+      operationType === OperationType.CREATE ||
+      operationType === OperationType.UPDATE ||
+      operationType === OperationType.DELETE
+    ) {
+      markFirestoreWriteQuotaCooldown();
+    } else {
+      markFirestoreQuotaCooldown();
+    }
     console.warn(`Firestore quota exceeded (${operationType} ${path}):`, rawMessage);
     return;
   }

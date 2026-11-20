@@ -223,3 +223,16 @@ export function collectCandidateOwnerIds(options: {
     )
   );
 }
+
+/**
+ * Determines whether user registration (Sign Up) should proceed after checking
+ * existing accounts. Duplicate accounts redirect to Sign In, while Firestore
+ * read-quota exhaustion never blocks new local/server account creation.
+ */
+export function shouldProceedWithSignupAfterLookup(
+  existing: RegisteredUser | undefined | null,
+  _quotaExceeded?: boolean
+): boolean {
+  return !existing;
+}
+

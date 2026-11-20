@@ -249,6 +249,8 @@ export default function App() {
   const liveObjectUrlsRef = useRef<Map<string, string>>(new Map());
   const chunkUploadingIdsRef = useRef<Set<string>>(new Set());
   const foregroundMediaIdsRef = useRef<Set<string>>(new Set());
+  const checkedLegacyOwnersRef = useRef<Set<string>>(new Set());
+  const attemptedMediaHydrateIdsRef = useRef<Set<string>>(new Set());
   filesRef.current = files;
   recycleBinRef.current = recycleBin;
 
@@ -426,28 +428,38 @@ export default function App() {
           }
         }
 
-        // 2. Fallback to cross-origin Firestore chunked storage
-        for (const uid of candidateUids) {
-          const cloudBlob = await firestoreService.getFileBlobFromCloudChunks(
-            uid,
-            targetFile.id,
-            targetFile.cloudChunkCount,
-            targetFile.mimeType,
-            targetFile.name,
-            (loaded, total) => {
-              if (total > 0) {
-                options?.onProgress?.(Math.min(99, Math.round((loaded / total) * 100)));
+        // 2. Fallback to cross-origin Firestore chunked storage (only when chunks exist or foreground priority, and quota allows)
+        if (!isFirestoreQuotaCooldownActive() && (options?.priority || (targetFile.cloudChunkCount || 0) > 0)) {
+          const primaryChunkUids = Array.from(
+            new Set([overrideUid, targetFile.ownerId, canonicalUserId].filter(Boolean))
+          ) as string[];
+          const chunkUidsToTry = options?.priority
+            ? Array.from(new Set([...primaryChunkUids, ...candidateUids]))
+            : primaryChunkUids;
+
+          for (const uid of chunkUidsToTry) {
+            if (isFirestoreQuotaCooldownActive()) break;
+            const cloudBlob = await firestoreService.getFileBlobFromCloudChunks(
+              uid,
+              targetFile.id,
+              targetFile.cloudChunkCount,
+              targetFile.mimeType,
+              targetFile.name,
+              (loaded, total) => {
+                if (total > 0) {
+                  options?.onProgress?.(Math.min(99, Math.round((loaded / total) * 100)));
+                }
               }
+            );
+            if (cloudBlob && cloudBlob.size > 0) {
+              const playable = ensurePlayableBlob(cloudBlob, targetFile);
+              await saveFileBlob(targetFile.id, playable).catch(() => {});
+              const objUrl = URL.createObjectURL(playable);
+              liveObjectUrlsRef.current.set(targetFile.id, objUrl);
+              patchResolvedFileUrl(targetFile.id, objUrl);
+              options?.onProgress?.(100);
+              return objUrl;
             }
-          );
-          if (cloudBlob && cloudBlob.size > 0) {
-            const playable = ensurePlayableBlob(cloudBlob, targetFile);
-            await saveFileBlob(targetFile.id, playable).catch(() => {});
-            const objUrl = URL.createObjectURL(playable);
-            liveObjectUrlsRef.current.set(targetFile.id, objUrl);
-            patchResolvedFileUrl(targetFile.id, objUrl);
-            options?.onProgress?.(100);
-            return objUrl;
           }
         }
       } catch (err) {
@@ -629,10 +641,12 @@ export default function App() {
   };
 
   const hydrateMissingCloudMedia = async (targetFiles: CloudFile[], overrideUid?: string) => {
+    if (isFirestoreQuotaCooldownActive()) return;
     const PREHYDRATE_IMAGE_MAX_BYTES = 1.5 * 1024 * 1024;
     const queue = targetFiles.filter((f) => {
       if (f.type !== 'image') return false;
       if (f.url) return false;
+      if (attemptedMediaHydrateIdsRef.current.has(f.id)) return false;
       if (f.sizeBytes > PREHYDRATE_IMAGE_MAX_BYTES) return false;
       return (
         (f.cloudChunkCount && f.cloudChunkCount > 0) ||
@@ -643,6 +657,8 @@ export default function App() {
     if (queue.length === 0) return;
 
     for (const item of queue) {
+      if (isFirestoreQuotaCooldownActive()) break;
+      attemptedMediaHydrateIdsRef.current.add(item.id);
       while (foregroundMediaIdsRef.current.size > 0) {
         await new Promise((r) => setTimeout(r, 250));
       }
@@ -731,12 +747,27 @@ export default function App() {
       firestoreService.saveRegisteredUser(currentUserRecord).catch(() => {});
     }
 
-    // 2. One-time merge of any legacy / secondary owner IDs without duplicating primary canonicalUserId read
+    // 2. One-time merge of any legacy / secondary owner IDs (throttled per 6 hours to avoid redundant Firestore reads)
     const secondaryIds = getCandidateOwnerIds().filter((id) => id !== canonicalUserId);
-    if (secondaryIds.length > 0) {
+    const legacyCheckKey = `${canonicalUserId}:${secondaryIds.join('|')}`;
+    let recentlyCheckedLegacy = checkedLegacyOwnersRef.current.has(legacyCheckKey);
+    if (!recentlyCheckedLegacy) {
+      try {
+        const savedCheckTs = Number(localStorage.getItem(`bashar_legacy_sync_${canonicalUserId}`) || 0);
+        if (savedCheckTs > 0 && Date.now() - savedCheckTs < 6 * 60 * 60 * 1000 && extraOwnerIds.length === 0) {
+          recentlyCheckedLegacy = true;
+        }
+      } catch {}
+    }
+
+    if (secondaryIds.length > 0 && !recentlyCheckedLegacy && !isFirestoreQuotaCooldownActive()) {
+      checkedLegacyOwnersRef.current.add(legacyCheckKey);
       firestoreService
         .getUserFiles(secondaryIds[0], secondaryIds.slice(1))
         .then(async (legacyFiles) => {
+          try {
+            localStorage.setItem(`bashar_legacy_sync_${canonicalUserId}`, String(Date.now()));
+          } catch {}
           if (!active || !legacyFiles || legacyFiles.length === 0) return;
           const deletedIds = loadDeletedFileIds(canonicalUserId);
           const merged = mergeCloudAndLocalFiles(legacyFiles, filesRef.current, deletedIds);
@@ -1057,12 +1088,14 @@ export default function App() {
       if (mirrorUsers.length > 0) {
         setHasRemoteUsers(true);
         setRegisteredUsers((prev) => dedupeUserList([...mirrorUsers, ...prev]));
+        return;
       }
-    });
-
-    firestoreService.hasAnyRegisteredUsers().then((exists) => {
-      if (exists) {
-        setHasRemoteUsers(true);
+      if (registeredUsers.length === 0) {
+        firestoreService.hasAnyRegisteredUsers().then((exists) => {
+          if (exists) {
+            setHasRemoteUsers(true);
+          }
+        });
       }
     });
 

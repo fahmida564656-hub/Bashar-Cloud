@@ -10,6 +10,7 @@ import {
   findMatchingUserRecords,
   mergeRegisteredUserRecords,
   collectCandidateOwnerIds,
+  shouldProceedWithSignupAfterLookup,
 } from './accountManagement';
 import { RegisteredUser, CloudFile, StorageUsage, PaymentRequest } from '../types';
 import { initialFiles, initialRecycleBin, initialStorageUsage, defaultSiteSettings } from '../data/initialData';
@@ -246,4 +247,22 @@ test('findMatchingUserRecords, mergeRegisteredUserRecords, and collectCandidateO
   assert.ok(candidateIds.includes('phone_1711223344'));
 });
 
+test('shouldProceedWithSignupAfterLookup allows signup when no duplicate exists even if Firestore read quota is exceeded', () => {
+  const existing: RegisteredUser = {
+    id: 'acct_test_example_com',
+    name: 'Test User',
+    email: 'test@example.com',
+    phone: '(+880) 1711223344',
+    registeredAt: 'Nov 20, 2026',
+    registeredTimestamp: 1795100000000,
+    filesCount: 0,
+    storageUsedMB: 0,
+  };
+
+  assert.equal(shouldProceedWithSignupAfterLookup(undefined, false), true);
+  assert.equal(shouldProceedWithSignupAfterLookup(undefined, true), true);
+  assert.equal(shouldProceedWithSignupAfterLookup(null, true), true);
+  assert.equal(shouldProceedWithSignupAfterLookup(existing, false), false);
+  assert.equal(shouldProceedWithSignupAfterLookup(existing, true), false);
+});
 

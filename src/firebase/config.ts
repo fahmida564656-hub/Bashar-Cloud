@@ -3,6 +3,8 @@ import { getAuth, GoogleAuthProvider } from 'firebase/auth';
 import {
   initializeFirestore,
   getFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   doc,
   getDocFromServer,
   Firestore,
@@ -12,17 +14,38 @@ import firebaseConfig from '../../firebase-applet-config.json';
 // Initialize Firebase App
 export const app = initializeApp(firebaseConfig);
 
-// Initialize Firestore with custom database ID and long-polling for iframe & proxy network resilience
-export const db: Firestore =
-  typeof window !== 'undefined'
-    ? initializeFirestore(
+// Initialize Firestore with persistent local cache + long-polling for iframe resilience and minimal quota burn
+function createFirestoreInstance(): Firestore {
+  if (typeof window === 'undefined') {
+    return getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  }
+  try {
+    return initializeFirestore(
+      app,
+      {
+        experimentalForceLongPolling: true,
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager(),
+        }),
+      },
+      firebaseConfig.firestoreDatabaseId
+    );
+  } catch {
+    try {
+      return initializeFirestore(
         app,
         {
           experimentalForceLongPolling: true,
         },
         firebaseConfig.firestoreDatabaseId
-      )
-    : getFirestore(app, firebaseConfig.firestoreDatabaseId);
+      );
+    } catch {
+      return getFirestore(app, firebaseConfig.firestoreDatabaseId);
+    }
+  }
+}
+
+export const db: Firestore = createFirestoreInstance();
 
 // Initialize Auth
 export const auth = getAuth(app);

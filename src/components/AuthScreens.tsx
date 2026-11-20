@@ -7,6 +7,7 @@ import {
   buildDeterministicAccountId,
   findMatchingUserRecords,
   mergeRegisteredUserRecords,
+  shouldProceedWithSignupAfterLookup,
 } from '../utils/accountManagement';
 
 interface AuthScreenProps {
@@ -39,12 +40,6 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
   const [userToggledMode, setUserToggledMode] = useState(false);
   const [loginMethod, setLoginMethod] = useState<'phone' | 'email'>('phone');
 
-  React.useEffect(() => {
-    if (!userToggledMode) {
-      setAuthMode(registeredUsers.length === 0 && !hasRemoteUsers ? 'signup' : 'signin');
-    }
-  }, [registeredUsers.length, hasRemoteUsers, userToggledMode]);
-
   // Form Fields - starts clean with NO demo values
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
@@ -56,6 +51,13 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
   const [errorMessage, setErrorMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [loadingText, setLoadingText] = useState('যাচাই করা হচ্ছে...');
+
+  React.useEffect(() => {
+    const hasStartedTyping = Boolean(fullName || email || phone || password || confirmPassword);
+    if (!userToggledMode && !hasStartedTyping) {
+      setAuthMode(registeredUsers.length === 0 && !hasRemoteUsers ? 'signup' : 'signin');
+    }
+  }, [registeredUsers.length, hasRemoteUsers, userToggledMode, fullName, email, phone, password, confirmPassword]);
 
   // Profile picture upload handler (compressed cleanly so Firestore 1MB limit is never exceeded)
   const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -122,7 +124,6 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
             (normalizedEmail && u.email.toLowerCase() === normalizedEmail)
         );
         let resolvedIds: string[] = existing ? [existing.id] : [];
-        let quotaExceeded = false;
 
         // 2. Also check directly in Cloud Firestore / Server Mirror (O(1) indexed) to prevent duplicates across websites
         if (!existing) {
@@ -130,22 +131,13 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
             normalizedPhone,
             normalizedEmail,
           ]);
-          quotaExceeded = cloudCheck.quotaExceeded;
           if (cloudCheck.user) {
             existing = cloudCheck.user;
             resolvedIds = cloudCheck.matchingIds;
           }
         }
 
-        if (!existing && quotaExceeded) {
-          setErrorMessage(
-            'ক্লাউড ডাটাবেস (Firestore) এর দৈনিক ফ্রি রিড লিমিট শেষ হয়েছে। অনুগ্রহ করে কোটা রিসেট হওয়ার পর অথবা সার্ভিস আপগ্রেড করে পুনরায় চেষ্টা করুন।'
-          );
-          setIsLoading(false);
-          return;
-        }
-
-        if (existing) {
+        if (!shouldProceedWithSignupAfterLookup(existing) && existing) {
           if (onUserRegistered) {
             onUserRegistered(existing);
           }
@@ -276,7 +268,7 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
         if (!foundUser) {
           if (lookupQuotaExceeded) {
             setErrorMessage(
-              'ক্লাউড ডাটাবেস (Firestore) এর দৈনিক ফ্রি রিড লিমিট শেষ হয়েছে। অনুগ্রহ করে কোটা রিসেট হওয়ার পর অথবা সার্ভিস আপগ্রেড করে পুনরায় চেষ্টা করুন।'
+              'এই মুহূর্তে ক্লাউড ডাটাবেস (Firestore) এর দৈনিক ফ্রি রিড কোটা পূর্ণ থাকায় দূরবর্তী সার্ভার থেকে পুরোনো অ্যাকাউন্ট যাচাই করা যাচ্ছে না। আপনি এখনই "নতুন অ্যাকাউন্ট (Sign Up)" থেকে প্রবেশ করতে পারেন অথবা কোটা রিসেট/আপগ্রেডের পর লগইন করুন।'
             );
           } else {
             setErrorMessage(

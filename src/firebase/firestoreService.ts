@@ -9,7 +9,6 @@ import {
   query,
   where,
   limit,
-  type QuerySnapshot,
   type DocumentData,
 } from 'firebase/firestore';
 import { db } from './config';
@@ -18,7 +17,9 @@ import {
   isFirestoreHardQuotaError,
   isFirestoreQuotaCooldownActive,
   isFirestoreQuotaOrTransientError,
+  isFirestoreWriteQuotaCooldownActive,
   markFirestoreQuotaCooldown,
+  markFirestoreWriteQuotaCooldown,
   OperationType,
 } from './errorHandler';
 import {
@@ -211,20 +212,19 @@ export const firestoreService = {
         { merge: true }
       );
 
-    if (isFirestoreQuotaCooldownActive()) {
-      await mirrorPromise;
+    await mirrorPromise;
+
+    if (isFirestoreWriteQuotaCooldownActive()) {
       return false;
     }
 
     try {
-      await withFirestoreTimeout(writeDoc(), 9000, 'saveRegisteredUser');
-      void mirrorPromise;
+      await withFirestoreTimeout(writeDoc(), 3500, 'saveRegisteredUser');
       return true;
     } catch (error) {
       if (isFirestoreHardQuotaError(error)) {
-        markFirestoreQuotaCooldown();
+        markFirestoreWriteQuotaCooldown();
       }
-      await mirrorPromise;
       if (isFirestoreQuotaOrTransientError(error)) {
         handleFirestoreError(error, OperationType.WRITE, path);
         return false;
@@ -238,6 +238,9 @@ export const firestoreService = {
    * Lightweight check (reads at most 1 doc) to know whether any registered account exists in cloud.
    */
   async hasAnyRegisteredUsers(): Promise<boolean> {
+    const mirror = await fetchServerCloudUsers();
+    if (mirror.length > 0) return true;
+    if (isFirestoreQuotaCooldownActive()) return false;
     try {
       const snap = await withFirestoreTimeout(
         getDocs(query(collection(db, 'registered_users'), limit(1))),
@@ -245,11 +248,12 @@ export const firestoreService = {
         'hasAnyRegisteredUsers'
       );
       if (!snap.empty) return true;
-    } catch {
-      // Fall through to mirror check
+    } catch (err) {
+      if (isFirestoreHardQuotaError(err)) {
+        markFirestoreQuotaCooldown();
+      }
     }
-    const mirror = await fetchServerCloudUsers();
-    return mirror.length > 0;
+    return false;
   },
 
   /**
@@ -365,73 +369,84 @@ export const firestoreService = {
       }
     };
 
-    // 1. Check same-origin mirror + targeted Firestore O(1) indexed queries in parallel
-    const indexedTasks: Promise<void>[] = [
-      fetchServerCloudUsers().then((list) => {
-        matchesList(list).forEach(addMatch);
-      }),
-    ];
+    // 1. Check same-origin server mirror first (0 Firestore reads)
+    const mirrorUsers = await fetchServerCloudUsers();
+    matchesList(mirrorUsers).forEach(addMatch);
 
+    if (isFirestoreQuotaCooldownActive()) {
+      const records = Array.from(collected.values()).sort(
+        (a, b) => (a.registeredTimestamp || 0) - (b.registeredTimestamp || 0)
+      );
+      if (records.length === 0) {
+        return { user: null, matchingIds: [], quotaExceeded: true };
+      }
+      let unified = records[0];
+      for (let i = 1; i < records.length; i++) {
+        unified = mergeRegisteredUserRecords(unified, records[i]);
+      }
+      return {
+        user: unified,
+        matchingIds: records.map((r) => r.id),
+        quotaExceeded: false,
+      };
+    }
+
+    // 2. Targeted Firestore O(1) lookup: try deterministic email doc first (1 read) before query fallbacks
     for (const q of queries) {
       if (q.lower.includes('@')) {
-        indexedTasks.push(
-          withFirestoreTimeout(
-            getDocs(query(collection(db, 'registered_users'), where('email', '==', q.lower))),
-            7500,
-            'findUserByEmail'
-          )
-            .then((snap) => {
-              snap.forEach((ds) => addMatch(mapDoc(ds.id, ds.data())));
-            })
-            .catch((err) => {
-              if (isFirestoreHardQuotaError(err)) quotaExceeded = true;
-            })
-        );
         const detId = buildDeterministicAccountId(q.lower, undefined);
-        indexedTasks.push(
-          withFirestoreTimeout(getDoc(doc(db, 'registered_users', detId)), 6500, 'getUserDetEmail')
-            .then((ds) => {
-              if (ds.exists()) addMatch(mapDoc(ds.id, ds.data()));
-            })
-            .catch((err) => {
-              if (isFirestoreHardQuotaError(err)) quotaExceeded = true;
-            })
-        );
-      }
-      if (q.cleanDigits.length >= 7) {
-        indexedTasks.push(
-          withFirestoreTimeout(
-            getDocs(query(collection(db, 'registered_users'), where('cleanPhone', '==', q.cleanDigits))),
-            7500,
-            'findUserByPhone'
-          )
-            .then((snap) => {
-              snap.forEach((ds) => addMatch(mapDoc(ds.id, ds.data())));
-            })
-            .catch((err) => {
-              if (isFirestoreHardQuotaError(err)) quotaExceeded = true;
-            })
-        );
+        try {
+          const ds = await withFirestoreTimeout(
+            getDoc(doc(db, 'registered_users', detId)),
+            3500,
+            'getUserDetEmail'
+          );
+          if (ds.exists()) {
+            addMatch(mapDoc(ds.id, ds.data()));
+          }
+        } catch (err) {
+          if (isFirestoreHardQuotaError(err)) quotaExceeded = true;
+        }
       }
     }
 
-    await Promise.all(indexedTasks);
-
-    // 2. Fallback scan only if indexed queries returned 0 matches and quota wasn't exhausted
+    // 3. Only run indexed email/phone queries if deterministic lookup didn't find a match and quota isn't exhausted
     if (collected.size === 0 && !quotaExceeded) {
-      try {
-        const fullSnap: QuerySnapshot<DocumentData> = await withFirestoreTimeout(
-          getDocs(collection(db, 'registered_users')),
-          7500,
-          'findRegisteredUserFallback'
-        );
-        const allDocs: RegisteredUser[] = [];
-        fullSnap.forEach((ds) => allDocs.push(mapDoc(ds.id, ds.data())));
-        matchesList(allDocs).forEach(addMatch);
-      } catch (err) {
-        if (isFirestoreHardQuotaError(err)) {
-          quotaExceeded = true;
+      const indexedTasks: Promise<void>[] = [];
+      for (const q of queries) {
+        if (q.lower.includes('@')) {
+          indexedTasks.push(
+            withFirestoreTimeout(
+              getDocs(query(collection(db, 'registered_users'), where('email', '==', q.lower), limit(5))),
+              4000,
+              'findUserByEmail'
+            )
+              .then((snap) => {
+                snap.forEach((ds) => addMatch(mapDoc(ds.id, ds.data())));
+              })
+              .catch((err) => {
+                if (isFirestoreHardQuotaError(err)) quotaExceeded = true;
+              })
+          );
         }
+        if (q.cleanDigits.length >= 7) {
+          indexedTasks.push(
+            withFirestoreTimeout(
+              getDocs(query(collection(db, 'registered_users'), where('cleanPhone', '==', q.cleanDigits), limit(5))),
+              4000,
+              'findUserByPhone'
+            )
+              .then((snap) => {
+                snap.forEach((ds) => addMatch(mapDoc(ds.id, ds.data())));
+              })
+              .catch((err) => {
+                if (isFirestoreHardQuotaError(err)) quotaExceeded = true;
+              })
+          );
+        }
+      }
+      if (indexedTasks.length > 0) {
+        await Promise.all(indexedTasks);
       }
     }
 
@@ -450,6 +465,14 @@ export const firestoreService = {
     for (let i = 1; i < records.length; i++) {
       unified = mergeRegisteredUserRecords(unified, records[i]);
     }
+
+    // Warm local server mirror so subsequent logins on this server cost 0 Firestore reads
+    fetch('/api/cloud/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(unified),
+    }).catch(() => {});
+
     return {
       user: unified,
       matchingIds: records.map((r) => r.id),
@@ -931,7 +954,7 @@ export const firestoreService = {
         body: JSON.stringify(boundedPayload),
       }).catch(() => {});
 
-      if (isFirestoreQuotaCooldownActive()) {
+      if (isFirestoreWriteQuotaCooldownActive()) {
         await mirrorPromise;
         return false;
       }
@@ -945,7 +968,7 @@ export const firestoreService = {
       return true;
     } catch (error) {
       if (isFirestoreHardQuotaError(error)) {
-        markFirestoreQuotaCooldown();
+        markFirestoreWriteQuotaCooldown();
       }
       handleFirestoreError(error, OperationType.WRITE, path);
       return false;
@@ -1008,7 +1031,7 @@ export const firestoreService = {
   ): Promise<number> {
     if (!userId || userId === 'guest_user' || !fileId || !blob) return 0;
     if (!shouldChunkFileToCloud(blob.size)) return 0;
-    if (isFirestoreQuotaCooldownActive()) return 0;
+    if (isFirestoreWriteQuotaCooldownActive()) return 0;
 
     try {
       const buf = await blob.arrayBuffer();
@@ -1019,8 +1042,8 @@ export const firestoreService = {
       const writeChunkWithRetry = async (index: number, data: string): Promise<void> => {
         let lastErr: unknown;
         for (let attempt = 0; attempt < 2; attempt++) {
-          if (isFirestoreQuotaCooldownActive()) {
-            throw new Error('Firestore quota cooldown active');
+          if (isFirestoreWriteQuotaCooldownActive()) {
+            throw new Error('Firestore write quota cooldown active');
           }
           try {
             await withFirestoreTimeout(
@@ -1041,7 +1064,7 @@ export const firestoreService = {
           } catch (err) {
             lastErr = err;
             if (isFirestoreHardQuotaError(err)) {
-              markFirestoreQuotaCooldown();
+              markFirestoreWriteQuotaCooldown();
               throw err;
             }
             await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
@@ -1094,7 +1117,9 @@ export const firestoreService = {
     fileName?: string,
     onProgress?: (loadedChunks: number, totalChunks: number) => void
   ): Promise<Blob | null> {
-    if (!userId || userId === 'guest_user' || !fileId) return null;
+    if (!userId || userId === 'guest_user' || !fileId || isFirestoreQuotaCooldownActive()) {
+      return null;
+    }
 
     const getDocWithRetry = async (idx: number) => {
       for (let attempt = 0; attempt < 2; attempt++) {
@@ -1211,6 +1236,9 @@ export const firestoreService = {
       const finalMime = inferMediaMimeType(fileName, detectedMime || expectedMimeType);
       return reassembleCloudChunksToBlob(records, finalMime);
     } catch (error) {
+      if (isFirestoreHardQuotaError(error)) {
+        markFirestoreQuotaCooldown();
+      }
       console.warn('Error hydrating cloud file chunks:', error);
       return null;
     }
@@ -1422,11 +1450,18 @@ export const firestoreService = {
       await Promise.all(
         uniqueIds.map(async (id) => {
           const [firestoreRes, serverFiles] = await Promise.all([
-            withFirestoreTimeout(
-              getDocs(collection(db, 'users', id, 'files')),
-              7500,
-              'getUserFiles'
-            ).catch(() => null),
+            isFirestoreQuotaCooldownActive()
+              ? Promise.resolve(null)
+              : withFirestoreTimeout(
+                  getDocs(collection(db, 'users', id, 'files')),
+                  7500,
+                  'getUserFiles'
+                ).catch((err) => {
+                  if (isFirestoreHardQuotaError(err)) {
+                    markFirestoreQuotaCooldown();
+                  }
+                  return null;
+                }),
             fetchServerCloudFiles(id),
           ]);
 
