@@ -371,65 +371,28 @@ export const AppSettingsScreen: React.FC<AppSettingsScreenProps> = ({
 
           {/* Subscription Plan Overview Card */}
           {subscription && (
-            <div
-              className={`orbit-card rounded-2xl p-4 border shadow-md flex items-center justify-between gap-3 ${
-                isApproved
-                  ? 'bg-[#102521] border-emerald-500/40'
-                  : isExpired
-                  ? 'bg-[#29131a] border-rose-500/45'
-                  : 'bg-[#121c2c] border-[#1f3049]'
-              }`}
-            >
+            <div className="orbit-card rounded-2xl p-4 border shadow-md flex items-center justify-between gap-3 bg-[#102521] border-emerald-500/40">
               <div className="flex items-center gap-3 min-w-0">
-                <div
-                  className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border ${
-                    isApproved
-                      ? 'bg-emerald-500/20 border-emerald-500/35 text-emerald-400'
-                      : isExpired
-                      ? 'bg-rose-500/20 border-rose-500/35 text-rose-400'
-                      : 'bg-sky-500/15 border-sky-500/30 text-sky-400'
-                  }`}
-                >
-                  {isApproved ? (
-                    <ShieldCheck className="w-5 h-5" />
-                  ) : isExpired ? (
-                    <Lock className="w-5 h-5" />
-                  ) : (
-                    <Clock className="w-5 h-5" />
-                  )}
+                <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border bg-emerald-500/20 border-emerald-500/35 text-emerald-400">
+                  <ShieldCheck className="w-5 h-5" />
                 </div>
                 <div className="min-w-0">
                   <h4 className="text-sm font-bold text-white truncate">
                     {isApproved
                       ? 'সারাজীবনের VIP মেম্বারশিপ সক্রিয়'
-                      : isExpired
-                      ? '৩০ দিনের ফ্রি ট্রায়াল শেষ • লকড'
-                      : `ফ্রি ট্রায়াল: আর ${toBengaliDigits(subscription.daysRemaining)} দিন বাকি`}
+                      : 'ফ্রি লাইফটাইম প্ল্যান সক্রিয়'}
                   </h4>
-                  <p className="text-[11px] text-slate-400 truncate mt-0.5">
+                  <p className="text-[11px] text-emerald-200/85 truncate mt-0.5">
                     {isApproved
                       ? 'সব ক্লাউড ফিচার আজীবনের জন্য আনলকড'
-                      : isExpired
-                      ? 'আনলক করতে এককালীন ১০০ টাকা পেমেন্ট করুন'
-                      : '৩০ দিন পর ১০০ টাকা দিয়ে আজীবন আনলক করতে পারবেন'}
+                      : 'সারাজীবনের জন্য ফ্রি ডেটা সংরক্ষণ ও AI অ্যাসিস্ট্যান্ট চালু'}
                   </p>
                 </div>
               </div>
 
-              {onOpenPayment && !isApproved && (
-                <button
-                  type="button"
-                  onClick={onOpenPayment}
-                  className={`px-3 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1 shrink-0 cursor-pointer shadow-sm transition-all ${
-                    isExpired
-                      ? 'bg-rose-600 hover:bg-rose-500 text-white ai-solid-text-white'
-                      : 'bg-blue-600 hover:bg-blue-500 text-white ai-solid-text-white'
-                  }`}
-                >
-                  <CreditCard className="w-3.5 h-3.5" />
-                  <span>৳১০০ আনলক</span>
-                </button>
-              )}
+              <span className="px-3 py-1 rounded-full text-[10.5px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/35 shrink-0">
+                {isApproved ? 'VIP' : 'ফ্রি সারাজীবন'}
+              </span>
             </div>
           )}
         </div>

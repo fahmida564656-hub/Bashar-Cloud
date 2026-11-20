@@ -171,24 +171,24 @@ export const PaymentScreen: React.FC<PaymentScreenProps> = ({
             </p>
           </div>
         ) : (
-          <div className="orbit-card bg-gradient-to-br from-[#12233f] to-[#162744] border border-blue-500/40 rounded-2xl p-4 shadow-xl space-y-2">
+          <div className="orbit-card bg-gradient-to-br from-[#102724] to-[#12233f] border border-emerald-500/40 rounded-2xl p-4 shadow-xl space-y-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-blue-500/20 border border-blue-400/30 flex items-center justify-center text-blue-400 font-bold text-sm">
-                  ৳
+                <div className="w-8 h-8 rounded-lg bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center text-emerald-400 font-bold text-sm">
+                  ✓
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-white">আজীবন সাবস্ক্রিপশন ফি</h3>
-                  <p className="text-[11px] text-slate-400">এককালীন ১০০ টাকা পেমেন্ট</p>
+                  <h3 className="text-sm font-bold text-white">ফ্রি লাইফটাইম স্টোরেজ সক্রিয়</h3>
+                  <p className="text-[11px] text-emerald-300/90">সারাজীবনের জন্য ফাইল সংরক্ষণ সম্পূর্ণ ফ্রি</p>
                 </div>
               </div>
               <div className="text-right">
-                <span className="text-xl font-extrabold text-blue-400 font-mono">৳{feeAmount}</span>
-                <span className="text-[10px] text-slate-400 block">এককালীন (Lifetime)</span>
+                <span className="text-xl font-extrabold text-emerald-400 font-mono">৳0</span>
+                <span className="text-[10px] text-slate-400 block">ফ্রি প্ল্যান (Lifetime)</span>
               </div>
             </div>
             <p className="text-[11px] text-slate-300 leading-relaxed border-t border-[#1c3050] pt-2">
-              নিয়ম অনুযায়ী অ্যাকাউন্ট খোলার পর ১ মাস ফ্রি ব্যবহার করা যায়। এরপর ফাইল দেখা, আপলোড, ডাউনলোড বা ডিলিট করতে ১০০ টাকা সেন্ড মানি করতে হবে।
+              আপনি কোনো চার্জ ছাড়াই সারাজীবন আপনার ফাইল, ছবি, ভিডিও ও ডেটা সেভ, দেখা, আপলোড ও ডাউনলোড করতে পারবেন। চাইলে ঐচ্ছিকভাবে নিচে VIP সাপোর্ট ভেরিফিকেশনের জন্য অনুরোধ পাঠাতে পারেন।
             </p>
           </div>
         )}

@@ -85,14 +85,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const isStorageWarning = alertLevel !== 'normal';
 
   const isApproved = subscription?.isLifetimeApproved;
-  const isExpired = Boolean(subscription?.isExpired && !isApproved);
+  const isExpired = false;
 
   const handleMultiFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (isExpired) {
-      e.target.value = '';
-      onOpenPayment?.();
-      return;
-    }
     if (e.target.files && e.target.files.length > 0 && onUploadMultipleFiles) {
       const filesArray = Array.from(e.target.files);
       onUploadMultipleFiles(filesArray);
@@ -101,10 +96,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   };
 
   const handleProtectedUploadClick = (ref: React.RefObject<HTMLInputElement | null>) => {
-    if (isExpired) {
-      onOpenPayment?.();
-      return;
-    }
     ref.current?.click();
   };
 
@@ -121,10 +112,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    if (isExpired) {
-      onOpenPayment?.();
-      return;
-    }
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0 && onUploadMultipleFiles) {
       onUploadMultipleFiles(Array.from(e.dataTransfer.files));
     }
@@ -141,17 +128,13 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       {isDragging && (
         <div className="absolute inset-0 z-50 bg-blue-950/90 backdrop-blur-md border-2 border-dashed border-blue-400 rounded-3xl m-2 flex flex-col items-center justify-center p-6 text-center animate-in fade-in">
           <div className="w-16 h-16 rounded-2xl bg-blue-600/30 border border-blue-400 flex items-center justify-center text-blue-300 mb-3 animate-bounce">
-            {isExpired ? <Lock className="w-8 h-8 text-rose-400" /> : <Upload className="w-8 h-8" />}
+            <Upload className="w-8 h-8" />
           </div>
           <h3 className="text-lg font-bold text-white mb-1">
-            {isExpired
-              ? '৩০ দিনের ট্রায়াল শেষ — অ্যাকাউন্ট লক'
-              : 'ফাইলগুলো এখানে ছেড়ে দিন (Drop Files Here)'}
+            ফাইলগুলো এখানে ছেড়ে দিন (Drop Files Here)
           </h3>
           <p className="text-xs text-blue-200">
-            {isExpired
-              ? 'ফাইল আপলোড করতে ১০০ টাকা পেমেন্ট করে আনলক করুন'
-              : 'ছবি, ভিডিও, অডিও, ডকুমেন্ট বা জিপ ফাইল ড্রাইভে আপলোড হবে'}
+            ছবি, ভিডিও, অডিও, ডকুমেন্ট বা জিপ ফাইল ড্রাইভে আপলোড হবে
           </p>
         </div>
       )}
@@ -225,7 +208,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         </div>
       </div>
 
-      {/* Subscription / Daily Countdown / Lock Status Card */}
+      {/* Free Lifetime Access Status Card */}
       {subscription && (
         <div className="mb-3.5">
           {isApproved ? (
@@ -241,51 +224,23 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                 VIP Member
               </span>
             </div>
-          ) : isExpired ? (
-            <button
-              type="button"
-              onClick={onOpenPayment}
-              className="orbit-card overflow-hidden w-full min-h-[52px] text-left bg-gradient-to-r from-rose-950/85 to-[#2c131a] border border-rose-500/50 rounded-2xl p-3 flex items-center justify-between gap-2.5 shadow-lg cursor-pointer hover:border-rose-400 transition-all"
-            >
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className="w-9 h-9 rounded-xl bg-rose-500/20 border border-rose-400/35 flex items-center justify-center text-rose-400 shrink-0">
-                  <Lock className="w-4.5 h-4.5" />
-                </div>
-                <div className="min-w-0">
-                  <span className="text-xs font-bold text-rose-200 block">
-                    ৩০ দিনের ফ্রি ট্রায়াল শেষ • অ্যাকাউন্ট লক
-                  </span>
-                  <p className="text-[10.5px] text-slate-300 leading-snug mt-0.5">
-                    আপলোড, ডাউনলোড, দেখা ও নাম পরিবর্তন বন্ধ — ১০০ টাকা পেমেন্ট করে আনলক করুন
-                  </p>
-                </div>
-              </div>
-              <span className="bg-rose-600 hover:bg-rose-500 text-white ai-solid-text-white text-[11px] font-bold px-3 py-2 rounded-xl shadow-md flex items-center gap-1 shrink-0">
-                <Sparkles className="w-3 h-3 text-amber-300" />
-                <span>আনলক</span>
-              </span>
-            </button>
           ) : (
-            <button
-              type="button"
-              onClick={onOpenPayment}
-              className="orbit-card overflow-hidden w-full min-h-[50px] text-left bg-[#12233e] border border-blue-500/35 rounded-2xl p-3 flex items-center justify-between gap-2 shadow-md cursor-pointer hover:border-blue-400 transition-all"
-            >
+            <div className="orbit-card overflow-hidden w-full min-h-[50px] text-left bg-gradient-to-r from-emerald-950/60 via-[#10233a] to-[#12233e] border border-emerald-500/35 rounded-2xl p-3 flex items-center justify-between gap-2 shadow-md">
               <div className="flex items-center gap-2.5 min-w-0">
-                <Clock className="w-4.5 h-4.5 text-sky-400 shrink-0" />
+                <ShieldCheck className="w-4.5 h-4.5 text-emerald-400 shrink-0" />
                 <div className="min-w-0">
                   <span className="text-xs font-bold text-white block truncate">
-                    ফ্রি ট্রায়াল: আর {toBengaliDigits(subscription.daysRemaining)} দিন বাকি
+                    ফ্রি লাইফটাইম স্টোরেজ সক্রিয়
                   </span>
-                  <p className="text-[10.5px] text-slate-400 truncate">
-                    ৩০ দিন পর লক হবে • সারাজীবনের জন্য ১০০ টাকা পেমেন্ট করুন
+                  <p className="text-[10.5px] text-emerald-200/85 truncate">
+                    কোনো মেয়াদ ছাড়াই সারাজীবন ফ্রি ডেটা ও ফাইল সেভ রাখুন
                   </p>
                 </div>
               </div>
-              <span className="text-[10.5px] bg-blue-600/30 text-sky-300 font-bold px-2.5 py-1 rounded-full border border-blue-500/30 shrink-0">
-                ৳১০০ সারাজীবন
+              <span className="text-[10px] bg-emerald-500/20 text-emerald-300 font-bold px-2.5 py-1 rounded-full border border-emerald-500/30 shrink-0">
+                ফ্রি সারাজীবন
               </span>
-            </button>
+            </div>
           )}
         </div>
       )}

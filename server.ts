@@ -51,18 +51,33 @@ const THINKING_LEVEL_MAP: Record<
   XHIGH: ThinkingLevel.XHIGH,
 };
 
-async function awaitStreamFirstChunk(
+interface FirstTextResult {
+  iterator: AsyncIterator<GenerateContentResponse>;
+  firstText: string;
+}
+
+async function awaitStreamFirstText(
   stream: AsyncIterable<GenerateContentResponse>,
   timeoutMs: number,
   label: string
-): Promise<{
-  iterator: AsyncIterator<GenerateContentResponse>;
-  firstChunk: IteratorResult<GenerateContentResponse>;
-}> {
+): Promise<FirstTextResult> {
   const iterator = stream[Symbol.asyncIterator]();
+  const deadline = Date.now() + timeoutMs;
   try {
-    const firstChunk = await withTimeout(iterator.next(), timeoutMs, `${label} first chunk`);
-    return { iterator, firstChunk };
+    while (true) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new Error(`${label} first text timed out after ${timeoutMs}ms`);
+      }
+      const next = await withTimeout(iterator.next(), remaining, `${label} first text`);
+      if (next.done) {
+        throw new Error(`${label} stream ended without text`);
+      }
+      const text = next.value?.text || '';
+      if (text) {
+        return { iterator, firstText: text };
+      }
+    }
   } catch (err) {
     iterator.return?.().catch(() => {});
     throw err;
@@ -380,7 +395,18 @@ async function startServer() {
 
   app.post('/api/ai/chat', async (req: Request, res: Response) => {
     const body = (req.body || {}) as IncomingChatPayload;
-    const rawMessage = typeof body.message === 'string' ? body.message.trim() : '';
+    const rawInputMessage = typeof body.message === 'string' ? body.message.trim() : '';
+    const hasAttachment = Boolean(
+      body.attachment &&
+        (body.attachment.imageDataUrl || body.attachment.snippet || body.attachment.name)
+    );
+    const rawMessage =
+      rawInputMessage ||
+      (hasAttachment
+        ? body.attachment?.imageDataUrl
+          ? 'এই ছবিটি বিস্তারিত বিশ্লেষণ করো।'
+          : `"${body.attachment?.name || 'file'}" ফাইলটির সারসংক্ষেপ ও মূল বিষয়গুলো বুঝিয়ে দাও।`
+        : '');
 
     if (!rawMessage) {
       res.status(400).json({ error: 'অনুগ্রহ করে একটি প্রশ্ন বা বার্তা লিখুন।' });
@@ -478,7 +504,7 @@ async function startServer() {
           );
           if (isAuthOrQuotaError(err)) break;
           if (attempt.targetModel === 'gemini-4-hydrogen') {
-            hydrogenCooldownUntil = Date.now() + 60_000;
+            hydrogenCooldownUntil = Date.now() + 5 * 60_000;
           }
         }
       }
@@ -532,6 +558,7 @@ async function startServer() {
         thinkingLevel: ThinkingLevel | undefined,
         timeoutMs: number
       ) => {
+        const startedAt = Date.now();
         const chat = ai.chats.create({
           model: targetModel,
           history: historyItems,
@@ -547,12 +574,13 @@ async function startServer() {
           timeoutMs,
           `${targetModel} init`
         );
-        return awaitStreamFirstChunk(stream, timeoutMs, targetModel);
+        const remaining = Math.max(800, timeoutMs - (Date.now() - startedAt));
+        return awaitStreamFirstText(stream, remaining, targetModel);
       };
 
       let activeModel: string = attempts[0].targetModel;
       let activeIterator: AsyncIterator<GenerateContentResponse> | null = null;
-      let firstChunk: IteratorResult<GenerateContentResponse> | null = null;
+      let firstText = '';
       let lastStreamErr: unknown = null;
 
       for (const attempt of attempts) {
@@ -564,7 +592,7 @@ async function startServer() {
             : undefined;
           const started = await startStream(attempt.targetModel, thinkingLevel, attempt.timeoutMs);
           activeIterator = started.iterator;
-          firstChunk = started.firstChunk;
+          firstText = started.firstText;
           if (attempt.targetModel === 'gemini-4-hydrogen') {
             hydrogenCooldownUntil = 0;
           }
@@ -579,7 +607,7 @@ async function startServer() {
             throw err;
           }
           if (attempt.targetModel === 'gemini-4-hydrogen') {
-            hydrogenCooldownUntil = Date.now() + 60_000;
+            hydrogenCooldownUntil = Date.now() + 5 * 60_000;
           }
         }
       }
@@ -590,7 +618,7 @@ async function startServer() {
         return;
       }
 
-      if (!activeIterator || !firstChunk) {
+      if (!activeIterator || !firstText) {
         // Last-resort non-streamed generateContent returned over SSE
         const fallbackReply = await runGenerateFallback('gemini-3.1-flash-lite', 20000);
         if (!fallbackReply.trim()) {
@@ -604,28 +632,21 @@ async function startServer() {
       }
 
       sendEvent({ type: 'meta', model: activeModel });
+      sendEvent({ type: 'chunk', text: firstText, model: activeModel });
 
-      let accumulated = '';
+      let accumulated = firstText;
 
-      if (!firstChunk.done) {
-        const firstText = firstChunk.value?.text || '';
-        if (firstText) {
-          accumulated += firstText;
-          sendEvent({ type: 'chunk', text: firstText, model: activeModel });
-        }
-
-        while (!closed) {
-          const nextChunk = await withTimeout(
-            activeIterator.next(),
-            25000,
-            `${activeModel} chunk`
-          );
-          if (nextChunk.done) break;
-          const chunkText = nextChunk.value?.text || '';
-          if (chunkText) {
-            accumulated += chunkText;
-            sendEvent({ type: 'chunk', text: chunkText, model: activeModel });
-          }
+      while (!closed) {
+        const nextChunk = await withTimeout(
+          activeIterator.next(),
+          25000,
+          `${activeModel} chunk`
+        );
+        if (nextChunk.done) break;
+        const chunkText = nextChunk.value?.text || '';
+        if (chunkText) {
+          accumulated += chunkText;
+          sendEvent({ type: 'chunk', text: chunkText, model: activeModel });
         }
       }
 

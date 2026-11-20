@@ -999,8 +999,8 @@ export const AdminPanelScreen: React.FC<AdminPanelScreenProps> = ({
                                 VIP Lifetime
                               </span>
                             ) : (
-                              <span className="text-[9px] bg-blue-500/20 text-blue-300 px-1.5 py-0.2 rounded-full">
-                                Trial
+                              <span className="text-[9px] bg-emerald-500/15 text-emerald-300 px-1.5 py-0.2 rounded-full border border-emerald-500/30">
+                                Free Lifetime
                               </span>
                             )}
                           </div>

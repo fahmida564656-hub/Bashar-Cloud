@@ -44,7 +44,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const initial = (displayName.charAt(0) || 'U').toUpperCase();
 
   const isApproved = subscription?.isLifetimeApproved;
-  const isExpired = subscription?.isExpired && !isApproved;
 
   return (
     <div className="flex-1 flex flex-col px-4 pt-3 pb-24 text-white space-y-4">
@@ -96,42 +95,26 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         </button>
       </div>
 
-      {/* Lifetime Access & Payment Status Card */}
+      {/* Free Lifetime Cloud Access Card */}
       {onOpenPayment && (
         <button
           type="button"
           onClick={onOpenPayment}
-          className={`orbit-card overflow-hidden w-full rounded-2xl p-4 flex items-center justify-between transition-all shadow-md text-left cursor-pointer ${
-            isApproved
-              ? 'bg-[#102521] border border-emerald-500/40 hover:bg-[#132e29]'
-              : isExpired
-              ? 'bg-[#29131a] border border-rose-500/50 hover:bg-[#331821]'
-              : 'bg-[#112038] border border-blue-500/40 hover:bg-[#162947]'
-          }`}
+          className="orbit-card overflow-hidden w-full rounded-2xl p-4 flex items-center justify-between transition-all shadow-md text-left cursor-pointer bg-[#102521] border border-emerald-500/40 hover:bg-[#132e29]"
         >
           <div className="flex items-center gap-3.5">
-            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
-              isApproved
-                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                : isExpired
-                ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
-                : 'bg-blue-600/20 text-sky-400 border border-blue-500/30'
-            }`}>
-              <CreditCard className="w-5 h-5" />
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+              <ShieldCheck className="w-5 h-5" />
             </div>
             <div>
               <h4 className="text-[14px] font-bold text-white flex items-center gap-1.5">
-                <span>সারাজীবনের জন্য ক্লাউড অ্যাক্সেস</span>
+                <span>সারাজীবনের জন্য ফ্রি ক্লাউড অ্যাক্সেস</span>
                 <Sparkles className="w-3.5 h-3.5 text-amber-400" />
               </h4>
-              <p className="text-[11px] text-slate-300 mt-0.5">
+              <p className="text-[11px] text-emerald-200/90 mt-0.5">
                 {isApproved
-                  ? 'অনুমোদিত • আনলিমিটেড ব্যবহার সক্রিয়'
-                  : isExpired
-                  ? '৩০ দিনের ট্রায়াল শেষ • আনলক করতে ১০০ টাকা পেমেন্ট করুন'
-                  : subscription
-                  ? `ফ্রি ট্রায়াল: আর ${toBengaliDigits(subscription.daysRemaining)} দিন বাকি • ১০০ টাকা এককালীন`
-                  : 'বিকাশ বা নগদ সেন্ড মানি করে আনলক করুন'}
+                  ? 'VIP অনুমোদিত • আনলিমিটেড ব্যবহার সক্রিয়'
+                  : 'ফ্রি লাইফটাইম সক্রিয় • কোনো মেয়াদ বা লক ছাড়াই সারাজীবন ডেটা সেভ রাখুন'}
               </p>
             </div>
           </div>

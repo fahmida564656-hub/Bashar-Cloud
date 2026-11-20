@@ -10,55 +10,36 @@ import {
   TRIAL_DURATION_MS,
 } from './subscription.js';
 
-test('new user on day 0 has 30 days remaining and full file permissions', () => {
+test('new user on day 0 has non-expiring free lifetime access and full file permissions', () => {
   const start = 1_700_000_000_000;
   const sub = calculateSubscription(start, false, 'none', start);
   assert.equal(sub.isExpired, false);
   assert.equal(sub.isLifetimeApproved, false);
-  assert.equal(sub.daysRemaining, 30);
+  assert.equal(sub.daysRemaining, 9999);
   assert.equal(canPerformFileAction(sub), true);
 
-  // Even 12 hours into Day 0, still 30 days remaining
   const halfDayLater = calculateSubscription(start, false, 'none', start + 12 * 60 * 60 * 1000);
-  assert.equal(halfDayLater.daysRemaining, 30);
   assert.equal(halfDayLater.isExpired, false);
+  assert.equal(canPerformFileAction(halfDayLater), true);
 });
 
-test('daily countdown decrements cleanly day by day: 29 after day 1, 28 after day 2, 1 after day 29', () => {
+test('free user retains permanent access after 30 days, 1 year, and 10 years without locking', () => {
   const start = 1_700_000_000_000;
 
-  const after1Day = calculateSubscription(start, false, 'none', start + 1 * DAY_MS);
-  assert.equal(after1Day.daysRemaining, 29);
-  assert.equal(after1Day.isExpired, false);
-  assert.equal(canPerformFileAction(after1Day), true);
+  const after30Days = calculateSubscription(start, false, 'none', start + TRIAL_DURATION_MS);
+  assert.equal(after30Days.isExpired, false);
+  assert.equal(canPerformFileAction(after30Days), true);
 
-  const after2Days = calculateSubscription(start, false, 'none', start + 2 * DAY_MS);
-  assert.equal(after2Days.daysRemaining, 28);
-  assert.equal(after2Days.isExpired, false);
-  assert.equal(canPerformFileAction(after2Days), true);
+  const after1Year = calculateSubscription(start, false, 'none', start + 365 * DAY_MS);
+  assert.equal(after1Year.isExpired, false);
+  assert.equal(canPerformFileAction(after1Year), true);
 
-  const after29Days = calculateSubscription(start, false, 'none', start + 29 * DAY_MS);
-  assert.equal(after29Days.daysRemaining, 1);
-  assert.equal(after29Days.isExpired, false);
-  assert.equal(canPerformFileAction(after29Days), true);
+  const after10Years = calculateSubscription(start, false, 'none', start + 3650 * DAY_MS);
+  assert.equal(after10Years.isExpired, false);
+  assert.equal(canPerformFileAction(after10Years), true);
 });
 
-test('user whose 30 days ended is locked (0 days remaining, cannot upload/download/view/rename)', () => {
-  const start = 1_700_000_000_000;
-
-  const exact30Days = calculateSubscription(start, false, 'none', start + TRIAL_DURATION_MS);
-  assert.equal(exact30Days.isExpired, true);
-  assert.equal(exact30Days.isLifetimeApproved, false);
-  assert.equal(exact30Days.daysRemaining, 0);
-  assert.equal(canPerformFileAction(exact30Days), false);
-
-  const thirtyOneDays = calculateSubscription(start, false, 'none', start + TRIAL_DURATION_MS + DAY_MS);
-  assert.equal(thirtyOneDays.isExpired, true);
-  assert.equal(thirtyOneDays.daysRemaining, 0);
-  assert.equal(canPerformFileAction(thirtyOneDays), false);
-});
-
-test('user with approved 100 TK payment unlocks account regardless of elapsed time', () => {
+test('user with approved VIP lifetime retains VIP flag and full file permissions regardless of elapsed time', () => {
   const start = 1_700_000_000_000;
   const oneYearLater = start + 365 * DAY_MS;
   const sub = calculateSubscription(start, true, 'approved', oneYearLater);

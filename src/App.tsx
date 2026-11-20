@@ -961,7 +961,7 @@ export default function App() {
     }
   }, [canonicalUserId, screen, effectiveRegisteredTimestamp, currentUserRecord?.id]);
 
-  // Subscription calculation (30 days free trial, then strictly locked unless 100 TK lifetime is approved)
+  // Free lifetime storage plan (never locks user files after 30 days)
   const subscription = calculateSubscription(
     effectiveRegisteredTimestamp,
     currentUserRecord?.isLifetimeApproved,
@@ -969,24 +969,7 @@ export default function App() {
     nowTick
   );
 
-  const isAccountLocked = subscription.isExpired && !subscription.isLifetimeApproved;
-
-  // Immediately close open file/upload/rename modals if 30-day trial expires
-  useEffect(() => {
-    if (isAccountLocked) {
-      setPreviewFile(null);
-      setSelectedAudioFile(null);
-      setSelectedZipFile(null);
-      setIsZipModalOpen(false);
-      setIsRecycleBinOpen(false);
-      setIsCreateFileOpen(false);
-      setIsNewFolderOpen(false);
-      setFileToRename(null);
-      setIsUploadFlowOpen(false);
-      setPendingUploadFiles([]);
-      setIsFabOpen(false);
-    }
-  }, [isAccountLocked]);
+  const isAccountLocked = false;
 
   // Synchronize document title with dynamic website name
   useEffect(() => {
@@ -2441,74 +2424,76 @@ export default function App() {
     };
 
     let firstChunkWatchdog: number | undefined;
-    let stalledStreamTimedOut = false;
+    let serverExplicitError = false;
 
     try {
-      const watchdogMs = mode === 'deep' ? 24000 : 18000;
+      const watchdogMs = mode === 'deep' ? 30000 : 24000;
       firstChunkWatchdog = window.setTimeout(() => {
-        stalledStreamTimedOut = true;
         controller.abort();
       }, watchdogMs);
-
-      const response = await fetch('/api/ai/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify(requestBody),
-      });
-
-      const contentType = response.headers.get('content-type') || '';
-      if (contentType.includes('text/html')) {
-        if (firstChunkWatchdog) clearTimeout(firstChunkWatchdog);
-        throw new Error('AI সার্ভার সাড়া দিচ্ছে না। অনুগ্রহ করে পেজটি রিফ্রেশ করে আবার চেষ্টা করুন।');
-      }
-      if (!response.ok && !contentType.includes('text/event-stream')) {
-        if (firstChunkWatchdog) clearTimeout(firstChunkWatchdog);
-        const errJson = await response.json().catch(() => ({}));
-        throw new Error(errJson.error || `AI সার্ভার ত্রুটি (${response.status})`);
-      }
 
       let fullReply = '';
       let modelUsed = '';
 
-      if (contentType.includes('application/json')) {
-        if (firstChunkWatchdog) clearTimeout(firstChunkWatchdog);
-        const jsonData = await response.json().catch(() => ({}));
-        if (jsonData.error) {
-          throw new Error(jsonData.error);
-        }
-        fullReply = typeof jsonData.reply === 'string' ? jsonData.reply : '';
-        modelUsed = typeof jsonData.model === 'string' ? jsonData.model : '';
-        if (fullReply) {
-          applyStreamText(fullReply, modelUsed);
-        }
-      } else if (response.body) {
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
+      try {
+        const response = await fetch('/api/ai/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify(requestBody),
+        });
 
-        const consumeEvents = (
-          parsedEvents: Array<{ type?: string; text?: string; model?: string; error?: string }>
-        ) => {
-          for (const parsed of parsedEvents) {
-            if (parsed.type === 'meta' && parsed.model) {
-              modelUsed = parsed.model;
-            } else if (parsed.type === 'chunk' && parsed.text) {
-              if (firstChunkWatchdog) {
-                clearTimeout(firstChunkWatchdog);
-                firstChunkWatchdog = undefined;
-              }
-              fullReply += parsed.text;
-              modelUsed = parsed.model || modelUsed;
-              applyStreamText(fullReply, modelUsed);
-            } else if (parsed.type === 'error') {
-              if (firstChunkWatchdog) clearTimeout(firstChunkWatchdog);
-              throw new Error(parsed.error || 'AI উত্তর তৈরিতে সমস্যা হয়েছে।');
-            }
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('text/html')) {
+          if (firstChunkWatchdog) clearTimeout(firstChunkWatchdog);
+          throw new Error('AI সার্ভার সাড়া দিচ্ছে না। অনুগ্রহ করে পেজটি রিফ্রেশ করে আবার চেষ্টা করুন।');
+        }
+        if (!response.ok && !contentType.includes('text/event-stream')) {
+          if (firstChunkWatchdog) clearTimeout(firstChunkWatchdog);
+          const errJson = await response.json().catch(() => ({}));
+          serverExplicitError = true;
+          throw new Error(errJson.error || `AI সার্ভার ত্রুটি (${response.status})`);
+        }
+
+        if (contentType.includes('application/json')) {
+          if (firstChunkWatchdog) clearTimeout(firstChunkWatchdog);
+          const jsonData = await response.json().catch(() => ({}));
+          if (jsonData.error) {
+            serverExplicitError = true;
+            throw new Error(jsonData.error);
           }
-        };
+          fullReply = typeof jsonData.reply === 'string' ? jsonData.reply : '';
+          modelUsed = typeof jsonData.model === 'string' ? jsonData.model : '';
+          if (fullReply) {
+            applyStreamText(fullReply, modelUsed);
+          }
+        } else if (response.body) {
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
 
-        try {
+          const consumeEvents = (
+            parsedEvents: Array<{ type?: string; text?: string; model?: string; error?: string }>
+          ) => {
+            for (const parsed of parsedEvents) {
+              if (parsed.type === 'meta' && parsed.model) {
+                modelUsed = parsed.model;
+              } else if (parsed.type === 'chunk' && parsed.text) {
+                if (firstChunkWatchdog) {
+                  clearTimeout(firstChunkWatchdog);
+                  firstChunkWatchdog = undefined;
+                }
+                fullReply += parsed.text;
+                modelUsed = parsed.model || modelUsed;
+                applyStreamText(fullReply, modelUsed);
+              } else if (parsed.type === 'error') {
+                if (firstChunkWatchdog) clearTimeout(firstChunkWatchdog);
+                serverExplicitError = true;
+                throw new Error(parsed.error || 'AI উত্তর তৈরিতে সমস্যা হয়েছে।');
+              }
+            }
+          };
+
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
@@ -2518,16 +2503,21 @@ export default function App() {
             buffer = remainder;
             consumeEvents(events);
           }
-        } catch (readErr) {
-          if (!stalledStreamTimedOut) {
-            throw readErr;
+
+          if (buffer.trim()) {
+            const { events } = parseSseChunks(buffer, true);
+            consumeEvents(events);
           }
         }
-
-        if (buffer.trim() && !stalledStreamTimedOut) {
-          const { events } = parseSseChunks(buffer, true);
-          consumeEvents(events);
+      } catch (streamErr) {
+        if (firstChunkWatchdog) {
+          clearTimeout(firstChunkWatchdog);
+          firstChunkWatchdog = undefined;
         }
+        if (userAbortedAiRef.current || serverExplicitError || fullReply.trim()) {
+          throw streamErr;
+        }
+        // Transport / SSE stream interruption without text: fall through to JSON fallback below
       }
 
       if (firstChunkWatchdog) {
@@ -2535,13 +2525,13 @@ export default function App() {
         firstChunkWatchdog = undefined;
       }
 
-      // Proxy-proof non-streaming JSON fallback if SSE yielded nothing or timed out waiting for first chunk
-      if (!fullReply.trim() && !userAbortedAiRef.current) {
+      // Proxy-proof non-streaming JSON fallback if SSE yielded nothing or interrupted before first text
+      if (!fullReply.trim() && !userAbortedAiRef.current && !serverExplicitError) {
         const fallbackController = new AbortController();
         aiAbortRef.current = fallbackController;
         const fallbackTimer = window.setTimeout(() => {
           fallbackController.abort();
-        }, 20000);
+        }, 25000);
         try {
           const fallbackRes = await fetch('/api/ai/chat', {
             method: 'POST',

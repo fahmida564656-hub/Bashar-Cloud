@@ -333,7 +333,7 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
           {websiteName}
         </h1>
         <p className="text-[11.5px] text-slate-400 leading-snug max-w-[300px]">
-          নিরাপদ ব্যক্তিগত ক্লাউড স্টোরেজ ও Bashar Cloud AI — ৩০ দিনের ফ্রি ট্রায়ালসহ শুরু করুন
+          নিরাপদ ব্যক্তিগত ক্লাউড স্টোরেজ ও Bashar Cloud AI — সারাজীবনের জন্য সম্পূর্ণ ফ্রি
         </p>
       </div>
 

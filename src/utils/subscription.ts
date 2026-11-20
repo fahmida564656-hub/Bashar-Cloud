@@ -1,4 +1,4 @@
-import { UserSubscription, PaymentStatus } from '../types';
+import type { UserSubscription, PaymentStatus } from '../types';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const TRIAL_DURATION_DAYS = 30;
@@ -16,7 +16,7 @@ export function toBengaliDigits(value: number | string): string {
 }
 
 /**
- * Safely reads a user's persisted trial start timestamp from localStorage.
+ * Safely reads a user's persisted registration start timestamp from localStorage.
  */
 export function loadTrialStartTimestamp(userKey: string): number | undefined {
   if (!userKey) return undefined;
@@ -31,7 +31,7 @@ export function loadTrialStartTimestamp(userKey: string): number | undefined {
 }
 
 /**
- * Persists a user's trial start timestamp in localStorage if valid.
+ * Persists a user's start timestamp in localStorage if valid.
  * Never overwrites an earlier valid timestamp with a newer one unless forced.
  */
 export function saveTrialStartTimestamp(userKey: string, timestamp: number, force = false): number {
@@ -49,13 +49,9 @@ export function saveTrialStartTimestamp(userKey: string, timestamp: number, forc
 }
 
 /**
- * Calculates user subscription status based on registration time and approval status.
- * Daily countdown rules:
- * - Day 0 (< 24h elapsed): 30 days remaining
- * - After 1 day (>= 24h elapsed): 29 days remaining
- * - After 2 days (>= 48h elapsed): 28 days remaining
- * - ...
- * - After 30 days (>= 30 * 24h elapsed): 0 days remaining, expired & locked until 100 TK payment approved
+ * Calculates user subscription status.
+ * Free Lifetime Plan: all users retain permanent, non-expiring access to save,
+ * view, upload, download, and manage their data for free forever.
  */
 export function calculateSubscription(
   registeredTimestamp?: number,
@@ -80,28 +76,22 @@ export function calculateSubscription(
     };
   }
 
-  const elapsedMs = Math.max(0, safeNow - timestamp);
-  const elapsedDays = Math.floor(elapsedMs / DAY_MS);
-  const isPastTrial = elapsedMs >= TRIAL_DURATION_MS;
-  const daysRemaining = isPastTrial ? 0 : Math.max(0, TRIAL_DURATION_DAYS - elapsedDays);
-
   return {
     registeredTimestamp: timestamp,
     trialDays: TRIAL_DURATION_DAYS,
     isLifetimeApproved: false,
     paymentStatus,
-    isExpired: isPastTrial,
-    daysRemaining,
+    isExpired: false,
+    daysRemaining: 9999,
   };
 }
 
 /**
  * Checks whether user has permission to upload, delete, rename, view, or download.
- * After 30 days expire without 100 TK approval, all file operations are strictly locked.
+ * Free lifetime access is permanently enabled for all accounts.
  */
-export function canPerformFileAction(subscription: UserSubscription): boolean {
-  if (subscription.isLifetimeApproved) return true;
-  return !subscription.isExpired;
+export function canPerformFileAction(_subscription: UserSubscription): boolean {
+  return true;
 }
 
 /**
