@@ -303,58 +303,58 @@ export const firestoreService = {
     }).catch(() => {});
 
     if (!isFirestoreWriteQuotaCooldownActive()) {
-      for (const docId of idsToSync) {
-        const path = `registered_users/${docId}`;
-        try {
-          if (docId === baseUser.id) {
-            await withFirestoreTimeout(
-              setDoc(
-                doc(db, 'registered_users', docId),
-                {
-                  id: docId,
-                  name: baseUser.name,
-                  email: cleanEmail,
-                  phone: baseUser.phone || '',
-                  cleanPhone: normalizeAccountPhone(baseUser.phone),
-                  passwordPlain: params.newPassword,
-                  registeredAt: baseUser.registeredAt,
-                  registeredTimestamp: baseUser.registeredTimestamp || Date.now(),
-                  filesCount: baseUser.filesCount || 0,
-                  storageUsedMB: baseUser.storageUsedMB || 0,
-                  isLifetimeApproved: Boolean(baseUser.isLifetimeApproved),
-                  paymentStatus: baseUser.paymentStatus || 'none',
-                  lastTrxId: baseUser.lastTrxId || '',
-                  updatedAt: new Date().toISOString(),
-                },
-                { merge: true }
-              ),
-              10_000,
-              'updateAccountPassword'
-            );
-          } else {
-            await withFirestoreTimeout(
-              setDoc(
-                doc(db, 'registered_users', docId),
-                {
-                  email: cleanEmail,
-                  passwordPlain: params.newPassword,
-                  updatedAt: new Date().toISOString(),
-                },
-                { merge: true }
-              ),
-              10_000,
-              'updateLegacyAccountPassword'
-            );
-          }
-        } catch (error) {
-          if (isFirestoreHardQuotaError(error)) {
-            markFirestoreWriteQuotaCooldown();
+      await Promise.all(
+        idsToSync.map(async (docId) => {
+          const path = `registered_users/${docId}`;
+          try {
+            if (docId === baseUser.id) {
+              await withFirestoreTimeout(
+                setDoc(
+                  doc(db, 'registered_users', docId),
+                  {
+                    id: docId,
+                    name: baseUser.name,
+                    email: cleanEmail,
+                    phone: baseUser.phone || '',
+                    cleanPhone: normalizeAccountPhone(baseUser.phone),
+                    passwordPlain: params.newPassword,
+                    registeredAt: baseUser.registeredAt,
+                    registeredTimestamp: baseUser.registeredTimestamp || Date.now(),
+                    filesCount: baseUser.filesCount || 0,
+                    storageUsedMB: baseUser.storageUsedMB || 0,
+                    isLifetimeApproved: Boolean(baseUser.isLifetimeApproved),
+                    paymentStatus: baseUser.paymentStatus || 'none',
+                    lastTrxId: baseUser.lastTrxId || '',
+                    updatedAt: new Date().toISOString(),
+                  },
+                  { merge: true }
+                ),
+                4500,
+                'updateAccountPassword'
+              );
+            } else {
+              await withFirestoreTimeout(
+                setDoc(
+                  doc(db, 'registered_users', docId),
+                  {
+                    email: cleanEmail,
+                    passwordPlain: params.newPassword,
+                    updatedAt: new Date().toISOString(),
+                  },
+                  { merge: true }
+                ),
+                4500,
+                'updateLegacyAccountPassword'
+              );
+            }
+          } catch (error) {
+            if (isFirestoreHardQuotaError(error)) {
+              markFirestoreWriteQuotaCooldown();
+            }
             handleFirestoreError(error, OperationType.WRITE, path);
-            break;
           }
-          handleFirestoreError(error, OperationType.WRITE, path);
-        }
-      }
+        })
+      );
     }
 
     return baseUser;

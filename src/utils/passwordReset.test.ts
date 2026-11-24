@@ -2,11 +2,13 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildPasswordResetEmailContent,
+  formatMailTransportError,
   MAX_OTP_ATTEMPTS,
   OTP_TTL_MS,
   PasswordResetStore,
   RESEND_COOLDOWN_MS,
   RESET_TOKEN_TTL_MS,
+  resolveMailProviderCandidates,
   resolveMailProviderConfig,
 } from './passwordReset.ts';
 import {
@@ -166,7 +168,7 @@ describe('PasswordResetStore', () => {
 });
 
 describe('mail provider resolution and email builder', () => {
-  it('ignores placeholder env values and selects configured provider cleanly', () => {
+  it('strips accidental quotes, resolves ordered candidates, and ignores placeholders', () => {
     assert.equal(
       resolveMailProviderConfig({
         SMTP_USER: 'MY_GMAIL_ADDRESS',
@@ -176,17 +178,49 @@ describe('mail provider resolution and email builder', () => {
     );
 
     const smtpCfg = resolveMailProviderConfig({
-      SMTP_USER: 'sender@gmail.com',
-      SMTP_PASS: 'abcd efgh ijkl mnop',
+      SMTP_USER: '"sender@gmail.com"',
+      SMTP_PASS: "'abcd efgh ijkl mnop'",
     });
     assert.equal(smtpCfg.provider, 'smtp');
+    assert.equal(smtpCfg.smtpUser, 'sender@gmail.com');
     assert.equal(smtpCfg.smtpHost, 'smtp.gmail.com');
     assert.equal(smtpCfg.smtpPort, 465);
 
     const resendCfg = resolveMailProviderConfig({
-      RESEND_API_KEY: 're_live_123',
+      RESEND_API_KEY: ' "re_live_123" ',
     });
     assert.equal(resendCfg.provider, 'resend');
+    assert.equal(resendCfg.resendApiKey, 're_live_123');
+
+    const candidates = resolveMailProviderCandidates({
+      SMTP_USER: 'sender@gmail.com',
+      SMTP_PASS: 'apppass',
+      RESEND_API_KEY: 're_live_123',
+    });
+    assert.equal(candidates.length, 2);
+    assert.equal(candidates[0].provider, 'smtp');
+    assert.equal(candidates[1].provider, 'resend');
+  });
+
+  it('classifies Resend 401, Resend 403, and Gmail SMTP auth errors clearly', () => {
+    const err401 = formatMailTransportError(
+      new Error('Resend API error (401): {"message":"API key is invalid","statusCode":401}')
+    );
+    assert.equal(err401.code, 'RESEND_INVALID_API_KEY');
+    assert.equal(err401.status, 503);
+    assert.ok(err401.message.includes('RESEND_API_KEY'));
+
+    const err403 = formatMailTransportError(
+      new Error('Resend API error (403): You can only send testing emails to your own email address')
+    );
+    assert.equal(err403.code, 'RESEND_DOMAIN_RESTRICTED');
+    assert.equal(err403.status, 503);
+
+    const errSmtp = formatMailTransportError(
+      new Error('Invalid login: 535-5.7.8 Username and Password not accepted')
+    );
+    assert.equal(errSmtp.code, 'SMTP_AUTH_FAILED');
+    assert.equal(errSmtp.status, 503);
   });
 
   it('escapes HTML appName and includes 6-digit OTP in email content', () => {

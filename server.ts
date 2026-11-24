@@ -19,10 +19,12 @@ import {
 } from './src/utils/aiServerHelpers.ts';
 import {
   buildPasswordResetEmailContent,
+  formatMailTransportError,
   MAX_PASSWORD_LENGTH,
   MIN_PASSWORD_LENGTH,
   normalizeResetEmail,
   PasswordResetStore,
+  resolveMailProviderCandidates,
   resolveMailProviderConfig,
 } from './src/utils/passwordReset.ts';
 
@@ -174,8 +176,8 @@ async function startServer() {
     code: string,
     appName?: string
   ): Promise<void> => {
-    const mailConfig = resolveMailProviderConfig(process.env);
-    if (!mailConfig.provider) {
+    const candidates = resolveMailProviderCandidates(process.env);
+    if (candidates.length === 0) {
       throw new Error('MAIL_NOT_CONFIGURED');
     }
 
@@ -184,49 +186,62 @@ async function startServer() {
       appName,
     });
 
-    if (mailConfig.provider === 'smtp') {
-      const transporter = nodemailer.createTransport({
-        host: mailConfig.smtpHost,
-        port: mailConfig.smtpPort,
-        secure: mailConfig.smtpPort === 465,
-        auth: {
-          user: mailConfig.smtpUser,
-          pass: mailConfig.smtpPass,
-        },
-        connectionTimeout: 10_000,
-        greetingTimeout: 10_000,
-        socketTimeout: 15_000,
-      });
+    let lastError: unknown = null;
 
-      await transporter.sendMail({
-        from: mailConfig.fromAddress,
-        to: toEmail,
-        subject,
-        text,
-        html,
-      });
-      return;
+    for (const mailConfig of candidates) {
+      try {
+        if (mailConfig.provider === 'smtp') {
+          const transporter = nodemailer.createTransport({
+            host: mailConfig.smtpHost,
+            port: mailConfig.smtpPort,
+            secure: mailConfig.smtpPort === 465,
+            auth: {
+              user: mailConfig.smtpUser,
+              pass: mailConfig.smtpPass,
+            },
+            connectionTimeout: 10_000,
+            greetingTimeout: 10_000,
+            socketTimeout: 15_000,
+          });
+
+          await transporter.sendMail({
+            from: mailConfig.fromAddress,
+            to: toEmail,
+            subject,
+            text,
+            html,
+          });
+          return;
+        }
+
+        if (mailConfig.provider === 'resend') {
+          const resendRes = await fetch('https://api.resend.com/emails', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${mailConfig.resendApiKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              from: mailConfig.fromAddress,
+              to: [toEmail],
+              subject,
+              text,
+              html,
+            }),
+          });
+
+          if (!resendRes.ok) {
+            const errBody = await resendRes.text().catch(() => '');
+            throw new Error(`Resend API error (${resendRes.status}): ${errBody.slice(0, 200)}`);
+          }
+          return;
+        }
+      } catch (err) {
+        lastError = err;
+      }
     }
 
-    const resendRes = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${mailConfig.resendApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: mailConfig.fromAddress,
-        to: [toEmail],
-        subject,
-        text,
-        html,
-      }),
-    });
-
-    if (!resendRes.ok) {
-      const errBody = await resendRes.text().catch(() => '');
-      throw new Error(`Resend API error (${resendRes.status}): ${errBody.slice(0, 200)}`);
-    }
+    throw lastError || new Error('MAIL_DELIVERY_FAILED');
   };
 
   // Persistent temp directories for fast binary media streaming & cloud metadata mirror
@@ -485,13 +500,11 @@ async function startServer() {
       });
     } catch (err) {
       passwordResetStore.rollbackChallenge(challenge.email);
-      console.warn(
-        '[Password Reset] Failed to send OTP email:',
-        err instanceof Error ? err.message : 'Mail transport failure'
-      );
-      res.status(502).json({
-        error:
-          'জিমেইলে ৬ সংখ্যার কোড পাঠানো যায়নি। অনুগ্রহ করে SMTP / ইমেইল সেটিংস এবং নেটওয়ার্ক যাচাই করে আবার চেষ্টা করুন।',
+      const formatted = formatMailTransportError(err);
+      console.info(`[Password Reset] Mail transport notice (${formatted.code})`);
+      res.status(formatted.status).json({
+        error: formatted.message,
+        code: formatted.code,
       });
     }
   });

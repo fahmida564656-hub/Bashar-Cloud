@@ -386,34 +386,132 @@ export interface MailProviderConfig {
   fromAddress?: string;
 }
 
-export function resolveMailProviderConfig(
-  env: Record<string, string | undefined>
-): MailProviderConfig {
-  const resendApiKey = env.RESEND_API_KEY?.trim() || '';
-  const smtpUser = env.SMTP_USER?.trim() || '';
-  const smtpPass = env.SMTP_PASS?.trim() || '';
-  const smtpHost = env.SMTP_HOST?.trim() || 'smtp.gmail.com';
-  const smtpPort = Number(env.SMTP_PORT) || 465;
-  const fromOverride = env.SMTP_FROM?.trim() || '';
+function cleanEnvSecret(raw?: string): string {
+  if (typeof raw !== 'string') return '';
+  let val = raw.trim();
+  if (
+    (val.startsWith('"') && val.endsWith('"')) ||
+    (val.startsWith("'") && val.endsWith("'"))
+  ) {
+    val = val.slice(1, -1).trim();
+  }
+  return val;
+}
 
-  if (smtpUser && smtpPass && smtpUser !== 'MY_GMAIL_ADDRESS' && smtpPass !== 'MY_GMAIL_APP_PASSWORD') {
-    return {
+function isPlaceholderSecret(val: string): boolean {
+  const upper = val.toUpperCase();
+  return (
+    !val ||
+    upper === 'MY_GMAIL_ADDRESS' ||
+    upper === 'MY_GMAIL_APP_PASSWORD' ||
+    upper === 'MY_RESEND_API_KEY' ||
+    upper === 'YOUR_RESEND_API_KEY'
+  );
+}
+
+export function resolveMailProviderCandidates(
+  env: Record<string, string | undefined>
+): MailProviderConfig[] {
+  const resendApiKey = cleanEnvSecret(env.RESEND_API_KEY);
+  const smtpUser = cleanEnvSecret(env.SMTP_USER);
+  const smtpPass = cleanEnvSecret(env.SMTP_PASS);
+  const smtpHost = cleanEnvSecret(env.SMTP_HOST) || 'smtp.gmail.com';
+  const smtpPort = Number(cleanEnvSecret(env.SMTP_PORT)) || 465;
+  const fromOverride = cleanEnvSecret(env.SMTP_FROM);
+
+  const candidates: MailProviderConfig[] = [];
+
+  if (!isPlaceholderSecret(smtpUser) && !isPlaceholderSecret(smtpPass)) {
+    candidates.push({
       provider: 'smtp',
       smtpHost,
       smtpPort,
       smtpUser,
       smtpPass,
       fromAddress: fromOverride || smtpUser,
-    };
+    });
   }
 
-  if (resendApiKey) {
-    return {
+  if (!isPlaceholderSecret(resendApiKey)) {
+    candidates.push({
       provider: 'resend',
       resendApiKey,
       fromAddress: fromOverride || 'Bashar Cloud <onboarding@resend.dev>',
+    });
+  }
+
+  return candidates;
+}
+
+export function resolveMailProviderConfig(
+  env: Record<string, string | undefined>
+): MailProviderConfig {
+  const candidates = resolveMailProviderCandidates(env);
+  return candidates[0] || { provider: null };
+}
+
+export function formatMailTransportError(err: unknown): {
+  status: number;
+  code: string;
+  message: string;
+} {
+  const raw = err instanceof Error ? err.message : String(err || '');
+  const lower = raw.toLowerCase();
+
+  if (raw === 'MAIL_NOT_CONFIGURED') {
+    return {
+      status: 503,
+      code: 'MAIL_NOT_CONFIGURED',
+      message:
+        'ইমেইল সার্ভিস এখনো কনফিগার করা হয়নি। Settings > Secrets প্যানেলে Gmail SMTP (SMTP_USER ও SMTP_PASS App Password) অথবা সঠিক RESEND_API_KEY যোগ করুন।',
     };
   }
 
-  return { provider: null };
+  if (
+    lower.includes('resend api error (401)') ||
+    lower.includes('api key is invalid')
+  ) {
+    return {
+      status: 503,
+      code: 'RESEND_INVALID_API_KEY',
+      message:
+        'RESEND_API_KEY সঠিক নয়। অনুগ্রহ করে Settings > Secrets প্যানেলে resend.com থেকে সঠিক "re_..." API Key দিন অথবা Gmail SMTP (SMTP_USER ও ১৬ সংখ্যার Google App Password হিসেবে SMTP_PASS) ব্যবহার করুন।',
+    };
+  }
+
+  if (
+    lower.includes('resend api error (403)') ||
+    lower.includes('only send testing emails to your own email') ||
+    lower.includes('verify a domain')
+  ) {
+    return {
+      status: 503,
+      code: 'RESEND_DOMAIN_RESTRICTED',
+      message:
+        'Resend ফ্রি মোডে ডোমেইন ভেরিফাই ছাড়া অন্য জিমেইলে ইমেইল পাঠানো যায় না। যেকোনো জিমেইলে কোড পাঠাতে Settings > Secrets প্যানেলে Gmail SMTP (SMTP_USER ও SMTP_PASS App Password) সেট করুন অথবা Resend-এ ডোমেইন ভেরিফাই করুন।',
+    };
+  }
+
+  if (
+    lower.includes('invalid login') ||
+    lower.includes('535') ||
+    lower.includes('eauth') ||
+    lower.includes('username and password not accepted') ||
+    lower.includes('application-specific password')
+  ) {
+    return {
+      status: 503,
+      code: 'SMTP_AUTH_FAILED',
+      message:
+        'Gmail SMTP লগইন ব্যর্থ হয়েছে। অনুগ্রহ করে সাধারণ পাসওয়ার্ডের বদলে Google Account থেকে তৈরি ১৬ সংখ্যার App Password (SMTP_PASS) এবং সঠিক Gmail (SMTP_USER) Settings > Secrets-এ দিন।',
+    };
+  }
+
+  return {
+    status: 502,
+    code: 'MAIL_DELIVERY_FAILED',
+    message:
+      'জিমেইলে ৬ সংখ্যার কোড পাঠানো যায়নি। অনুগ্রহ করে SMTP / ইমেইল সেটিংস এবং নেটওয়ার্ক যাচাই করে আবার চেষ্টা করুন।',
+  };
 }
+
