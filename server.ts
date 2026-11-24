@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI, ThinkingLevel, type GenerateContentResponse } from '@google/genai';
+import nodemailer from 'nodemailer';
 import {
   resolveGeminiApiKey,
   normalizeAiHistory,
@@ -16,6 +17,14 @@ import {
   type AiCloudSummaryInput,
   type AiModeType,
 } from './src/utils/aiServerHelpers.ts';
+import {
+  buildPasswordResetEmailContent,
+  MAX_PASSWORD_LENGTH,
+  MIN_PASSWORD_LENGTH,
+  normalizeResetEmail,
+  PasswordResetStore,
+  resolveMailProviderConfig,
+} from './src/utils/passwordReset.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -158,6 +167,67 @@ async function startServer() {
   const app = express();
   const port = Number(process.env.PORT) || 3000;
   let hydrogenCooldownUntil = 0;
+  const passwordResetStore = new PasswordResetStore();
+
+  const sendPasswordResetOtpEmail = async (
+    toEmail: string,
+    code: string,
+    appName?: string
+  ): Promise<void> => {
+    const mailConfig = resolveMailProviderConfig(process.env);
+    if (!mailConfig.provider) {
+      throw new Error('MAIL_NOT_CONFIGURED');
+    }
+
+    const { subject, text, html } = buildPasswordResetEmailContent({
+      code,
+      appName,
+    });
+
+    if (mailConfig.provider === 'smtp') {
+      const transporter = nodemailer.createTransport({
+        host: mailConfig.smtpHost,
+        port: mailConfig.smtpPort,
+        secure: mailConfig.smtpPort === 465,
+        auth: {
+          user: mailConfig.smtpUser,
+          pass: mailConfig.smtpPass,
+        },
+        connectionTimeout: 10_000,
+        greetingTimeout: 10_000,
+        socketTimeout: 15_000,
+      });
+
+      await transporter.sendMail({
+        from: mailConfig.fromAddress,
+        to: toEmail,
+        subject,
+        text,
+        html,
+      });
+      return;
+    }
+
+    const resendRes = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${mailConfig.resendApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: mailConfig.fromAddress,
+        to: [toEmail],
+        subject,
+        text,
+        html,
+      }),
+    });
+
+    if (!resendRes.ok) {
+      const errBody = await resendRes.text().catch(() => '');
+      throw new Error(`Resend API error (${resendRes.status}): ${errBody.slice(0, 200)}`);
+    }
+  };
 
   // Persistent temp directories for fast binary media streaming & cloud metadata mirror
   const MEDIA_ROOT_DIR = '/tmp/bashar_cloud_media';
@@ -384,12 +454,119 @@ async function startServer() {
     res.json({ ok: true });
   });
 
+  app.post('/api/auth/forgot-password/request', async (req: Request, res: Response) => {
+    const body = (req.body || {}) as { email?: string; appName?: string };
+    const mailConfig = resolveMailProviderConfig(process.env);
+    if (!mailConfig.provider) {
+      res.status(503).json({
+        error:
+          'ইমেইল সার্ভিস এখনো কনফিগার করা হয়নি। Settings > Secrets প্যানেলে Gmail SMTP (SMTP_USER ও SMTP_PASS App Password) অথবা RESEND_API_KEY যোগ করুন।',
+        code: 'MAIL_NOT_CONFIGURED',
+      });
+      return;
+    }
+
+    const challenge = passwordResetStore.createChallenge(body.email || '');
+    if (!challenge.ok || !challenge.code) {
+      res.status(challenge.status).json({
+        error: challenge.error,
+        retryAfterSeconds: challenge.retryAfterSeconds,
+      });
+      return;
+    }
+
+    try {
+      await sendPasswordResetOtpEmail(challenge.email, challenge.code, body.appName);
+      res.json({
+        ok: true,
+        maskedEmail: challenge.maskedEmail,
+        cooldownSeconds: challenge.cooldownSeconds,
+        expiresInMinutes: challenge.expiresInMinutes,
+      });
+    } catch (err) {
+      passwordResetStore.rollbackChallenge(challenge.email);
+      console.warn(
+        '[Password Reset] Failed to send OTP email:',
+        err instanceof Error ? err.message : 'Mail transport failure'
+      );
+      res.status(502).json({
+        error:
+          'জিমেইলে ৬ সংখ্যার কোড পাঠানো যায়নি। অনুগ্রহ করে SMTP / ইমেইল সেটিংস এবং নেটওয়ার্ক যাচাই করে আবার চেষ্টা করুন।',
+      });
+    }
+  });
+
+  app.post('/api/auth/forgot-password/verify', (req: Request, res: Response) => {
+    const body = (req.body || {}) as { email?: string; code?: string };
+    const verified = passwordResetStore.verifyCode(body.email || '', body.code || '');
+    if (!verified.ok || !verified.resetToken) {
+      res.status(verified.status).json({
+        error: verified.error,
+        remainingAttempts: verified.remainingAttempts,
+      });
+      return;
+    }
+    res.json({
+      ok: true,
+      resetToken: verified.resetToken,
+      expiresInMinutes: verified.expiresInMinutes,
+    });
+  });
+
+  app.post('/api/auth/forgot-password/reset', (req: Request, res: Response) => {
+    const body = (req.body || {}) as {
+      email?: string;
+      resetToken?: string;
+      newPassword?: string;
+    };
+
+    const newPassword = typeof body.newPassword === 'string' ? body.newPassword : '';
+    if (newPassword.length < MIN_PASSWORD_LENGTH || newPassword.length > MAX_PASSWORD_LENGTH) {
+      res.status(400).json({
+        error: `নতুন পাসওয়ার্ড ${MIN_PASSWORD_LENGTH} থেকে ${MAX_PASSWORD_LENGTH} অক্ষরের মধ্যে হতে হবে।`,
+      });
+      return;
+    }
+
+    const consumed = passwordResetStore.consumeResetToken(
+      body.email || '',
+      body.resetToken || ''
+    );
+    if (!consumed.ok || !consumed.email) {
+      res.status(consumed.status).json({ error: consumed.error });
+      return;
+    }
+
+    const normalizedEmail = normalizeResetEmail(consumed.email);
+    const state = readCloudStateMirror();
+    let updatedMirror = false;
+    for (const [uid, record] of Object.entries(state.users)) {
+      const recordEmail =
+        typeof record?.email === 'string' ? normalizeResetEmail(record.email) : '';
+      if (recordEmail === normalizedEmail) {
+        state.users[uid] = {
+          ...record,
+          passwordPlain: newPassword,
+          updatedAt: new Date().toISOString(),
+        };
+        updatedMirror = true;
+      }
+    }
+    if (updatedMirror) {
+      writeCloudStateMirror(state);
+    }
+
+    res.json({ ok: true });
+  });
+
   app.get('/api/health', (_req: Request, res: Response) => {
     const apiKey = resolveGeminiApiKey(process.env);
+    const mailCfg = resolveMailProviderConfig(process.env);
     res.json({
       ok: true,
       service: 'bashar-cloud-ai',
       hasApiKey: Boolean(apiKey),
+      hasMailConfig: Boolean(mailCfg.provider),
     });
   });
 

@@ -1,5 +1,22 @@
-import React, { useState } from 'react';
-import { Mail, Phone, Lock, Eye, EyeOff, User, ArrowRight, Upload, Camera, ShieldCheck, UserPlus, LogIn, AlertCircle, Globe, CheckCircle2, RefreshCw } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import {
+  Mail,
+  Phone,
+  Lock,
+  Eye,
+  EyeOff,
+  User,
+  ArrowRight,
+  ArrowLeft,
+  Upload,
+  Camera,
+  UserPlus,
+  LogIn,
+  AlertCircle,
+  CheckCircle2,
+  RefreshCw,
+  KeyRound,
+} from 'lucide-react';
 import { UserProfile, RegisteredUser } from '../types';
 import { firestoreService } from '../firebase/firestoreService';
 import { compressImageToSafeDataUrl } from '../utils/fileVault';
@@ -13,6 +30,14 @@ import {
   isFirestoreQuotaCooldownActive,
   isFirestoreWriteQuotaCooldownActive,
 } from '../firebase/errorHandler';
+import {
+  isValidResetEmail,
+  isValidSixDigitCode,
+  maskEmailAddress,
+  normalizeResetEmail,
+  sanitizeSixDigitInput,
+  validateNewPasswordPair,
+} from '../utils/passwordResetValidation';
 
 interface AuthScreenProps {
   websiteName?: string;
@@ -53,15 +78,49 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [successBanner, setSuccessBanner] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [loadingText, setLoadingText] = useState('যাচাই করা হচ্ছে...');
 
+  // Forgot Password (6-digit Gmail OTP recovery) state
+  const [isForgotPassword, setIsForgotPassword] = useState(false);
+  const [forgotStep, setForgotStep] = useState<'email' | 'code' | 'new_password'>('email');
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [forgotOtpCode, setForgotOtpCode] = useState('');
+  const [forgotResetToken, setForgotResetToken] = useState('');
+  const [forgotNewPassword, setForgotNewPassword] = useState('');
+  const [forgotConfirmPassword, setForgotConfirmPassword] = useState('');
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [forgotInfoMessage, setForgotInfoMessage] = useState('');
+  const [maskedTargetEmail, setMaskedTargetEmail] = useState('');
+  const [resendCooldown, setResendCooldown] = useState(0);
+  const [forgotTargetUser, setForgotTargetUser] = useState<RegisteredUser | null>(null);
+  const [forgotMatchingIds, setForgotMatchingIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = window.setInterval(() => {
+      setResendCooldown((prev) => (prev <= 1 ? 0 : prev - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [resendCooldown]);
+
   React.useEffect(() => {
     const hasStartedTyping = Boolean(fullName || email || phone || password || confirmPassword);
-    if (!userToggledMode && !hasStartedTyping) {
+    if (!userToggledMode && !isForgotPassword && !hasStartedTyping) {
       setAuthMode(registeredUsers.length === 0 && !hasRemoteUsers ? 'signup' : 'signin');
     }
-  }, [registeredUsers.length, hasRemoteUsers, userToggledMode, fullName, email, phone, password, confirmPassword]);
+  }, [
+    registeredUsers.length,
+    hasRemoteUsers,
+    userToggledMode,
+    isForgotPassword,
+    fullName,
+    email,
+    phone,
+    password,
+    confirmPassword,
+  ]);
 
   // Profile picture upload handler (compressed cleanly so Firestore 1MB limit is never exceeded)
   const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -80,9 +139,225 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
 
   const cleanPhone = (p: string) => (p || '').replace(/[^0-9]/g, '').slice(-10);
 
+  const openForgotPasswordFlow = () => {
+    const candidateEmail =
+      email.trim() || (phone.includes('@') ? phone.trim() : '');
+    setIsForgotPassword(true);
+    setForgotStep('email');
+    setForgotEmail(candidateEmail);
+    setForgotOtpCode('');
+    setForgotResetToken('');
+    setForgotNewPassword('');
+    setForgotConfirmPassword('');
+    setForgotInfoMessage('');
+    setMaskedTargetEmail('');
+    setForgotTargetUser(null);
+    setForgotMatchingIds([]);
+    setErrorMessage('');
+    setSuccessBanner('');
+  };
+
+  const exitForgotPasswordFlow = () => {
+    setIsForgotPassword(false);
+    setForgotStep('email');
+    setErrorMessage('');
+    setForgotInfoMessage('');
+  };
+
+  const handleRequestResetOtp = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setErrorMessage('');
+    setForgotInfoMessage('');
+
+    const normalizedEmail = normalizeResetEmail(forgotEmail);
+    if (!isValidResetEmail(normalizedEmail)) {
+      setErrorMessage('অনুগ্রহ করে আপনার সঠিক জিমেইল ঠিকানা লিখুন (যেমন: name@gmail.com)।');
+      return;
+    }
+
+    setIsLoading(true);
+    setLoadingText('অ্যাকাউন্ট যাচাই ও জিমেইলে কোড পাঠানো হচ্ছে...');
+
+    try {
+      // 1. Verify registered account exists locally or in Cloud Firestore/mirror
+      const localMatches = findMatchingUserRecords(registeredUsers, { email: normalizedEmail });
+      let targetUser: RegisteredUser | undefined = selectCanonicalUserRecord(localMatches);
+      const collectedIds = new Set<string>(localMatches.map((u) => u.id));
+      let quotaExceeded = false;
+
+      if (!isFirestoreQuotaCooldownActive() || !targetUser) {
+        try {
+          const lookupRes = await firestoreService.lookupRegisteredAccount(normalizedEmail);
+          quotaExceeded = lookupRes.quotaExceeded;
+          lookupRes.matchingIds.forEach((id) => collectedIds.add(id));
+          if (lookupRes.user) {
+            targetUser =
+              selectCanonicalUserRecord(
+                targetUser ? [lookupRes.user, ...localMatches] : [lookupRes.user]
+              ) || lookupRes.user;
+          }
+        } catch (lookupErr) {
+          console.warn('Forgot-password account lookup warning:', lookupErr);
+        }
+      }
+
+      if (!targetUser) {
+        setErrorMessage(
+          quotaExceeded
+            ? 'এই মুহূর্তে ক্লাউড ডাটাবেস (Firestore) এর দৈনিক ফ্রি রিড কোটা পূর্ণ থাকায় দূরবর্তী সার্ভার থেকে অ্যাকাউন্ট যাচাই করা যাচ্ছে না।'
+            : 'এই জিমেইল ঠিকানায় কোনো অ্যাকাউন্ট পাওয়া যায়নি। সঠিক জিমেইল দিন অথবা নতুন অ্যাকাউন্ট খুলুন।'
+        );
+        return;
+      }
+
+      setForgotTargetUser(targetUser);
+      setForgotMatchingIds(Array.from(collectedIds));
+
+      // 2. Ask server to generate 6-digit OTP and send real email
+      const response = await fetch('/api/auth/forgot-password/request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: normalizedEmail,
+          appName: websiteName,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        if (typeof data.retryAfterSeconds === 'number' && data.retryAfterSeconds > 0) {
+          setResendCooldown(data.retryAfterSeconds);
+        }
+        setErrorMessage(
+          data.error || 'জিমেইলে ভেরিফিকেশন কোড পাঠানো যায়নি। অনুগ্রহ করে আবার চেষ্টা করুন।'
+        );
+        return;
+      }
+
+      const masked = data.maskedEmail || maskEmailAddress(normalizedEmail);
+      setMaskedTargetEmail(masked);
+      setForgotOtpCode('');
+      setResendCooldown(typeof data.cooldownSeconds === 'number' ? data.cooldownSeconds : 60);
+      setForgotInfoMessage(
+        `${masked} জিমেইল ঠিকানায় ৬ সংখ্যার একটি ভেরিফিকেশন কোড পাঠানো হয়েছে।`
+      );
+      setForgotStep('code');
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'নেটওয়ার্ক সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleVerifyResetOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage('');
+
+    const normalizedEmail = normalizeResetEmail(forgotEmail);
+    const cleanedCode = sanitizeSixDigitInput(forgotOtpCode);
+    if (!isValidSixDigitCode(cleanedCode)) {
+      setErrorMessage('অনুগ্রহ করে জিমেইলে পাঠানো ৬ সংখ্যার সম্পূর্ণ কোডটি লিখুন।');
+      return;
+    }
+
+    setIsLoading(true);
+    setLoadingText('৬ সংখ্যার কোড যাচাই করা হচ্ছে...');
+
+    try {
+      const response = await fetch('/api/auth/forgot-password/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: normalizedEmail,
+          code: cleanedCode,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok || !data.resetToken) {
+        setErrorMessage(data.error || 'কোডটি সঠিক নয় বা মেয়াদ শেষ হয়ে গেছে।');
+        return;
+      }
+
+      setForgotResetToken(data.resetToken);
+      setForgotInfoMessage('কোড যাচাই সফল হয়েছে! এখন আপনার নতুন পাসওয়ার্ড সেট করুন।');
+      setForgotStep('new_password');
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'কোড যাচাই করতে সমস্যা হয়েছে। আবার চেষ্টা করুন।');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleResetPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage('');
+
+    const pairCheck = validateNewPasswordPair(forgotNewPassword, forgotConfirmPassword);
+    if (!pairCheck.valid) {
+      setErrorMessage(pairCheck.error || 'সঠিক পাসওয়ার্ড দিন।');
+      return;
+    }
+
+    const normalizedEmail = normalizeResetEmail(forgotEmail);
+    setIsLoading(true);
+    setLoadingText('নতুন পাসওয়ার্ড সংরক্ষণ করা হচ্ছে...');
+
+    try {
+      const response = await fetch('/api/auth/forgot-password/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: normalizedEmail,
+          resetToken: forgotResetToken,
+          newPassword: forgotNewPassword,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        setErrorMessage(data.error || 'পাসওয়ার্ড পরিবর্তন করা যায়নি। আবার চেষ্টা করুন।');
+        return;
+      }
+
+      const updatedUser = await firestoreService.updateRegisteredAccountPassword({
+        email: normalizedEmail,
+        newPassword: forgotNewPassword,
+        targetUser: forgotTargetUser,
+        matchingIds: forgotMatchingIds,
+      });
+
+      if (updatedUser && onUserRegistered) {
+        onUserRegistered(updatedUser);
+      }
+
+      setIsForgotPassword(false);
+      setForgotStep('email');
+      setUserToggledMode(true);
+      setAuthMode('signin');
+      setLoginMethod('email');
+      setEmail(normalizedEmail);
+      setPassword('');
+      setConfirmPassword('');
+      setForgotOtpCode('');
+      setForgotResetToken('');
+      setForgotNewPassword('');
+      setForgotConfirmPassword('');
+      setForgotInfoMessage('');
+      setSuccessBanner(
+        'পাসওয়ার্ড সফলভাবে পরিবর্তন হয়েছে! এখন আপনার নতুন পাসওয়ার্ড দিয়ে লগইন করুন।'
+      );
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'পাসওয়ার্ড সংরক্ষণ করতে সমস্যা হয়েছে।');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
+    setSuccessBanner('');
     setIsLoading(true);
 
     try {
@@ -264,7 +539,10 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
                 foundUser ? [lookupRes.user, ...localMatches] : [lookupRes.user]
               );
               if (combined) {
-                foundUser = combined;
+                foundUser = {
+                  ...combined,
+                  passwordPlain: lookupRes.user.passwordPlain || combined.passwordPlain,
+                };
                 if (onUserRegistered) {
                   onUserRegistered(foundUser);
                 }
@@ -342,6 +620,207 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
 
       {/* Main Authentication Container */}
       <div className="w-full mt-1 space-y-3">
+        {isForgotPassword ? (
+          <div className="orbit-card bg-[#0d1626]/95 rounded-2xl p-4 shadow-xl space-y-3.5">
+            <div className="flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={exitForgotPasswordFlow}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-sky-400 hover:text-sky-300 cursor-pointer"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>লগইনে ফিরে যান</span>
+              </button>
+              <span className="text-[11px] font-medium text-slate-400">
+                ধাপ {forgotStep === 'email' ? '১/৩' : forgotStep === 'code' ? '২/৩' : '৩/৩'}
+              </span>
+            </div>
+
+            <div className="flex items-start gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-blue-600/20 border border-blue-500/40 flex items-center justify-center shrink-0">
+                <KeyRound className="w-4 h-4 text-sky-400" />
+              </div>
+              <div>
+                <h2 className="text-base font-bold tracking-tight text-white">
+                  পাসওয়ার্ড রিসেট করুন
+                </h2>
+                <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">
+                  {forgotStep === 'email'
+                    ? 'আপনার নিবন্ধিত জিমেইল ঠিকানা দিন — সেখানে ৬ সংখ্যার ভেরিফিকেশন কোড পাঠানো হবে'
+                    : forgotStep === 'code'
+                    ? 'আপনার জিমেইল ইনবক্স বা স্প্যাম ফোল্ডার থেকে ৬ সংখ্যার কোডটি নিচে লিখুন'
+                    : 'যাচাই সম্পন্ন হয়েছে — এখন আপনার অ্যাকাউন্টের জন্য নতুন পাসওয়ার্ড দিন'}
+                </p>
+              </div>
+            </div>
+
+            {forgotInfoMessage && (
+              <div className="bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs px-3.5 py-2.5 rounded-xl flex items-start gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                <span className="leading-snug">{forgotInfoMessage}</span>
+              </div>
+            )}
+
+            {errorMessage && (
+              <div className="bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs px-3.5 py-2.5 rounded-xl flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <span className="leading-tight">{errorMessage}</span>
+              </div>
+            )}
+
+            {forgotStep === 'email' && (
+              <form onSubmit={handleRequestResetOtp} className="space-y-3">
+                <div>
+                  <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-300 mb-1">
+                    নিবন্ধিত জিমেইল / ইমেইল (Gmail Address)
+                  </label>
+                  <div className="relative flex items-center bg-[#131e30] border border-[#233552] rounded-xl px-3.5 py-2.5 focus-within:border-blue-500 transition-colors">
+                    <Mail className="w-4 h-4 text-slate-400 mr-2.5 shrink-0" />
+                    <input
+                      type="email"
+                      value={forgotEmail}
+                      onChange={(e) => setForgotEmail(e.target.value)}
+                      placeholder="name@gmail.com"
+                      required
+                      className="w-full bg-transparent text-white placeholder-slate-500 focus:outline-none text-sm"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold py-3.5 px-4 rounded-xl transition-all shadow-lg shadow-blue-900/40 text-sm flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
+                >
+                  {isLoading && <RefreshCw className="w-4 h-4 animate-spin text-white" />}
+                  <span>{isLoading ? loadingText : '৬ সংখ্যার কোড পাঠান'}</span>
+                  {!isLoading && <ArrowRight className="w-4 h-4" />}
+                </button>
+              </form>
+            )}
+
+            {forgotStep === 'code' && (
+              <form onSubmit={handleVerifyResetOtp} className="space-y-3">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-300">
+                      ৬ সংখ্যার কোড (6-Digit Code)
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setForgotStep('email');
+                        setErrorMessage('');
+                        setForgotInfoMessage('');
+                      }}
+                      className="text-[11px] text-sky-400 hover:underline cursor-pointer"
+                    >
+                      জিমেইল পরিবর্তন করুন
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={6}
+                    value={forgotOtpCode}
+                    onChange={(e) => setForgotOtpCode(sanitizeSixDigitInput(e.target.value))}
+                    placeholder="••••••"
+                    required
+                    className="w-full bg-[#131e30] border border-[#233552] focus:border-blue-500 rounded-xl px-4 py-3 text-center text-2xl font-mono font-bold tracking-[0.45em] text-white placeholder-slate-600 focus:outline-none transition-colors"
+                  />
+                  {maskedTargetEmail && (
+                    <p className="text-[11px] text-slate-400 mt-1.5 text-center">
+                      প্রাপক: <span className="text-slate-200 font-medium">{maskedTargetEmail}</span>
+                    </p>
+                  )}
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isLoading || forgotOtpCode.length !== 6}
+                  className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold py-3.5 px-4 rounded-xl transition-all shadow-lg shadow-blue-900/40 text-sm flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
+                >
+                  {isLoading && <RefreshCw className="w-4 h-4 animate-spin text-white" />}
+                  <span>{isLoading ? loadingText : 'কোড যাচাই করুন'}</span>
+                  {!isLoading && <ArrowRight className="w-4 h-4" />}
+                </button>
+
+                <div className="flex items-center justify-center pt-1">
+                  <button
+                    type="button"
+                    disabled={resendCooldown > 0 || isLoading}
+                    onClick={() => handleRequestResetOtp()}
+                    className="text-xs font-semibold text-sky-400 hover:text-sky-300 disabled:text-slate-500 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    {resendCooldown > 0
+                      ? `পুনরায় কোড পাঠাতে অপেক্ষা করুন (${resendCooldown}s)`
+                      : 'পুনরায় ৬ সংখ্যার কোড পাঠান'}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {forgotStep === 'new_password' && (
+              <form onSubmit={handleResetPasswordSubmit} className="space-y-3">
+                <div>
+                  <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-300 mb-1">
+                    নতুন পাসওয়ার্ড (New Password)
+                  </label>
+                  <div className="relative flex items-center bg-[#131e30] border border-[#233552] rounded-xl px-3.5 py-2.5 focus-within:border-blue-500 transition-colors">
+                    <Lock className="w-4 h-4 text-slate-400 mr-2.5 shrink-0" />
+                    <input
+                      type={showForgotPassword ? 'text' : 'password'}
+                      value={forgotNewPassword}
+                      onChange={(e) => setForgotNewPassword(e.target.value)}
+                      placeholder="কমপক্ষে ৬ অক্ষরের নতুন পাসওয়ার্ড"
+                      required
+                      minLength={6}
+                      className="w-full bg-transparent text-white placeholder-slate-500 focus:outline-none text-sm"
+                    />
+                    <button
+                      type="button"
+                      aria-label={showForgotPassword ? 'Hide password' : 'Show password'}
+                      onClick={() => setShowForgotPassword(!showForgotPassword)}
+                      className="text-slate-400 hover:text-white p-1 ml-1 cursor-pointer"
+                    >
+                      {showForgotPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-300 mb-1">
+                    নতুন পাসওয়ার্ড নিশ্চিত করুন (Confirm Password)
+                  </label>
+                  <div className="relative flex items-center bg-[#131e30] border border-[#233552] rounded-xl px-3.5 py-2.5 focus-within:border-blue-500 transition-colors">
+                    <Lock className="w-4 h-4 text-slate-400 mr-2.5 shrink-0" />
+                    <input
+                      type={showForgotPassword ? 'text' : 'password'}
+                      value={forgotConfirmPassword}
+                      onChange={(e) => setForgotConfirmPassword(e.target.value)}
+                      placeholder="পুনরায় নতুন পাসওয়ার্ড লিখুন"
+                      required
+                      minLength={6}
+                      className="w-full bg-transparent text-white placeholder-slate-500 focus:outline-none text-sm"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-semibold py-3.5 px-4 rounded-xl transition-all shadow-lg shadow-emerald-950/40 text-sm flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
+                >
+                  {isLoading && <RefreshCw className="w-4 h-4 animate-spin text-white" />}
+                  <span>{isLoading ? loadingText : 'পাসওয়ার্ড পরিবর্তন করুন'}</span>
+                  {!isLoading && <CheckCircle2 className="w-4 h-4" />}
+                </button>
+              </form>
+            )}
+          </div>
+        ) : (
+        <>
         {/* Clean Sign In / Sign Up Switcher */}
         <div className="orbit-card bg-[#0d1626] rounded-2xl p-1.5 shadow-lg flex items-center gap-1">
           <button
@@ -367,6 +846,7 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
               setUserToggledMode(true);
               setAuthMode('signup');
               setErrorMessage('');
+              setSuccessBanner('');
             }}
             className={`flex-1 min-h-[44px] flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${
               authMode === 'signup'
@@ -392,6 +872,13 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
                 : 'নাম, মোবাইল নম্বর, জিমেইল/ইমেইল ও পাসওয়ার্ড দিয়ে নতুন অ্যাকাউন্ট খুলুন'}
             </p>
           </div>
+
+          {successBanner && authMode === 'signin' && (
+            <div className="bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs px-3.5 py-2.5 rounded-xl flex items-start gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+              <span className="leading-snug">{successBanner}</span>
+            </div>
+          )}
 
           {/* Form */}
           <form onSubmit={handleSubmit} className="space-y-2.5">
@@ -560,9 +1047,20 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
 
           {/* Password Input */}
           <div>
-            <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-300 mb-1">
-              পাসওয়ার্ড (Password)
-            </label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-300">
+                পাসওয়ার্ড (Password)
+              </label>
+              {authMode === 'signin' && (
+                <button
+                  type="button"
+                  onClick={openForgotPasswordFlow}
+                  className="text-[11px] font-semibold text-sky-400 hover:text-sky-300 hover:underline cursor-pointer"
+                >
+                  পাসওয়ার্ড ভুলে গেছেন?
+                </button>
+              )}
+            </div>
             <div className="relative flex items-center bg-[#131e30] border border-[#233552] rounded-xl px-3.5 py-2.5 focus-within:border-blue-500 transition-colors">
               <Lock className="w-4 h-4 text-slate-400 mr-2.5 shrink-0" />
               <input
@@ -638,6 +1136,8 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
           </p>
         </div>
         </div>
+        </>
+        )}
       </div>
       </div>
     </div>

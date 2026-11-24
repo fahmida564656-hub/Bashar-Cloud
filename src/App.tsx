@@ -2885,8 +2885,30 @@ export default function App() {
           onUserRegistered={(newU) => {
             setHasRemoteUsers(true);
             setRegisteredUsers((prev) => {
-              if (prev.some((u) => u.id === newU.id)) return prev;
-              return [newU, ...prev];
+              const normalizedEmail = (newU.email || '').trim().toLowerCase();
+              const cleanTargetPhone = cleanPhone(newU.phone);
+              let matched = false;
+              const next = prev.map((u) => {
+                const sameId = u.id === newU.id;
+                const sameEmail =
+                  normalizedEmail && (u.email || '').trim().toLowerCase() === normalizedEmail;
+                const samePhone =
+                  cleanTargetPhone.length >= 7 && cleanPhone(u.phone) === cleanTargetPhone;
+                if (sameId || sameEmail || samePhone) {
+                  matched = true;
+                  return {
+                    ...u,
+                    ...newU,
+                    passwordPlain: newU.passwordPlain || u.passwordPlain,
+                  };
+                }
+                return u;
+              });
+              const updated = matched ? next : [newU, ...prev];
+              try {
+                localStorage.setItem('bashar_cloud_registered_users', JSON.stringify(updated));
+              } catch {}
+              return updated;
             });
           }}
         />

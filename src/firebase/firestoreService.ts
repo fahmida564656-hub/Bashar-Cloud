@@ -248,6 +248,119 @@ export const firestoreService = {
   },
 
   /**
+   * Persist a reset password across canonical & legacy matching registered_users docs
+   * plus the server cloud state mirror so new password works across Website 1 & Website 2.
+   */
+  async updateRegisteredAccountPassword(params: {
+    email: string;
+    newPassword: string;
+    targetUser?: RegisteredUser | null;
+    matchingIds?: string[];
+  }): Promise<RegisteredUser | null> {
+    const cleanEmail = (params.email || '').trim().toLowerCase();
+    if (!cleanEmail || !params.newPassword) return null;
+
+    const baseUser: RegisteredUser = params.targetUser
+      ? {
+          ...params.targetUser,
+          email: cleanEmail,
+          passwordPlain: params.newPassword,
+        }
+      : {
+          id: buildDeterministicAccountId(cleanEmail),
+          name: cleanEmail.split('@')[0] || 'User',
+          email: cleanEmail,
+          phone: '',
+          passwordPlain: params.newPassword,
+          registeredAt: new Date().toLocaleDateString('en-US', {
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric',
+          }),
+          registeredTimestamp: Date.now(),
+          filesCount: 0,
+          storageUsedMB: 0,
+          isLifetimeApproved: false,
+          paymentStatus: 'none',
+        };
+
+    const detId = buildDeterministicAccountId(cleanEmail, baseUser.phone);
+    const idsToSync = Array.from(
+      new Set(
+        [baseUser.id, detId, ...(params.matchingIds || [])]
+          .map((id) => (id || '').trim())
+          .filter(Boolean)
+      )
+    );
+
+    await fetch('/api/cloud/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...baseUser,
+        avatarUrl: sanitizeFirestoreMediaUrl(baseUser.avatarUrl, 180_000),
+      }),
+    }).catch(() => {});
+
+    if (!isFirestoreWriteQuotaCooldownActive()) {
+      for (const docId of idsToSync) {
+        const path = `registered_users/${docId}`;
+        try {
+          if (docId === baseUser.id) {
+            await withFirestoreTimeout(
+              setDoc(
+                doc(db, 'registered_users', docId),
+                {
+                  id: docId,
+                  name: baseUser.name,
+                  email: cleanEmail,
+                  phone: baseUser.phone || '',
+                  cleanPhone: normalizeAccountPhone(baseUser.phone),
+                  passwordPlain: params.newPassword,
+                  registeredAt: baseUser.registeredAt,
+                  registeredTimestamp: baseUser.registeredTimestamp || Date.now(),
+                  filesCount: baseUser.filesCount || 0,
+                  storageUsedMB: baseUser.storageUsedMB || 0,
+                  isLifetimeApproved: Boolean(baseUser.isLifetimeApproved),
+                  paymentStatus: baseUser.paymentStatus || 'none',
+                  lastTrxId: baseUser.lastTrxId || '',
+                  updatedAt: new Date().toISOString(),
+                },
+                { merge: true }
+              ),
+              10_000,
+              'updateAccountPassword'
+            );
+          } else {
+            await withFirestoreTimeout(
+              setDoc(
+                doc(db, 'registered_users', docId),
+                {
+                  email: cleanEmail,
+                  passwordPlain: params.newPassword,
+                  updatedAt: new Date().toISOString(),
+                },
+                { merge: true }
+              ),
+              10_000,
+              'updateLegacyAccountPassword'
+            );
+          }
+        } catch (error) {
+          if (isFirestoreHardQuotaError(error)) {
+            markFirestoreWriteQuotaCooldown();
+            handleFirestoreError(error, OperationType.WRITE, path);
+            break;
+          }
+          handleFirestoreError(error, OperationType.WRITE, path);
+        }
+      }
+    }
+
+    return baseUser;
+  },
+
+  /**
    * Lightweight check (reads at most 1 doc) to know whether any registered account exists in cloud.
    */
   async hasAnyRegisteredUsers(): Promise<boolean> {
