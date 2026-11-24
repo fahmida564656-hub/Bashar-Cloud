@@ -6,6 +6,7 @@ import {
   onSnapshot,
   getDocs,
   getDoc,
+  getDocFromServer,
   query,
   where,
   limit,
@@ -47,6 +48,7 @@ import {
   doesPaymentBelongToUser,
   mergeRegisteredUserRecords,
   normalizeAccountPhone,
+  selectCanonicalUserRecord,
   PaymentOwnerTarget,
 } from '../utils/accountManagement';
 import {
@@ -189,7 +191,7 @@ export const firestoreService = {
       .then((r) => r.ok)
       .catch(() => false);
 
-    const writeDoc = () =>
+    const writeDoc = (withAvatar: boolean) =>
       setDoc(
         doc(db, 'registered_users', user.id),
         {
@@ -199,7 +201,7 @@ export const firestoreService = {
           phone: user.phone || '',
           cleanPhone,
           passwordPlain: user.passwordPlain || '',
-          avatarUrl: sanitizeFirestoreMediaUrl(user.avatarUrl, 180_000),
+          avatarUrl: withAvatar ? sanitizeFirestoreMediaUrl(user.avatarUrl, 180_000) : '',
           registeredAt: user.registeredAt,
           registeredTimestamp: user.registeredTimestamp || Date.now(),
           filesCount: user.filesCount || 0,
@@ -219,15 +221,26 @@ export const firestoreService = {
     }
 
     try {
-      await withFirestoreTimeout(writeDoc(), 3500, 'saveRegisteredUser');
+      await withFirestoreTimeout(writeDoc(true), 10_000, 'saveRegisteredUser');
       return true;
     } catch (error) {
       if (isFirestoreHardQuotaError(error)) {
         markFirestoreWriteQuotaCooldown();
-      }
-      if (isFirestoreQuotaOrTransientError(error)) {
         handleFirestoreError(error, OperationType.WRITE, path);
         return false;
+      }
+      // Retry once without avatarUrl in case bulky avatar caused payload/latency failure so login credentials still sync cross-site
+      if (user.avatarUrl) {
+        try {
+          await withFirestoreTimeout(writeDoc(false), 10_000, 'saveRegisteredUser_core');
+          return true;
+        } catch (retryErr) {
+          if (isFirestoreHardQuotaError(retryErr)) {
+            markFirestoreWriteQuotaCooldown();
+          }
+          handleFirestoreError(retryErr, OperationType.WRITE, path);
+          return false;
+        }
       }
       handleFirestoreError(error, OperationType.WRITE, path);
       return false;
@@ -361,28 +374,25 @@ export const firestoreService = {
 
     const collected = new Map<string, RegisteredUser>();
     let quotaExceeded = false;
+    let firestoreMatched = false;
 
-    const addMatch = (u: RegisteredUser | null) => {
+    const addMatch = (u: RegisteredUser | null, fromFirestore = false) => {
       if (u && u.id) {
+        if (fromFirestore) firestoreMatched = true;
         const existing = collected.get(u.id);
         collected.set(u.id, existing ? mergeRegisteredUserRecords(u, existing) : u);
       }
     };
 
-    // 1. Check same-origin server mirror first (0 Firestore reads)
+    // 1. Check same-origin server mirror first as fallback cache (never blocks fresh Firestore checks)
     const mirrorUsers = await fetchServerCloudUsers();
-    matchesList(mirrorUsers).forEach(addMatch);
+    matchesList(mirrorUsers).forEach((u) => addMatch(u, false));
 
     if (isFirestoreQuotaCooldownActive()) {
-      const records = Array.from(collected.values()).sort(
-        (a, b) => (a.registeredTimestamp || 0) - (b.registeredTimestamp || 0)
-      );
-      if (records.length === 0) {
+      const records = Array.from(collected.values());
+      const unified = selectCanonicalUserRecord(records);
+      if (!unified) {
         return { user: null, matchingIds: [], quotaExceeded: true };
-      }
-      let unified = records[0];
-      for (let i = 1; i < records.length; i++) {
-        unified = mergeRegisteredUserRecords(unified, records[i]);
       }
       return {
         user: unified,
@@ -391,18 +401,24 @@ export const firestoreService = {
       };
     }
 
-    // 2. Targeted Firestore O(1) lookup: try deterministic email doc first (1 read) before query fallbacks
+    // 2. Targeted Firestore O(1) lookup: try deterministic email & phone doc IDs before query fallbacks
     for (const q of queries) {
+      const candidateDetIds: string[] = [];
       if (q.lower.includes('@')) {
-        const detId = buildDeterministicAccountId(q.lower, undefined);
+        candidateDetIds.push(buildDeterministicAccountId(q.lower, undefined));
+      } else if (q.cleanDigits.length >= 7) {
+        candidateDetIds.push(buildDeterministicAccountId(undefined, q.cleanDigits));
+      }
+
+      for (const detId of candidateDetIds) {
         try {
           const ds = await withFirestoreTimeout(
             getDoc(doc(db, 'registered_users', detId)),
-            3500,
-            'getUserDetEmail'
+            5000,
+            'getUserDetId'
           );
           if (ds.exists()) {
-            addMatch(mapDoc(ds.id, ds.data()));
+            addMatch(mapDoc(ds.id, ds.data()), true);
           }
         } catch (err) {
           if (isFirestoreHardQuotaError(err)) quotaExceeded = true;
@@ -410,19 +426,19 @@ export const firestoreService = {
       }
     }
 
-    // 3. Only run indexed email/phone queries if deterministic lookup didn't find a match and quota isn't exhausted
-    if (collected.size === 0 && !quotaExceeded) {
+    // 3. Run indexed email/phone queries whenever Firestore has not confirmed a match yet (so legacy user-* IDs are always found)
+    if (!firestoreMatched && !quotaExceeded) {
       const indexedTasks: Promise<void>[] = [];
       for (const q of queries) {
         if (q.lower.includes('@')) {
           indexedTasks.push(
             withFirestoreTimeout(
               getDocs(query(collection(db, 'registered_users'), where('email', '==', q.lower), limit(5))),
-              4000,
+              6000,
               'findUserByEmail'
             )
               .then((snap) => {
-                snap.forEach((ds) => addMatch(mapDoc(ds.id, ds.data())));
+                snap.forEach((ds) => addMatch(mapDoc(ds.id, ds.data()), true));
               })
               .catch((err) => {
                 if (isFirestoreHardQuotaError(err)) quotaExceeded = true;
@@ -433,11 +449,11 @@ export const firestoreService = {
           indexedTasks.push(
             withFirestoreTimeout(
               getDocs(query(collection(db, 'registered_users'), where('cleanPhone', '==', q.cleanDigits), limit(5))),
-              4000,
+              6000,
               'findUserByPhone'
             )
               .then((snap) => {
-                snap.forEach((ds) => addMatch(mapDoc(ds.id, ds.data())));
+                snap.forEach((ds) => addMatch(mapDoc(ds.id, ds.data()), true));
               })
               .catch((err) => {
                 if (isFirestoreHardQuotaError(err)) quotaExceeded = true;
@@ -454,16 +470,10 @@ export const firestoreService = {
       markFirestoreQuotaCooldown();
     }
 
-    const records = Array.from(collected.values()).sort(
-      (a, b) => (a.registeredTimestamp || 0) - (b.registeredTimestamp || 0)
-    );
-    if (records.length === 0) {
+    const records = Array.from(collected.values());
+    const unified = selectCanonicalUserRecord(records);
+    if (!unified) {
       return { user: null, matchingIds: [], quotaExceeded };
-    }
-
-    let unified = records[0];
-    for (let i = 1; i < records.length; i++) {
-      unified = mergeRegisteredUserRecords(unified, records[i]);
     }
 
     // Warm local server mirror so subsequent logins on this server cost 0 Firestore reads
@@ -1027,7 +1037,8 @@ export const firestoreService = {
     blob: Blob,
     mimeType?: string,
     fileName?: string,
-    onProgress?: (uploadedChunks: number, totalChunks: number) => void
+    onProgress?: (uploadedChunks: number, totalChunks: number) => void,
+    options?: { resumeMissing?: boolean }
   ): Promise<number> {
     if (!userId || userId === 'guest_user' || !fileId || !blob) return 0;
     if (!shouldChunkFileToCloud(blob.size)) return 0;
@@ -1039,9 +1050,36 @@ export const firestoreService = {
       if (chunks.length === 0) return 0;
 
       const resolvedMime = inferMediaMimeType(fileName, mimeType || blob.type);
+      let indicesToUpload = chunks.map((_, i) => i);
+
+      if (options?.resumeMissing) {
+        const existingCheck = await this.verifyCloudChunksExist(userId, fileId, chunks.length);
+        if (existingCheck.complete && existingCheck.totalChunks === chunks.length) {
+          onProgress?.(chunks.length, chunks.length);
+          await withFirestoreTimeout(
+            setDoc(
+              doc(db, 'users', userId, 'files', fileId),
+              {
+                cloudChunkCount: chunks.length,
+                cloudSynced: true,
+                mimeType: resolvedMime,
+                updatedAt: new Date().toISOString(),
+              },
+              { merge: true }
+            ),
+            10_000,
+            'markChunkSynced'
+          );
+          return chunks.length;
+        }
+        if (existingCheck.missingIndices.length > 0) {
+          indicesToUpload = existingCheck.missingIndices;
+        }
+      }
+
       const writeChunkWithRetry = async (index: number, data: string): Promise<void> => {
         let lastErr: unknown;
-        for (let attempt = 0; attempt < 2; attempt++) {
+        for (let attempt = 0; attempt < 3; attempt++) {
           if (isFirestoreWriteQuotaCooldownActive()) {
             throw new Error('Firestore write quota cooldown active');
           }
@@ -1057,7 +1095,7 @@ export const firestoreService = {
                   data,
                 }
               ),
-              8000,
+              20_000,
               `saveChunk_${index}`
             );
             return;
@@ -1067,20 +1105,24 @@ export const firestoreService = {
               markFirestoreWriteQuotaCooldown();
               throw err;
             }
-            await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+            await new Promise((r) => setTimeout(r, 350 * (attempt + 1)));
           }
         }
         throw lastErr;
       };
 
-      const batchSize = 8;
-      let completed = 0;
-      for (let start = 0; start < chunks.length; start += batchSize) {
-        const batch = chunks.slice(start, start + batchSize);
+      const batchSize = 3;
+      let completed = chunks.length - indicesToUpload.length;
+      if (completed > 0) {
+        onProgress?.(completed, chunks.length);
+      }
+
+      for (let start = 0; start < indicesToUpload.length; start += batchSize) {
+        const batchIndices = indicesToUpload.slice(start, start + batchSize);
         await Promise.all(
-          batch.map((data, offsetIdx) => writeChunkWithRetry(start + offsetIdx, data))
+          batchIndices.map((idx) => writeChunkWithRetry(idx, chunks[idx]))
         );
-        completed += batch.length;
+        completed += batchIndices.length;
         onProgress?.(completed, chunks.length);
       }
 
@@ -1095,7 +1137,7 @@ export const firestoreService = {
           },
           { merge: true }
         ),
-        8000,
+        10_000,
         'markChunkSynced'
       );
       return chunks.length;
@@ -1107,7 +1149,7 @@ export const firestoreService = {
 
   /**
    * Downloads and reassembles chunked binary media from Firestore with retry, progress reporting,
-   * and completeness validation for cross-website video/audio/photo playback.
+   * server cache-bypass fallback, and completeness validation for cross-website video/audio/photo playback.
    */
   async getFileBlobFromCloudChunks(
     userId: string,
@@ -1122,19 +1164,31 @@ export const firestoreService = {
     }
 
     const getDocWithRetry = async (idx: number) => {
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const ref = doc(db, 'users', userId, 'file_chunks', buildChunkDocId(fileId, idx));
-          const snap = await Promise.race([
+          let snap = await Promise.race([
             getDoc(ref),
             new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error('Chunk read timeout')), 15000)
+              setTimeout(() => reject(new Error('Chunk read timeout')), 20_000)
             ),
           ]);
+          if (!snap.exists()) {
+            snap = await Promise.race([
+              getDocFromServer(ref),
+              new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error('Chunk server read timeout')), 20_000)
+              ),
+            ]);
+          }
           return snap;
         } catch (err) {
-          if (attempt === 1) throw err;
-          await new Promise((r) => setTimeout(r, 200));
+          if (isFirestoreHardQuotaError(err)) {
+            markFirestoreQuotaCooldown();
+            throw err;
+          }
+          if (attempt === 2) throw err;
+          await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
         }
       }
       return null;
@@ -1175,7 +1229,7 @@ export const firestoreService = {
           { length: Math.max(0, targetCount - startIdx) },
           (_, i) => startIdx + i
         );
-        const batchSize = 8;
+        const batchSize = 5;
         for (let start = 0; start < remainingIndices.length; start += batchSize) {
           const slice = remainingIndices.slice(start, start + batchSize);
           const docs = await Promise.all(slice.map((idx) => getDocWithRetry(idx)));
@@ -1205,7 +1259,7 @@ export const firestoreService = {
         const snap = await Promise.race([
           getDocs(q),
           new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('Chunk query timeout')), 25000)
+            setTimeout(() => reject(new Error('Chunk query timeout')), 25_000)
           ),
         ]);
         snap.forEach((docSnap) => {

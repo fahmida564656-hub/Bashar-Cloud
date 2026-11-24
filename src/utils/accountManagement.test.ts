@@ -266,3 +266,36 @@ test('shouldProceedWithSignupAfterLookup allows signup when no duplicate exists 
   assert.equal(shouldProceedWithSignupAfterLookup(existing, true), false);
 });
 
+test('selectCanonicalUserRecord resolves the exact same ID regardless of input array order', async () => {
+  const { selectCanonicalUserRecord } = await import('./accountManagement');
+  const legacy: RegisteredUser = {
+    id: 'user-1794901579162',
+    name: 'Legacy User',
+    email: 'user@example.com',
+    phone: '01734211584',
+    registeredAt: 'Nov 17, 2026',
+    registeredTimestamp: 1794901579163,
+    filesCount: 5,
+    storageUsedMB: 9,
+  };
+  const newerDuplicate: RegisteredUser = {
+    id: 'acct_user_example_com',
+    name: 'Legacy User',
+    email: 'user@example.com',
+    phone: '01734211584',
+    registeredAt: 'Nov 20, 2026',
+    registeredTimestamp: 1795100000000,
+    filesCount: 0,
+    storageUsedMB: 0,
+  };
+
+  const forward = selectCanonicalUserRecord([legacy, newerDuplicate]);
+  const reversed = selectCanonicalUserRecord([newerDuplicate, legacy]);
+
+  assert.equal(forward?.id, 'user-1794901579162');
+  assert.equal(reversed?.id, 'user-1794901579162');
+  assert.equal(forward?.filesCount, 5);
+  assert.equal(reversed?.filesCount, 5);
+});
+
+

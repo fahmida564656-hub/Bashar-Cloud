@@ -93,6 +93,7 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [isCommitting, setIsCommitting] = useState<boolean>(false);
   const [savedBatchCount, setSavedBatchCount] = useState<number>(0);
+  const [cloudSyncedBatchCount, setCloudSyncedBatchCount] = useState<number>(0);
   const committedIdsRef = useRef<Set<string>>(new Set());
   const processingIdsRef = useRef<Set<string>>(new Set());
   const builtFilesMapRef = useRef<Map<string, CloudFile>>(new Map());
@@ -109,6 +110,7 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
     processingIdsRef.current = new Set();
     builtFilesMapRef.current = new Map();
     setSavedBatchCount(0);
+    setCloudSyncedBatchCount(0);
 
     if (initialFiles && initialFiles.length > 0) {
       const items = initialFiles.map((file, idx) =>
@@ -301,7 +303,9 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
       );
 
       await onFinishUpload(finalFiles, destination.id, { navigateToFiles });
+      const confirmedCloud = finalFiles.filter((f) => f.cloudSynced === true).length;
       setSavedBatchCount((prev) => prev + finalFiles.length);
+      setCloudSyncedBatchCount((prev) => prev + confirmedCloud);
       if (navigateToFiles) {
         onClose();
       }
@@ -730,10 +734,20 @@ export const UploadFlowModal: React.FC<UploadFlowModalProps> = ({
               {/* Action Buttons: "Upload More" and "View Uploaded Files" */}
               <div className="space-y-2.5">
                 {savedBatchCount > 0 && !isCommitting && (
-                  <div className="bg-emerald-950/60 border border-emerald-500/40 rounded-xl px-3 py-2 flex items-center justify-center gap-2 text-xs font-semibold text-emerald-300 shadow-sm">
-                    <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                    <span>{savedBatchCount}টি ফাইল ড্রাইভে স্থায়ীভাবে সেভ হয়েছে ✓</span>
-                  </div>
+                  cloudSyncedBatchCount >= savedBatchCount ? (
+                    <div className="bg-emerald-950/60 border border-emerald-500/40 rounded-xl px-3 py-2 flex items-center justify-center gap-2 text-xs font-semibold text-emerald-300 shadow-sm">
+                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span>{savedBatchCount}টি ফাইল ক্লাউডে স্থায়ীভাবে সেভ হয়েছে ✓</span>
+                    </div>
+                  ) : (
+                    <div className="bg-amber-950/60 border border-amber-500/40 rounded-xl px-3 py-2 flex items-center justify-center gap-2 text-xs font-semibold text-amber-200 shadow-sm">
+                      <Cloud className="w-4 h-4 text-amber-400 shrink-0" />
+                      <span>
+                        {savedBatchCount}টি ফাইল লোকাল ড্রাইভে সেভ হয়েছে (ক্লাউড সিঙ্ক:{' '}
+                        {cloudSyncedBatchCount}/{savedBatchCount})
+                      </span>
+                    </div>
+                  )
                 )}
 
                 <button

@@ -236,3 +236,29 @@ export function shouldProceedWithSignupAfterLookup(
   return !existing;
 }
 
+/**
+ * Deterministically selects and merges matching user records into a single canonical record
+ * so separate websites always resolve the exact same canonicalUserId regardless of array order.
+ */
+export function selectCanonicalUserRecord(
+  records: RegisteredUser[]
+): RegisteredUser | undefined {
+  if (!Array.isArray(records) || records.length === 0) return undefined;
+  const sorted = [...records].sort((a, b) => {
+    const tsA = a.registeredTimestamp || Number.MAX_SAFE_INTEGER;
+    const tsB = b.registeredTimestamp || Number.MAX_SAFE_INTEGER;
+    if (tsA !== tsB) return tsA - tsB;
+    const detA = a.id?.startsWith('acct_') ? 0 : 1;
+    const detB = b.id?.startsWith('acct_') ? 0 : 1;
+    if (detA !== detB) return detA - detB;
+    return (a.id || '').localeCompare(b.id || '');
+  });
+
+  let unified = sorted[0];
+  for (let i = 1; i < sorted.length; i++) {
+    unified = mergeRegisteredUserRecords(unified, sorted[i]);
+  }
+  return unified;
+}
+
+

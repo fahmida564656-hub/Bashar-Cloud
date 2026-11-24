@@ -70,6 +70,7 @@ import {
   addDeletedFileIds,
   removeDeletedFileIds,
   clearDeletedFileIds,
+  reconcileDeletedIdsWithServerSnapshot,
 } from './utils/fileVault';
 import {
   buildDeterministicAccountId,
@@ -77,12 +78,17 @@ import {
   filterOutUserPayments,
   findMatchingUserRecords,
   mergeRegisteredUserRecords,
+  selectCanonicalUserRecord,
 } from './utils/accountManagement';
-import { isFirestoreQuotaCooldownActive } from './firebase/errorHandler';
+import {
+  isFirestoreQuotaCooldownActive,
+  isFirestoreWriteQuotaCooldownActive,
+} from './firebase/errorHandler';
 import { formatBytes } from './utils/uploadFlow';
 import {
   shouldChunkFileToCloud,
   needsCloudChunkUpload,
+  estimateChunkCount,
   inferMediaMimeType,
   INLINE_CLOUD_FILE_THRESHOLD_BYTES,
   MAX_CLOUD_CHUNK_FILE_BYTES,
@@ -251,8 +257,30 @@ export default function App() {
   const foregroundMediaIdsRef = useRef<Set<string>>(new Set());
   const checkedLegacyOwnersRef = useRef<Set<string>>(new Set());
   const attemptedMediaHydrateIdsRef = useRef<Set<string>>(new Set());
+  const pendingDeleteTimestampsRef = useRef<Map<string, number>>(new Map());
+  const lastUnsyncedRetryRef = useRef<number>(0);
   filesRef.current = files;
   recycleBinRef.current = recycleBin;
+
+  const markPendingDeletes = (ids: string[]) => {
+    const now = Date.now();
+    ids.forEach((id) => {
+      if (id) pendingDeleteTimestampsRef.current.set(id, now);
+    });
+  };
+
+  const getActivePendingDeleteIds = (): Set<string> => {
+    const now = Date.now();
+    const active = new Set<string>();
+    pendingDeleteTimestampsRef.current.forEach((ts, id) => {
+      if (now - ts < 15_000) {
+        active.add(id);
+      } else {
+        pendingDeleteTimestampsRef.current.delete(id);
+      }
+    });
+    return active;
+  };
 
   // Cloud Synchronization state
   const [cloudSyncEnabled, setCloudSyncEnabled] = useState<boolean>(true);
@@ -312,10 +340,7 @@ export default function App() {
     email: user.email,
     phone: user.phone,
   });
-  const currentUserRecord =
-    matchedUserRecords.length > 0
-      ? matchedUserRecords.reduce((acc, rec) => mergeRegisteredUserRecords(acc, rec))
-      : undefined;
+  const currentUserRecord = selectCanonicalUserRecord(matchedUserRecords);
 
   const canonicalUserId =
     currentUserRecord?.id ||
@@ -497,7 +522,10 @@ export default function App() {
     };
 
     if (!shouldChunkFileToCloud(baseFile.sizeBytes)) {
-      const canInline = baseFile.sizeBytes <= INLINE_CLOUD_FILE_THRESHOLD_BYTES || Boolean(baseFile.content);
+      const canInline =
+        baseFile.sizeBytes <= INLINE_CLOUD_FILE_THRESHOLD_BYTES ||
+        baseFile.content !== undefined ||
+        baseFile.type === 'folder';
       const savedOk = await firestoreService
         .saveFile(canonicalUserId, { ...baseFile, cloudSynced: canInline })
         .catch(() => false);
@@ -512,8 +540,21 @@ export default function App() {
     try {
       const blob = await getFileBlob(baseFile.id);
       if (blob && blob.size > 0) {
-        onProgress?.(15);
-        await firestoreService
+        const expectedChunks = estimateChunkCount(blob.size);
+        onProgress?.(12);
+
+        // Always persist parent file metadata + thumbnail to Firestore BEFORE chunking
+        // so cross-site listeners see it immediately and chunks are never orphaned.
+        const initialMetaSaved = await firestoreService
+          .saveFile(canonicalUserId, {
+            ...baseFile,
+            cloudChunkCount: expectedChunks,
+            cloudSynced: false,
+          })
+          .catch(() => false);
+
+        // Non-blocking binary transport for same-server speed without delaying Firestore chunks
+        void firestoreService
           .uploadMediaBlobToServer(
             canonicalUserId,
             baseFile.id,
@@ -523,7 +564,7 @@ export default function App() {
           )
           .catch(() => false);
 
-        onProgress?.(25);
+        onProgress?.(20);
         const uploadedCount = await firestoreService.saveFileChunks(
           canonicalUserId,
           baseFile.id,
@@ -532,7 +573,7 @@ export default function App() {
           baseFile.name,
           (done, total) => {
             if (total > 0) {
-              const pct = Math.min(95, Math.round(25 + (done / total) * 70));
+              const pct = Math.min(95, Math.round(20 + (done / total) * 75));
               onProgress?.(pct);
             }
           }
@@ -540,19 +581,22 @@ export default function App() {
 
         const syncedFile: CloudFile = {
           ...baseFile,
-          ...(uploadedCount > 0 ? { cloudChunkCount: uploadedCount } : {}),
+          cloudChunkCount: uploadedCount > 0 ? uploadedCount : expectedChunks,
           cloudSynced: uploadedCount > 0,
         };
-        const metaSaved = await firestoreService
-          .saveFile(canonicalUserId, syncedFile)
-          .catch(() => false);
+        const metaSaved =
+          uploadedCount > 0 || !initialMetaSaved
+            ? await firestoreService.saveFile(canonicalUserId, syncedFile).catch(() => false)
+            : initialMetaSaved;
         onProgress?.(100);
         return {
           ...syncedFile,
           cloudSynced: Boolean(uploadedCount > 0 && metaSaved),
         };
       }
-      await firestoreService.saveFile(canonicalUserId, { ...baseFile, cloudSynced: false }).catch(() => false);
+      await firestoreService
+        .saveFile(canonicalUserId, { ...baseFile, cloudSynced: false })
+        .catch(() => false);
     } catch (err) {
       console.warn('Direct chunk upload warning:', err);
     } finally {
@@ -564,18 +608,28 @@ export default function App() {
 
   const syncFileChunksInBackground = async (targetUid: string, targetFiles: CloudFile[]) => {
     if (!targetUid || targetUid === 'guest_user' || !targetFiles.length) return;
-    if (isFirestoreQuotaCooldownActive()) return;
+    if (isFirestoreQuotaCooldownActive() || isFirestoreWriteQuotaCooldownActive()) return;
 
     for (const f of targetFiles) {
       if (!f || f.type === 'folder' || chunkUploadingIdsRef.current.has(f.id)) continue;
       if (!needsCloudChunkUpload(f)) continue;
-      if (isFirestoreQuotaCooldownActive()) break;
+      if (isFirestoreQuotaCooldownActive() || isFirestoreWriteQuotaCooldownActive()) break;
 
       chunkUploadingIdsRef.current.add(f.id);
       try {
         const blob = await getFileBlob(f.id);
         if (blob && blob.size > 0) {
+          const expectedChunks = estimateChunkCount(blob.size);
           await firestoreService
+            .saveFile(targetUid, {
+              ...f,
+              ownerId: targetUid,
+              cloudChunkCount: f.cloudChunkCount || expectedChunks,
+              cloudSynced: false,
+            })
+            .catch(() => false);
+
+          void firestoreService
             .uploadMediaBlobToServer(
               targetUid,
               f.id,
@@ -584,26 +638,28 @@ export default function App() {
               f.name
             )
             .catch(() => false);
+
           const uploadedCount = await firestoreService.saveFileChunks(
             targetUid,
             f.id,
             blob,
             f.mimeType || blob.type,
-            f.name
+            f.name,
+            undefined,
+            { resumeMissing: true }
           );
           if (uploadedCount > 0) {
             const resolvedMime = inferMediaMimeType(f.name, f.mimeType || blob.type);
             const repaired: CloudFile = {
               ...f,
+              ownerId: targetUid,
               cloudChunkCount: uploadedCount,
               cloudSynced: true,
               mimeType: resolvedMime,
             };
             await firestoreService.saveFile(targetUid, repaired).catch(() => false);
             setFiles((prev) =>
-              prev.map((item) =>
-                item.id === f.id ? repaired : item
-              )
+              prev.map((item) => (item.id === f.id ? repaired : item))
             );
             continue;
           }
@@ -619,6 +675,7 @@ export default function App() {
           if (check.complete && check.totalChunks > 0) {
             const repaired: CloudFile = {
               ...f,
+              ownerId: targetUid,
               cloudChunkCount: check.totalChunks,
               cloudSynced: true,
             };
@@ -741,33 +798,38 @@ export default function App() {
     if (!canonicalUserId || canonicalUserId === 'guest_user') return;
     let active = true;
 
-    // 1. Ensure current account is published to Firestore once per session (bridges legacy local accounts)
+    // 1. Ensure current account is published to Firestore (only mark synced after confirmed write)
     if (currentUserRecord && !syncedAccountOnSessionRef.current.has(canonicalUserId)) {
-      syncedAccountOnSessionRef.current.add(canonicalUserId);
-      firestoreService.saveRegisteredUser(currentUserRecord).catch(() => {});
+      firestoreService
+        .saveRegisteredUser(currentUserRecord)
+        .then((ok) => {
+          if (ok) {
+            syncedAccountOnSessionRef.current.add(canonicalUserId);
+          }
+        })
+        .catch(() => {});
     }
 
-    // 2. One-time merge of any legacy / secondary owner IDs (throttled per 6 hours to avoid redundant Firestore reads)
-    const secondaryIds = getCandidateOwnerIds().filter((id) => id !== canonicalUserId);
+    // 2. Merge any real legacy / secondary owner IDs (e.g. matchedUserRecords + deterministic ID if distinct)
+    const deterministicDetId =
+      user.email || cleanPhone(user.phone)
+        ? buildDeterministicAccountId(user.email, user.phone)
+        : '';
+    const secondaryIds = Array.from(
+      new Set([
+        ...matchedUserRecords.map((r) => r.id),
+        ...extraOwnerIds,
+        ...(deterministicDetId ? [deterministicDetId] : []),
+      ])
+    ).filter((id) => id && id !== 'guest_user' && id !== canonicalUserId);
     const legacyCheckKey = `${canonicalUserId}:${secondaryIds.join('|')}`;
-    let recentlyCheckedLegacy = checkedLegacyOwnersRef.current.has(legacyCheckKey);
-    if (!recentlyCheckedLegacy) {
-      try {
-        const savedCheckTs = Number(localStorage.getItem(`bashar_legacy_sync_${canonicalUserId}`) || 0);
-        if (savedCheckTs > 0 && Date.now() - savedCheckTs < 6 * 60 * 60 * 1000 && extraOwnerIds.length === 0) {
-          recentlyCheckedLegacy = true;
-        }
-      } catch {}
-    }
+    const recentlyCheckedLegacy = checkedLegacyOwnersRef.current.has(legacyCheckKey);
 
     if (secondaryIds.length > 0 && !recentlyCheckedLegacy && !isFirestoreQuotaCooldownActive()) {
       checkedLegacyOwnersRef.current.add(legacyCheckKey);
       firestoreService
         .getUserFiles(secondaryIds[0], secondaryIds.slice(1))
         .then(async (legacyFiles) => {
-          try {
-            localStorage.setItem(`bashar_legacy_sync_${canonicalUserId}`, String(Date.now()));
-          } catch {}
           if (!active || !legacyFiles || legacyFiles.length === 0) return;
           const deletedIds = loadDeletedFileIds(canonicalUserId);
           const merged = mergeCloudAndLocalFiles(legacyFiles, filesRef.current, deletedIds);
@@ -779,7 +841,9 @@ export default function App() {
           storageProviderMock.saveMetadataState(hydrated, user, nextStorage, recycleBinRef.current, canonicalUserId);
           void hydrateMissingCloudMedia(hydrated, canonicalUserId);
         })
-        .catch(() => {});
+        .catch(() => {
+          checkedLegacyOwnersRef.current.delete(legacyCheckKey);
+        });
     }
 
     // 3. Load recycle bin once for active user
@@ -794,7 +858,7 @@ export default function App() {
       }
     });
 
-    // 4. Scoped 1-doc listener for active user's account record & lifetime status
+    // 4. Scoped 1-doc listener for active user's account record, profile edits & lifetime status
     const unsubUserDoc = firestoreService.subscribeToUserRecord(canonicalUserId, (cloudUser, meta) => {
       if (!active) return;
       if (cloudUser) {
@@ -808,6 +872,33 @@ export default function App() {
           } catch {}
           return next;
         });
+
+        if (!meta?.fromCache) {
+          setUser((prev) => {
+            const nextName = cloudUser.name || prev.name;
+            const nextEmail = cloudUser.email || prev.email;
+            const nextPhone = cloudUser.phone || prev.phone;
+            const nextAvatar = cloudUser.avatarUrl || prev.avatarUrl;
+            const nextTs = cloudUser.registeredTimestamp || prev.registeredTimestamp;
+            if (
+              nextName === prev.name &&
+              nextEmail === prev.email &&
+              nextPhone === prev.phone &&
+              nextAvatar === prev.avatarUrl &&
+              nextTs === prev.registeredTimestamp
+            ) {
+              return prev;
+            }
+            return {
+              ...prev,
+              name: nextName,
+              email: nextEmail,
+              phone: nextPhone,
+              avatarUrl: nextAvatar,
+              registeredTimestamp: nextTs,
+            };
+          });
+        }
       } else if (
         meta &&
         !meta.fromCache &&
@@ -856,12 +947,53 @@ export default function App() {
       }
     );
 
+    const pushPendingLocalFiles = (candidateFiles: CloudFile[], cloudIdSet?: Set<string>) => {
+      if (isFirestoreQuotaCooldownActive() || isFirestoreWriteQuotaCooldownActive()) return;
+      const filesToSyncChunks: CloudFile[] = [];
+      candidateFiles.forEach((f) => {
+        if (f.ownerId && f.ownerId !== canonicalUserId) return;
+        const missingFromCloud = cloudIdSet ? !cloudIdSet.has(f.id) : false;
+        if (!shouldChunkFileToCloud(f.sizeBytes)) {
+          if (missingFromCloud || f.cloudSynced === false) {
+            const canInline =
+              f.sizeBytes <= INLINE_CLOUD_FILE_THRESHOLD_BYTES ||
+              f.content !== undefined ||
+              f.type === 'folder';
+            firestoreService
+              .saveFile(canonicalUserId, { ...f, cloudSynced: canInline })
+              .then((ok) => {
+                if (ok && canInline && active) {
+                  setFiles((prev) =>
+                    prev.map((item) => (item.id === f.id ? { ...item, cloudSynced: true } : item))
+                  );
+                }
+              })
+              .catch(() => {});
+          }
+        } else if (missingFromCloud || needsCloudChunkUpload(f)) {
+          filesToSyncChunks.push(f);
+        }
+      });
+      if (filesToSyncChunks.length > 0) {
+        void syncFileChunksInBackground(canonicalUserId, filesToSyncChunks);
+      }
+    };
+
     // 6. Live files collection listener (single source for active user's files)
     const unsubFiles = firestoreService.subscribeToFiles(canonicalUserId, async (cloudFiles, meta) => {
       if (!active) return;
-      const deletedIds = loadDeletedFileIds(canonicalUserId);
+      const rawDeletedIds = loadDeletedFileIds(canonicalUserId);
+      const pendingDeleteIds = getActivePendingDeleteIds();
+      const isServerAuthoritative = Boolean(meta && !meta.fromCache);
+      const { effectiveDeletedIds: deletedIds, resurrectedIds } = isServerAuthoritative
+        ? reconcileDeletedIdsWithServerSnapshot(rawDeletedIds, cloudFiles, pendingDeleteIds)
+        : { effectiveDeletedIds: rawDeletedIds, resurrectedIds: [] };
+      if (resurrectedIds.length > 0) {
+        removeDeletedFileIds(canonicalUserId, resurrectedIds);
+      }
+
       const merged = mergeCloudAndLocalFiles(cloudFiles, filesRef.current, deletedIds, {
-        pruneSyncedMissingFromCloud: Boolean(meta && !meta.fromCache),
+        pruneSyncedMissingFromCloud: isServerAuthoritative,
         activeOwnerId: canonicalUserId,
       });
       const hydrated = await hydrateCloudFiles(merged);
@@ -872,27 +1004,48 @@ export default function App() {
       setStorage(nextStorage);
       storageProviderMock.saveMetadataState(hydrated, user, nextStorage, recycleBinRef.current, canonicalUserId);
 
-      // Push any locally-uploaded active files that are not yet present in Firestore snapshot
+      // Push any locally-uploaded active files that are not yet confirmed in Firestore snapshot
       const cloudIdSet = new Set(cloudFiles.map((f) => f.id));
-      const filesToSyncChunks: CloudFile[] = [];
-      hydrated.forEach((f) => {
-        if (deletedIds.has(f.id)) return;
-        if (f.ownerId && f.ownerId !== canonicalUserId) return;
-        if (!cloudIdSet.has(f.id) && !f.cloudSynced) {
-          firestoreService.saveFile(canonicalUserId, f).catch(() => {});
-          filesToSyncChunks.push(f);
-        } else if (needsCloudChunkUpload(f)) {
-          filesToSyncChunks.push(f);
-        }
-      });
-      if (filesToSyncChunks.length > 0) {
-        void syncFileChunksInBackground(canonicalUserId, filesToSyncChunks);
-      }
+      pushPendingLocalFiles(
+        hydrated.filter((f) => !deletedIds.has(f.id)),
+        cloudIdSet
+      );
       void hydrateMissingCloudMedia(hydrated, canonicalUserId);
     });
 
+    // 7. Auto-retry interrupted cloud uploads when window regains focus or periodically (zero reads)
+    const retryUnsyncedLocal = () => {
+      if (!active) return;
+      const now = Date.now();
+      if (now - lastUnsyncedRetryRef.current < 20_000) return;
+      const pending = filesRef.current.filter((f) => f.cloudSynced === false);
+      if (pending.length === 0) return;
+      lastUnsyncedRetryRef.current = now;
+      if (currentUserRecord && !syncedAccountOnSessionRef.current.has(canonicalUserId)) {
+        firestoreService
+          .saveRegisteredUser(currentUserRecord)
+          .then((ok) => {
+            if (ok) syncedAccountOnSessionRef.current.add(canonicalUserId);
+          })
+          .catch(() => {});
+      }
+      pushPendingLocalFiles(pending);
+    };
+
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        retryUnsyncedLocal();
+      }
+    };
+    const retryInterval = window.setInterval(retryUnsyncedLocal, 30_000);
+    window.addEventListener('focus', retryUnsyncedLocal);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+
     return () => {
       active = false;
+      window.clearInterval(retryInterval);
+      window.removeEventListener('focus', retryUnsyncedLocal);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
       unsubUserDoc();
       unsubUserPayments();
       unsubFiles();
@@ -1295,12 +1448,27 @@ export default function App() {
       persistVaultState(updated);
 
       if (canonicalUserId && canonicalUserId !== 'guest_user') {
-        const pendingMetadata = finalizedFiles.filter((f) => !f.cloudSynced);
+        const pendingMetadata = finalizedFiles.filter(
+          (f) => !f.cloudSynced && !shouldChunkFileToCloud(f.sizeBytes)
+        );
         if (pendingMetadata.length > 0) {
           void Promise.all(
-            pendingMetadata.map((f) =>
-              firestoreService.saveFile(canonicalUserId, f).catch(() => {})
-            )
+            pendingMetadata.map((f) => {
+              const canInline =
+                f.sizeBytes <= INLINE_CLOUD_FILE_THRESHOLD_BYTES ||
+                f.content !== undefined ||
+                f.type === 'folder';
+              return firestoreService
+                .saveFile(canonicalUserId, { ...f, cloudSynced: canInline })
+                .then((ok) => {
+                  if (ok && canInline) {
+                    setFiles((prev) =>
+                      prev.map((item) => (item.id === f.id ? { ...item, cloudSynced: true } : item))
+                    );
+                  }
+                })
+                .catch(() => {});
+            })
           );
         }
         const pendingChunks = finalizedFiles.filter((f) => needsCloudChunkUpload(f));
@@ -1341,11 +1509,22 @@ export default function App() {
       isFavorite: false,
       parentFolderId: null,
       itemCount: 0,
+      ownerId: canonicalUserId,
+      cloudSynced: false,
     };
     const updated = [newFolder, ...filesRef.current];
     setFiles(updated);
     persistVaultState(updated);
-    firestoreService.saveFile(canonicalUserId, newFolder).catch(() => {});
+    firestoreService
+      .saveFile(canonicalUserId, { ...newFolder, cloudSynced: true })
+      .then((ok) => {
+        if (ok) {
+          setFiles((prev) =>
+            prev.map((item) => (item.id === newFolder.id ? { ...item, cloudSynced: true } : item))
+          );
+        }
+      })
+      .catch(() => {});
     return newFolder;
   };
 
@@ -1364,13 +1543,26 @@ export default function App() {
     const newFile: CloudFile = {
       ...createdFile,
       content,
+      ownerId: canonicalUserId,
+      cloudSynced: false,
     };
 
     const updated = [newFile, ...filesRef.current];
     setFiles(updated);
     persistVaultState(updated);
-    firestoreService.saveFile(canonicalUserId, newFile).catch(() => {});
-    setSyncToast(`"${fileName}" সফলভাবে তৈরি ও সংরক্ষিত হয়েছে!`);
+    const savedOk = await firestoreService
+      .saveFile(canonicalUserId, { ...newFile, cloudSynced: true })
+      .catch(() => false);
+    if (savedOk) {
+      setFiles((prev) =>
+        prev.map((item) => (item.id === newFile.id ? { ...item, cloudSynced: true } : item))
+      );
+    }
+    setSyncToast(
+      savedOk
+        ? `"${fileName}" সফলভাবে তৈরি ও ক্লাউডে সংরক্ষিত হয়েছে!`
+        : `"${fileName}" লোকাল ড্রাইভে সেভ হয়েছে (ক্লাউড সিঙ্ক চলছে)`
+    );
     setTimeout(() => setSyncToast(null), 3000);
   };
 
@@ -1497,6 +1689,7 @@ export default function App() {
     const fileToDelete = filesRef.current.find((f) => f.id === id);
     if (!fileToDelete) return;
 
+    markPendingDeletes([id]);
     addDeletedFileIds(canonicalUserId, [id]);
     const updatedFiles = filesRef.current.filter((f) => f.id !== id);
     const updatedBin = [fileToDelete, ...recycleBinRef.current];
@@ -1511,6 +1704,7 @@ export default function App() {
   // Permanent Delete (removes from state, IndexedDB blobs, Recycle Bin & Firestore)
   const handlePermanentDelete = (id: string) => {
     if (!checkActionAllowed()) return;
+    markPendingDeletes([id]);
     addDeletedFileIds(canonicalUserId, [id]);
     liveObjectUrlsRef.current.delete(id);
     const updatedFiles = filesRef.current.filter((f) => f.id !== id);
@@ -1528,6 +1722,7 @@ export default function App() {
   // Bulk Permanent Delete
   const handleBulkPermanentDelete = (ids: string[]) => {
     if (!checkActionAllowed()) return;
+    markPendingDeletes(ids);
     addDeletedFileIds(canonicalUserId, ids);
     const idSet = new Set(ids);
     const updatedFiles = filesRef.current.filter((f) => !idSet.has(f.id));
@@ -1548,6 +1743,7 @@ export default function App() {
   // Bulk Delete to Recycle Bin
   const handleBulkDelete = (ids: string[]) => {
     if (!checkActionAllowed()) return;
+    markPendingDeletes(ids);
     addDeletedFileIds(canonicalUserId, ids);
     const idSet = new Set(ids);
     const filesToDelete = filesRef.current.filter((f) => idSet.has(f.id));
@@ -1777,12 +1973,23 @@ export default function App() {
       isFavorite: false,
       parentFolderId: null,
       itemCount: 0,
+      ownerId: canonicalUserId,
+      cloudSynced: false,
     };
 
     const updated = [newFolder, ...filesRef.current];
     setFiles(updated);
     persistVaultState(updated);
-    firestoreService.saveFile(canonicalUserId, newFolder).catch(() => {});
+    firestoreService
+      .saveFile(canonicalUserId, { ...newFolder, cloudSynced: true })
+      .then((ok) => {
+        if (ok) {
+          setFiles((prev) =>
+            prev.map((item) => (item.id === newFolder.id ? { ...item, cloudSynced: true } : item))
+          );
+        }
+      })
+      .catch(() => {});
     setIsNewFolderOpen(false);
   };
 
@@ -1971,6 +2178,7 @@ export default function App() {
   // Clear all files in active drive
   const handleClearAllFiles = async () => {
     const allIds = [...filesRef.current, ...recycleBinRef.current].map((f) => f.id);
+    markPendingDeletes(allIds);
     addDeletedFileIds(canonicalUserId, allIds);
     setFiles([]);
     setRecycleBin([]);
@@ -2025,14 +2233,11 @@ export default function App() {
       email: authenticatedUser.email,
       phone: authenticatedUser.phone,
     });
-    const prevUser =
-      localMatches.length > 0
-        ? localMatches.reduce((acc, rec) => mergeRegisteredUserRecords(acc, rec))
-        : cloudRecord;
-    const unifiedSource =
-      prevUser && cloudRecord
-        ? mergeRegisteredUserRecords(cloudRecord, prevUser)
-        : prevUser || cloudRecord;
+    const prevUser = selectCanonicalUserRecord(localMatches);
+    const unifiedSource = selectCanonicalUserRecord([
+      ...(prevUser ? [prevUser] : []),
+      ...(cloudRecord ? [cloudRecord] : []),
+    ]);
 
     const resolvedId =
       unifiedSource?.id ||
@@ -2075,13 +2280,22 @@ export default function App() {
       extraIds: extraOwnerIds,
     });
     setExtraOwnerIds(candidateIds);
-    syncedAccountOnSessionRef.current.add(resolvedId);
 
-    // Save to Firestore so user is available across all websites instantly
+    // Save to Firestore so user is available across all websites instantly; only mark synced on true confirmation
     if (isNewSignup || !cloudRecord) {
-      await firestoreService.saveRegisteredUser(userRecord).catch(() => {});
+      const savedOk = await firestoreService.saveRegisteredUser(userRecord).catch(() => false);
+      if (savedOk) {
+        syncedAccountOnSessionRef.current.add(resolvedId);
+      }
     } else {
-      void firestoreService.saveRegisteredUser(userRecord).catch(() => {});
+      firestoreService
+        .saveRegisteredUser(userRecord)
+        .then((ok) => {
+          if (ok) {
+            syncedAccountOnSessionRef.current.add(resolvedId);
+          }
+        })
+        .catch(() => {});
     }
 
     setRegisteredUsers((prev) =>

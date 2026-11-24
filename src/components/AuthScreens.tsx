@@ -6,9 +6,13 @@ import { compressImageToSafeDataUrl } from '../utils/fileVault';
 import {
   buildDeterministicAccountId,
   findMatchingUserRecords,
-  mergeRegisteredUserRecords,
+  selectCanonicalUserRecord,
   shouldProceedWithSignupAfterLookup,
 } from '../utils/accountManagement';
+import {
+  isFirestoreQuotaCooldownActive,
+  isFirestoreWriteQuotaCooldownActive,
+} from '../firebase/errorHandler';
 
 interface AuthScreenProps {
   websiteName?: string;
@@ -182,9 +186,15 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
         };
 
         // Persist to Cloud Firestore immediately so all other sites have it instantly
-        await firestoreService.saveRegisteredUser(newRecord).catch((err) => {
-          console.warn('Firestore cloud user sync warning:', err);
-        });
+        let savedToCloud = await firestoreService
+          .saveRegisteredUser(newRecord)
+          .catch(() => false);
+        if (!savedToCloud && !isFirestoreWriteQuotaCooldownActive()) {
+          await new Promise((r) => setTimeout(r, 600));
+          savedToCloud = await firestoreService
+            .saveRegisteredUser(newRecord)
+            .catch(() => false);
+        }
 
         if (onAccountIdsResolved) {
           onAccountIdsResolved([newId]);
@@ -193,7 +203,7 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
           onUserRegistered(newRecord);
         }
 
-        onSuccess(newUserProfile, password, newRecord, true);
+        onSuccess(newUserProfile, password, savedToCloud ? newRecord : undefined, true);
         return;
       } else {
         // ==========================================
@@ -233,30 +243,31 @@ export const WelcomeScreen: React.FC<AuthScreenProps> = ({
           return;
         }
 
-        // Step A: Search local state (and consolidate any duplicate local records)
+        // Step A: Search local state (and consolidate any duplicate local records deterministically)
         const localMatches = findMatchingUserRecords(
           registeredUsers,
           isPhoneMode ? { phone: searchIdentifier } : { email: searchIdentifier }
         );
-        let foundUser: RegisteredUser | undefined = localMatches[0];
-        for (let i = 1; i < localMatches.length; i++) {
-          foundUser = mergeRegisteredUserRecords(foundUser!, localMatches[i]);
-        }
+        let foundUser: RegisteredUser | undefined = selectCanonicalUserRecord(localMatches);
         const collectedIds = new Set<string>(localMatches.map((u) => u.id));
         let lookupQuotaExceeded = false;
 
-        // Step B: If not found locally (or local password differs), query directly from Cloud Firestore (O(1) indexed)!
-        if (!foundUser || (foundUser.passwordPlain && foundUser.passwordPlain !== password)) {
+        // Step B: Always check Cloud Firestore when quota allows so Website 2 & Website 1 stay unified
+        // (falls back cleanly to localMatches if offline or quota exhausted)
+        if (!isFirestoreQuotaCooldownActive() || !foundUser) {
           try {
             const lookupRes = await firestoreService.lookupRegisteredAccount(searchIdentifier);
             lookupQuotaExceeded = lookupRes.quotaExceeded;
             lookupRes.matchingIds.forEach((id) => collectedIds.add(id));
             if (lookupRes.user) {
-              foundUser = foundUser
-                ? mergeRegisteredUserRecords(lookupRes.user, foundUser)
-                : lookupRes.user;
-              if (onUserRegistered) {
-                onUserRegistered(foundUser);
+              const combined = selectCanonicalUserRecord(
+                foundUser ? [lookupRes.user, ...localMatches] : [lookupRes.user]
+              );
+              if (combined) {
+                foundUser = combined;
+                if (onUserRegistered) {
+                  onUserRegistered(foundUser);
+                }
               }
             }
           } catch (cloudErr) {

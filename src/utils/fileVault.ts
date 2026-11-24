@@ -263,6 +263,29 @@ export function clearDeletedFileIds(userId?: string): void {
 }
 
 /**
+ * Removes IDs from `deletedIds` if the authoritative server snapshot still holds them
+ * and they were not just deleted locally in this session (`pendingDeleteIds`).
+ */
+export function reconcileDeletedIdsWithServerSnapshot(
+  deletedIds: Set<string>,
+  serverCloudFiles: CloudFile[],
+  pendingDeleteIds?: Set<string>
+): { effectiveDeletedIds: Set<string>; resurrectedIds: string[] } {
+  const effectiveDeletedIds = new Set(deletedIds);
+  const resurrectedIds: string[] = [];
+
+  for (const cf of serverCloudFiles) {
+    if (!cf?.id) continue;
+    if (effectiveDeletedIds.has(cf.id) && !pendingDeleteIds?.has(cf.id)) {
+      effectiveDeletedIds.delete(cf.id);
+      resurrectedIds.push(cf.id);
+    }
+  }
+
+  return { effectiveDeletedIds, resurrectedIds };
+}
+
+/**
  * Merges incoming cloud files with existing hydrated local files cleanly:
  * - Preserves live blob URLs, locally cached previews, contents, archive entries, and richer version lists
  * - Retains local-only files not yet echoed back by a Firestore snapshot (lifetime guarantee unless explicitly deleted)
@@ -872,7 +895,7 @@ export async function buildCloudFileFromBrowserFile(
     ...(content !== undefined ? { content } : {}),
     ...(extension ? { extension } : {}),
     ...(resolvedMimeType ? { mimeType: resolvedMimeType } : {}),
-    ...(!requiresChunkSync ? { cloudSynced: true } : { cloudSynced: false }),
+    cloudSynced: false,
     ...(archiveEntries ? { archiveEntries } : {}),
     ...(itemCount !== undefined ? { itemCount } : {}),
     versions: [

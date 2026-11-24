@@ -260,3 +260,41 @@ test('mergeCloudAndLocalFiles prunes previously synced files deleted on another 
   assert.equal(merged[0].id, 'local-pending-1');
 });
 
+test('reconcileDeletedIdsWithServerSnapshot allows files restored on another website while keeping pending local deletes suppressed', async () => {
+  const { reconcileDeletedIdsWithServerSnapshot } = await import('./fileVault');
+  const deleted = new Set(['restored-elsewhere', 'just-deleted-here']);
+  const pending = new Set(['just-deleted-here']);
+  const serverFiles: CloudFile[] = [
+    {
+      id: 'restored-elsewhere',
+      name: 'restored.mp4',
+      type: 'video',
+      sizeBytes: 1024,
+      formattedSize: '1 KB',
+      date: 'Today',
+      isFavorite: false,
+      cloudSynced: true,
+    },
+    {
+      id: 'just-deleted-here',
+      name: 'deleting.mp4',
+      type: 'video',
+      sizeBytes: 1024,
+      formattedSize: '1 KB',
+      date: 'Today',
+      isFavorite: false,
+      cloudSynced: true,
+    },
+  ];
+
+  const { effectiveDeletedIds, resurrectedIds } = reconcileDeletedIdsWithServerSnapshot(
+    deleted,
+    serverFiles,
+    pending
+  );
+  assert.deepEqual(resurrectedIds, ['restored-elsewhere']);
+  assert.equal(effectiveDeletedIds.has('restored-elsewhere'), false);
+  assert.equal(effectiveDeletedIds.has('just-deleted-here'), true);
+});
+
+

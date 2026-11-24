@@ -147,7 +147,15 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, file?.id, file?.url, file?.type, isLocked]);
+  }, [
+    isOpen,
+    file?.id,
+    file?.url,
+    file?.type,
+    file?.cloudSynced,
+    file?.cloudChunkCount,
+    isLocked,
+  ]);
 
   useEffect(() => {
     if (!isOpen) return;
